@@ -155,17 +155,20 @@ eai-terra/
 
 上述目录为规划草案，以实际代码演进为准。
 
-### 构建（M0-01 骨架）
+### 构建
 
-需要 GCC（C++17）、CMake ≥ 3.22 和 Ninja：
+需要 GCC 11（C++17）、CMake ≥ 3.22、Ninja；从源码构建 MuJoCo 另需 gcc-12/g++-12：
 
 ```bash
+sudo apt install gcc-12 g++-12   # 仅首次
+scripts/mujoco/fetch.sh          # 下载并校验 MuJoCo 源码（版本见 third_party/mujoco/mujoco.lock）
+scripts/mujoco/build.sh          # 构建并安装到 third_party/mujoco/install
 cmake --preset debug
 cmake --build --preset debug
 ctest --preset debug
 ```
 
-当前只能构建工程骨架（`terra_core`、`terra_headless`），不含物理功能。步骤说明与验证记录见 [M0-01 环境验证](docs/validation/M0-01-environment.md)。
+当前只有工程骨架和 MuJoCo 依赖接入，不含物理功能。说明与验证记录见 [M0-01 环境验证](docs/validation/M0-01-environment.md) 和 [M0-02 MuJoCo 集成](docs/validation/M0-02-mujoco.md)。
 
 ## 10. 当前状态
 

@@ -4,17 +4,19 @@
 // 由 M0-03 接入；物理运行能力由 M0-04–06 接入。
 //
 // 输出约定：stdout 留给机器可读结果，诊断信息写 stderr。
-// 退出码：0 成功；2 命令行用法错误。
+// 退出码：0 成功；2 命令行用法错误；3 物理后端不可用（如头文件与运行库版本不一致）。
 
 #include <cstdio>
 #include <string_view>
 
 #include "terra/core/build_info.hpp"
+#include "terra/physics/mujoco/backend_info.hpp"
 
 namespace {
 
 constexpr int kExitOk = 0;
 constexpr int kExitUsage = 2;
+constexpr int kExitBackend = 3;
 
 void printUsage(std::FILE* out) {
     std::fputs(
@@ -27,13 +29,26 @@ void printUsage(std::FILE* out) {
         out);
 }
 
-void printVersion() {
+int printVersion() {
     const terra::BuildInfo& info = terra::buildInfo();
     std::printf("terra_headless %.*s (%.*s %.*s, __cplusplus=%ld)\n",
                 static_cast<int>(info.version.size()), info.version.data(),
                 static_cast<int>(info.compilerId.size()), info.compilerId.data(),
                 static_cast<int>(info.compilerVersion.size()), info.compilerVersion.data(),
                 info.cxxStandard);
+
+    const terra::physics::mujoco::BackendInfo backend = terra::physics::mujoco::backendInfo();
+    std::printf("physics backend: %.*s %.*s\n",
+                static_cast<int>(backend.name.size()), backend.name.data(),
+                static_cast<int>(backend.libraryVersionString.size()),
+                backend.libraryVersionString.data());
+    if (!backend.versionsMatch()) {
+        std::fprintf(stderr,
+                     "terra_headless: MuJoCo 头文件版本 %d 与运行库版本 %d 不一致\n",
+                     backend.headerVersion, backend.libraryVersion);
+        return kExitBackend;
+    }
+    return kExitOk;
 }
 
 }  // namespace
@@ -50,8 +65,7 @@ int main(int argc, char** argv) {
         return kExitOk;
     }
     if (arg == "--version") {
-        printVersion();
-        return kExitOk;
+        return printVersion();
     }
 
     std::fprintf(stderr, "terra_headless: 未知参数 '%s'\n\n", argv[1]);

@@ -3,6 +3,6 @@
 add_executable(terra_headless
     main.cpp)
 
-target_link_libraries(terra_headless PRIVATE terra::core)
+target_link_libraries(terra_headless PRIVATE terra::core terra::physics_mujoco)
 
 terra_configure_target(terra_headless)

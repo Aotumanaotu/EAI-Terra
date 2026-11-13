@@ -24,13 +24,16 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "构建类型" FORCE)
 endif()
 
+include(TerraMuJoCo)
+
 # 目标边界（M0-01 评审结果，详见 docs/validation/M0-01-environment.md）：
-#   terra_core      engine/core      最小公共类型与构建信息，不依赖任何物理或图形库
-#   terra_headless  apps/headless    命令行入口，只链接 Terra 目标
-# 以下目标尚待后续任务接入，本阶段不创建：
-#   terra_physics   engine/physics                  M0-02 起：后端无关接口
-#   MuJoCo 适配层   engine/physics/backends/mujoco  M0-02 起：私有链接官方库
+#   terra_core            engine/core                     最小公共类型与构建信息，不依赖任何物理或图形库
+#   terra_physics_mujoco  engine/physics/backends/mujoco  MuJoCo 私有适配层（M0-02），PRIVATE 链接 mujoco::mujoco
+#   terra_headless        apps/headless                   命令行入口，只链接 Terra 目标
+# 尚待后续任务接入：
+#   terra_physics         engine/physics                  后端无关接口（M0-04–07）
 add_subdirectory(engine/core)
+add_subdirectory(engine/physics)
 add_subdirectory(apps/headless)
 
 if(TERRA_BUILD_TESTS)

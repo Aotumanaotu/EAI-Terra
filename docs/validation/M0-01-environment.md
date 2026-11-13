@@ -9,8 +9,8 @@
 | `terra_core`（`terra::core`） | `engine/core/` | 最小公共类型；当前只有构建信息 `terra::buildInfo()` | 无外部库 | 已建立 |
 | `terra_headless` | `apps/headless/` | 命令行入口；当前只有 `--help`、`--version` | `terra::core` | 已建立（骨架） |
 | `test_core_build_info` 等 CTest 用例 | `tests/` | 工程骨架自检，见第 3 节 | `terra::core`、`terra_headless` | 已建立 |
-| `terra_physics` | `engine/physics/` | 后端无关物理接口 | `terra::core` | **未创建**，M0-02 起接入 |
-| MuJoCo 适配层 | `engine/physics/backends/mujoco/` | 私有链接官方 C API | MuJoCo 官方库 | **未创建**，M0-02 接入 |
+| `terra_physics` | `engine/physics/` | 后端无关物理接口 | `terra::core` | **未创建**，M0-04–07 接入 |
+| `terra_physics_mujoco` | `engine/physics/backends/mujoco/` | 私有链接官方 C API | MuJoCo 官方库 | M0-02 已建立骨架，见 [M0-02 报告](M0-02-mujoco.md) |
 
 约束：
 

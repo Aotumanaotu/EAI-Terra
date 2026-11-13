@@ -5,6 +5,7 @@
 add_library(terra_headless_cli STATIC
     cli.cpp)
 target_include_directories(terra_headless_cli PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(terra_headless_cli PUBLIC terra::data)
 terra_configure_target(terra_headless_cli)
 
 add_executable(terra_headless

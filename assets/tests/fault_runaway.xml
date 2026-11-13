@@ -1,0 +1,13 @@
+<!--
+  故障夹具：状态发散（M0-05）。步长 1 s、重力 -1e9：加速度在 MuJoCo 有效范围内，
+  但位置逐步增大，第 5 步时 |qpos| 超过 mjMAXVAL（1e10）。Terra 应在当步报 non_finite 并停止。
+-->
+<mujoco model="fault_runaway">
+  <option timestep="1" gravity="0 0 -1e9" integrator="Euler"/>
+  <worldbody>
+    <body name="runaway" pos="0 0 0">
+      <freejoint name="runaway_free"/>
+      <geom type="sphere" size="0.1" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

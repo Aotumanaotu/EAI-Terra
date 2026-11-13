@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "terra/data/geometry.hpp"
 #include "terra/data/ids.hpp"
 
 namespace terra::data {
@@ -32,10 +33,21 @@ struct JointDescription {
     int velocitySize = 0;
 };
 
+// 模型中固定的仿真配置，用于记录和复现实验（开发计划 M0-05 ①）。
+// 名称为后端无关的文字描述；未知取值记为 "unknown(<编号>)"。
+struct SimulationSettings {
+    Vec3 gravity;             // m/s²
+    std::string integrator;   // 如 "Euler"、"RK4"、"implicit"、"implicitfast"、"discrete"
+    std::string solver;       // 如 "PGS"、"CG"、"Newton"
+    int iterations = 0;       // 主求解器最大迭代次数
+    double tolerance = 0.0;   // 主求解器收敛容差
+};
+
 // 已加载模型的只读描述。entities[i].id.value == i + 1，joints 同理。
 struct ModelDescription {
     std::string sourcePath;  // 解析后的模型文件绝对路径
     double timestep = 0.0;   // 固定物理步长（秒）
+    SimulationSettings settings;
     std::vector<EntityDescription> entities;
     std::vector<JointDescription> joints;
 

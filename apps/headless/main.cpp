@@ -1,17 +1,19 @@
 // EAI Terra Headless 入口。
 //
-// 生命周期：解析参数 → 检查物理后端 → 加载并初始化模型（M0-04）→ 运行 → 释放。
-// 固定步进与状态输出由 M0-05/06 接入；在此之前 --dry-run 可以完整走通，
-// 实际运行在加载成功后以退出码 3 如实报告“尚未接入”。
+// 生命周期：解析参数 → 检查物理后端 → 加载并初始化模型（M0-04）→ 固定步进运行（M0-05）→ 释放。
+// 按步数离线运行，不按墙钟 sleep 或追赶实时；输出采样不影响仿真。
+// 状态记录格式为初版，正式格式在 M0-06 确定。
 //
 // 输出约定、退出码见 cli.hpp。本文件只使用 Terra 类型，不包含 MuJoCo 头文件。
 
 #include <cstdio>
 #include <exception>
 #include <string>
+#include <vector>
 
 #include "cli.hpp"
 #include "terra/core/build_info.hpp"
+#include "terra/core/run_schedule.hpp"
 #include "terra/physics/mujoco/backend_info.hpp"
 #include "terra/physics/mujoco/mujoco_world.hpp"
 
@@ -50,9 +52,35 @@ int printVersion() {
     return backendUsable() ? kExitOk : kExitUnavailable;
 }
 
-int run(const RunOptions& options) {
-    namespace mj = terra::physics::mujoco;
+namespace mj = terra::physics::mujoco;
 
+const char* errorKindName(mj::SimulationErrorKind kind) {
+    switch (kind) {
+        case mj::SimulationErrorKind::NonFinite: return "non_finite";
+        case mj::SimulationErrorKind::AutoReset: return "auto_reset";
+        case mj::SimulationErrorKind::SolverWarning: return "solver_warning";
+        case mj::SimulationErrorKind::Faulted: return "faulted";
+    }
+    return "unknown";
+}
+
+// 写一行 JSON 到 stdout；写入失败返回 false。
+bool emit(const std::string& line) {
+    return std::fputs(line.c_str(), stdout) >= 0 && std::fputc('\n', stdout) != EOF;
+}
+
+std::string sampleState(const mj::MujocoWorld& world) {
+    std::vector<EntitySample> samples;
+    samples.reserve(world.description().entities.size());
+    for (const auto& entity : world.description().entities) {
+        if (const auto pose = world.entityPose(entity.id)) {
+            samples.push_back({entity.id, *pose});
+        }
+    }
+    return stateToJson(world.runEpoch(), world.stepIndex(), world.simulationTime(), samples);
+}
+
+int run(const RunOptions& options) {
     if (!backendUsable()) {
         return kExitUnavailable;
     }
@@ -65,7 +93,7 @@ int run(const RunOptions& options) {
         diagnose(loaded.error->message);
         return loaded.error->kind == mj::LoadErrorKind::Internal ? kExitInternal : kExitModel;
     }
-    const mj::MujocoWorld& world = *loaded.world;
+    mj::MujocoWorld& world = *loaded.world;
 
     ResolvedRun resolved;
     resolved.modelPath = world.description().sourcePath;
@@ -81,13 +109,33 @@ int run(const RunOptions& options) {
         resolved.totalSteps = *steps;
     }
 
+    bool ok = emit(configToJson(options, resolved));
     if (options.dryRun) {
-        std::printf("%s\n", configToJson(options, resolved).c_str());
-        return std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
+        return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
     }
 
-    diagnose("模型已加载，但物理步进尚未接入（M0-05）；可使用 --dry-run 校验参数与模型");
-    return kExitUnavailable;
+    ok = ok && emit(modelToJson(world.description()));
+    const terra::RunSchedule schedule{resolved.totalSteps, options.sampleEvery};
+    ok = ok && emit(sampleState(world));  // 第 0 步：初始状态
+    for (std::uint64_t i = 0; ok && i < resolved.totalSteps; ++i) {
+        if (const auto error = world.step()) {
+            emit(errorToJson(errorKindName(error->kind), world.runEpoch(), error->step, world.simulationTime(),
+                             error->message));
+            std::fflush(stdout);
+            diagnose("仿真在第 " + std::to_string(error->step) + " 步出错：" + error->message);
+            return kExitSimulation;
+        }
+        if (schedule.shouldSample(world.stepIndex())) {
+            ok = emit(sampleState(world));
+        }
+    }
+    ok = ok && emit(summaryToJson(world.runEpoch(), world.stepIndex(), world.simulationTime()));
+
+    if (!ok || std::fflush(stdout) != 0) {
+        diagnose("写入 stdout 失败");
+        return kExitInternal;
+    }
+    return kExitOk;
 }
 
 int mainImpl(int argc, char** argv) {

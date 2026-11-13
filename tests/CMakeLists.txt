@@ -3,6 +3,7 @@
 # M0-02：MuJoCo 依赖探针、后端版本一致性、公共头不泄露 MuJoCo。
 # M0-03：Headless 参数解析、校验、退出码、--dry-run 输出。
 # M0-04：MJCF 加载与初始化、错误分类、生命周期；Headless 接入模型加载。
+# M0-05：固定步进、reset、故障检测；Headless 实际运行与 JSON Lines 记录。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -61,8 +62,23 @@ terra_add_cli_test(dry_run_steps EXPECT 0
 terra_add_cli_test(dry_run_duration EXPECT 0
     STDOUT "^[{].type.:.config.,.*,.duration.:5,.timestep.:0.001,.total_steps.:5000,.sample_every.:1,.dry_run.:true}\n$"
     ARGS --dry-run --duration=5 --model=${_terra_cube_model})
-terra_add_cli_test(run_not_available EXPECT 3 STDERR "步进尚未接入"
-    ARGS --model ${_terra_cube_model} --steps 10)
+# 实际运行（M0-05）。CMake 正则中 . 可匹配换行，用于检查多行输出的顺序。
+terra_add_cli_test(run_cube EXPECT 0
+    STDOUT "^[{].type.:.config.[^\n]*\n[{].type.:.model.[^\n]*\n[{].type.:.state.,.run_epoch.:0,.step.:0,.time.:0,[^\n]*\n[{].type.:.state.,.run_epoch.:0,.step.:50,[^\n]*\n[{].type.:.state.,.run_epoch.:0,.step.:100,[^\n]*\n[{].type.:.summary.,.run_epoch.:0,.steps.:100,.time.:0.1[0-9]*,.status.:.ok.}\n$"
+    ARGS --model ${_terra_cube_model} --steps 100 --sample-every 50)
+terra_add_cli_test(run_duration EXPECT 0
+    STDOUT "[{].type.:.summary.,.run_epoch.:0,.steps.:10,"
+    ARGS --model ${_terra_cube_model} --duration 0.01 --sample-every 1000)
+terra_add_cli_test(run_sparse_sampling EXPECT 0
+    STDOUT "^[^\n]*\n[^\n]*\n[^\n]*.step.:0,[^\n]*\n[^\n]*.step.:3,[^\n]*\n[^\n]*summary[^\n]*\n$"
+    ARGS --model ${_terra_cube_model} --steps 3 --sample-every 100)
+terra_add_cli_test(run_fault_runaway EXPECT 5
+    STDOUT "[{].type.:.error.,.kind.:.non_finite.,.run_epoch.:0,.step.:5,"
+    STDERR "第 5 步出错"
+    ARGS --model ${PROJECT_SOURCE_DIR}/assets/tests/fault_runaway.xml --steps 20)
+terra_add_cli_test(run_fault_auto_reset EXPECT 5
+    STDOUT "[{].type.:.error.,.kind.:.auto_reset.,.run_epoch.:0,.step.:1,"
+    ARGS --model ${PROJECT_SOURCE_DIR}/assets/tests/fault_bad_acceleration.xml --steps 20)
 
 add_test(NAME headless.version COMMAND terra_headless --version)
 set_tests_properties(headless.version PROPERTIES
@@ -111,3 +127,11 @@ terra_configure_target(test_mujoco_world)
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/work")
 add_test(NAME physics.mujoco_world COMMAND test_mujoco_world
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/work")
+
+# 固定步进与 reset（M0-05）
+add_executable(test_mujoco_step physics/test_mujoco_step.cpp)
+target_link_libraries(test_mujoco_step PRIVATE terra::physics_mujoco terra::core)
+target_compile_definitions(test_mujoco_step PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_mujoco_step)
+add_test(NAME physics.mujoco_step COMMAND test_mujoco_step)

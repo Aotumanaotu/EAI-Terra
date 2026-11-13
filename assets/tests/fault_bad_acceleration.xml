@@ -1,0 +1,13 @@
+<!--
+  故障夹具：加速度坏值（M0-05）。重力 -1e13 使 |qacc| 超过 mjMAXVAL（1e10），
+  MuJoCo 在第 1 步内检测到并自动重置状态。Terra 应报 auto_reset 并停止，而不是继续从 t=0 运行。
+-->
+<mujoco model="fault_bad_acceleration">
+  <option timestep="0.001" gravity="0 0 -1e13" integrator="Euler"/>
+  <worldbody>
+    <body name="falling" pos="0 0 1">
+      <freejoint name="falling_free"/>
+      <geom type="sphere" size="0.1" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

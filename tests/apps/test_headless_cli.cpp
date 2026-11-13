@@ -143,6 +143,52 @@ void testJson() {
     check(json2.find("\"steps\"") == std::string::npos, "未指定 steps 时不输出");
 }
 
+void testRecords() {
+    terra::data::ModelDescription model;
+    model.timestep = 0.002;
+    model.settings.gravity = {0, 0, -9.5};
+    model.settings.integrator = "Euler";
+    model.settings.solver = "Newton";
+    model.settings.iterations = 50;
+    model.settings.tolerance = 1e-8;
+    model.entities.push_back({terra::data::EntityId{1}, "base", terra::data::EntityId{}});
+    model.entities.push_back({terra::data::EntityId{2}, "arm\"x", terra::data::EntityId{1}});
+    terra::data::JointDescription joint;
+    joint.id = terra::data::JointId{1};
+    joint.name = "shoulder";
+    joint.type = terra::data::JointType::Hinge;
+    joint.entity = terra::data::EntityId{2};
+    joint.configurationSize = 1;
+    joint.velocitySize = 1;
+    model.joints.push_back(joint);
+    const std::string m = modelToJson(model);
+    check(m ==
+              "{\"type\":\"model\",\"timestep\":0.002,\"gravity\":[0,0,-9.5],\"integrator\":\"Euler\","
+              "\"solver\":\"Newton\",\"iterations\":50,\"tolerance\":1e-08,\"entities\":["
+              "{\"id\":1,\"name\":\"base\",\"parent\":0},{\"id\":2,\"name\":\"arm\\\"x\",\"parent\":1}],"
+              "\"joints\":[{\"id\":1,\"name\":\"shoulder\",\"type\":\"hinge\",\"entity\":2,\"nq\":1,\"nv\":1}]}",
+          "model 记录: " + m);
+
+    terra::data::Pose pose;
+    pose.position = {1, 2, 0.5};
+    pose.orientation = {0.5, 0.5, 0.5, 0.5};
+    const std::string st = stateToJson(3, 42, 0.25, {EntitySample{terra::data::EntityId{1}, pose}});
+    check(st ==
+              "{\"type\":\"state\",\"run_epoch\":3,\"step\":42,\"time\":0.25,\"entities\":["
+              "{\"id\":1,\"position\":[1,2,0.5],\"orientation\":[0.5,0.5,0.5,0.5]}]}",
+          "state 记录: " + st);
+    check(stateToJson(0, 0, 0, {}) == "{\"type\":\"state\",\"run_epoch\":0,\"step\":0,\"time\":0,\"entities\":[]}",
+          "无实体的 state 记录");
+
+    check(summaryToJson(1, 5000, 5) ==
+              "{\"type\":\"summary\",\"run_epoch\":1,\"steps\":5000,\"time\":5,\"status\":\"ok\"}",
+          "summary 记录");
+    check(errorToJson("non_finite", 0, 5, 5, "qpos[2] \"bad\"") ==
+              "{\"type\":\"error\",\"kind\":\"non_finite\",\"run_epoch\":0,\"step\":5,\"time\":5,"
+              "\"message\":\"qpos[2] \\\"bad\\\"\"}",
+          "error 记录（消息转义）");
+}
+
 void testStepsForDuration() {
     auto steps = [](double duration, double dt) { return stepsForDuration(duration, dt); };
     check(steps(5.0, 0.001) == 5000u, "5 s / 1 ms = 5000（浮点误差不应得到 5001）");
@@ -165,6 +211,7 @@ int main() {
     testUsageErrors();
     testJson();
     testStepsForDuration();
+    testRecords();
     if (failures == 0) {
         std::printf("all passed\n");
     }

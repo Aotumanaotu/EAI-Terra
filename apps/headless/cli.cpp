@@ -193,7 +193,7 @@ std::string usageText() {
            "  --model <路径>       MJCF 模型文件\n"
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
-           "  --sample-every N     每 N 步输出一次状态（默认 1）\n"
+           "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
            "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"
            "  -h, --help           显示本帮助\n"
            "      --version        显示版本与构建信息\n"
@@ -201,7 +201,9 @@ std::string usageText() {
            "输出: stdout 为 JSON Lines（每行一个对象，带 \"type\" 字段）；诊断信息写 stderr。\n"
            "退出码: 0 成功；1 内部错误；2 参数错误；3 后端不可用或功能未接入；4 模型错误；5 仿真错误。\n"
            "\n"
-           "当前状态: 物理步进尚未接入（M0-05），非 --dry-run 运行在加载模型后以退出码 3 结束。\n";
+           "\n"
+           "输出记录: config（参数）→ model（配置与实体清单）→ state（第 0 步、每 N 步、最后一步）\n"
+           "          → summary（正常结束）或 error（仿真错误，退出码 5）。--dry-run 只输出 config。\n";
 }
 
 std::string jsonEscape(std::string_view text) {
@@ -245,15 +247,88 @@ std::optional<std::uint64_t> stepsForDuration(double durationSeconds, double tim
     return static_cast<std::uint64_t>(std::max(1.0, steps));
 }
 
-namespace {
-
-std::string formatDouble(double value) {
+std::string formatNumber(double value) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%.17g", value);
     return buf;
 }
 
+namespace {
+
+std::string quotedJson(std::string_view text) {
+    return "\"" + jsonEscape(text) + "\"";
+}
+
+std::string vec3Json(const terra::data::Vec3& v) {
+    return "[" + formatNumber(v.x) + "," + formatNumber(v.y) + "," + formatNumber(v.z) + "]";
+}
+
+const char* jointTypeName(terra::data::JointType type) {
+    switch (type) {
+        case terra::data::JointType::Free: return "free";
+        case terra::data::JointType::Ball: return "ball";
+        case terra::data::JointType::Slide: return "slide";
+        case terra::data::JointType::Hinge: return "hinge";
+    }
+    return "unknown";
+}
+
 }  // namespace
+
+std::string modelToJson(const terra::data::ModelDescription& model) {
+    const auto& st = model.settings;
+    std::string json = "{\"type\":\"model\",\"timestep\":" + formatNumber(model.timestep) +
+                       ",\"gravity\":" + vec3Json(st.gravity) + ",\"integrator\":" + quotedJson(st.integrator) +
+                       ",\"solver\":" + quotedJson(st.solver) + ",\"iterations\":" + std::to_string(st.iterations) +
+                       ",\"tolerance\":" + formatNumber(st.tolerance) + ",\"entities\":[";
+    for (std::size_t i = 0; i < model.entities.size(); ++i) {
+        const auto& e = model.entities[i];
+        json += (i ? "," : "");
+        json += "{\"id\":" + std::to_string(e.id.value) + ",\"name\":" + quotedJson(e.name) +
+                ",\"parent\":" + std::to_string(e.parent.value) + "}";
+    }
+    json += "],\"joints\":[";
+    for (std::size_t i = 0; i < model.joints.size(); ++i) {
+        const auto& j = model.joints[i];
+        json += (i ? "," : "");
+        json += "{\"id\":" + std::to_string(j.id.value) + ",\"name\":" + quotedJson(j.name) +
+                ",\"type\":\"" + jointTypeName(j.type) + "\",\"entity\":" + std::to_string(j.entity.value) +
+                ",\"nq\":" + std::to_string(j.configurationSize) + ",\"nv\":" + std::to_string(j.velocitySize) +
+                "}";
+    }
+    json += "]}";
+    return json;
+}
+
+std::string stateToJson(std::uint64_t runEpoch, std::uint64_t step, double time,
+                        const std::vector<EntitySample>& entities) {
+    std::string json = "{\"type\":\"state\",\"run_epoch\":" + std::to_string(runEpoch) +
+                       ",\"step\":" + std::to_string(step) + ",\"time\":" + formatNumber(time) +
+                       ",\"entities\":[";
+    for (std::size_t i = 0; i < entities.size(); ++i) {
+        const auto& e = entities[i];
+        const auto& q = e.pose.orientation;
+        json += (i ? "," : "");
+        json += "{\"id\":" + std::to_string(e.id.value) + ",\"position\":" + vec3Json(e.pose.position) +
+                ",\"orientation\":[" + formatNumber(q.w) + "," + formatNumber(q.x) + "," + formatNumber(q.y) + "," +
+                formatNumber(q.z) + "]}";
+    }
+    json += "]}";
+    return json;
+}
+
+std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time) {
+    return "{\"type\":\"summary\",\"run_epoch\":" + std::to_string(runEpoch) +
+           ",\"steps\":" + std::to_string(steps) + ",\"time\":" + formatNumber(time) +
+           ",\"status\":\"ok\"}";
+}
+
+std::string errorToJson(std::string_view kind, std::uint64_t runEpoch, std::uint64_t step, double time,
+                        std::string_view message) {
+    return "{\"type\":\"error\",\"kind\":" + quotedJson(kind) + ",\"run_epoch\":" + std::to_string(runEpoch) +
+           ",\"step\":" + std::to_string(step) + ",\"time\":" + formatNumber(time) +
+           ",\"message\":" + quotedJson(message) + "}";
+}
 
 std::string configToJson(const RunOptions& options, const ResolvedRun& resolved) {
     std::string json = "{\"type\":\"config\",\"model\":\"" + jsonEscape(options.modelPath) +
@@ -262,9 +337,9 @@ std::string configToJson(const RunOptions& options, const ResolvedRun& resolved)
         json += ",\"steps\":" + std::to_string(*options.steps);
     }
     if (options.durationSeconds) {
-        json += ",\"duration\":" + formatDouble(*options.durationSeconds);
+        json += ",\"duration\":" + formatNumber(*options.durationSeconds);
     }
-    json += ",\"timestep\":" + formatDouble(resolved.timestep);
+    json += ",\"timestep\":" + formatNumber(resolved.timestep);
     json += ",\"total_steps\":" + std::to_string(resolved.totalSteps);
     json += ",\"sample_every\":" + std::to_string(options.sampleEvery);
     json += options.dryRun ? ",\"dry_run\":true}" : ",\"dry_run\":false}";

@@ -55,6 +55,49 @@ bool allFinite(const mjtNum* values, mjtSize count) {
     return true;
 }
 
+// 返回第一个“坏值”的下标，没有则返回 -1。坏值按 MuJoCo 的定义：NaN 或 |x| > mjMAXVAL（1e10）。
+mjtSize firstBad(const mjtNum* values, mjtSize count) {
+    for (mjtSize i = 0; i < count; ++i) {
+        if (mju_isBad(values[i])) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+const char* warningName(int warning) {
+    switch (warning) {
+        case mjWARN_INERTIA: return "惯量矩阵（接近）奇异";
+        case mjWARN_CONTACTFULL: return "接触数量超出缓冲区";
+        case mjWARN_CNSTRFULL: return "约束数量超出缓冲区";
+        case mjWARN_BADQPOS: return "qpos 出现坏值";
+        case mjWARN_BADQVEL: return "qvel 出现坏值";
+        case mjWARN_BADQACC: return "qacc 出现坏值";
+        case mjWARN_BADCTRL: return "ctrl 出现坏值";
+        default: return "未知警告";
+    }
+}
+
+std::string integratorName(int integrator) {
+    switch (integrator) {
+        case mjINT_EULER: return "Euler";
+        case mjINT_RK4: return "RK4";
+        case mjINT_IMPLICIT: return "implicit";
+        case mjINT_IMPLICITFAST: return "implicitfast";
+        case mjINT_DISCRETE: return "discrete";
+        default: return "unknown(" + std::to_string(integrator) + ")";
+    }
+}
+
+std::string solverName(int solver) {
+    switch (solver) {
+        case mjSOL_PGS: return "PGS";
+        case mjSOL_CG: return "CG";
+        case mjSOL_NEWTON: return "Newton";
+        default: return "unknown(" + std::to_string(solver) + ")";
+    }
+}
+
 LoadResult failure(LoadErrorKind kind, std::string message) {
     LoadResult result;
     result.error = LoadError{kind, std::move(message)};
@@ -87,7 +130,63 @@ struct MujocoWorld::Impl {
     terra::data::ModelDescription description;
     // Terra 实体 ID（value - 1 为下标）到 MuJoCo body 索引的私有映射。
     std::vector<int> entityToBody;
+
+    std::uint64_t stepIndex = 0;
+    std::uint64_t runEpoch = 0;
+    bool faulted = false;
+    // 上次检查时各类 MuJoCo 警告的累计次数；计数增加即视为出现严重诊断。
+    std::array<int, mjNWARNING> warningBaseline{};
+
+    void captureWarningBaseline() {
+        for (int w = 0; w < mjNWARNING; ++w) {
+            warningBaseline[static_cast<std::size_t>(w)] = data->warning[w].number;
+        }
+    }
+
+    // 检查刚完成的一步。返回错误时不修改 stepIndex。
+    std::optional<SimulationError> checkAfterStep(std::uint64_t step, double previousTime) const;
 };
+
+std::optional<SimulationError> MujocoWorld::Impl::checkAfterStep(std::uint64_t step,
+                                                                 double previousTime) const {
+    const mjModel* m = model.get();
+    const mjData* d = data.get();
+
+    for (int w = 0; w < mjNWARNING; ++w) {
+        if (d->warning[w].number == warningBaseline[static_cast<std::size_t>(w)]) {
+            continue;
+        }
+        const bool autoReset = (w == mjWARN_BADQPOS || w == mjWARN_BADQVEL || w == mjWARN_BADQACC) &&
+                               !(m->opt.disableflags & mjDSBL_AUTORESET);
+        std::string message = std::string{"MuJoCo 报告："} + warningName(w) + "（附加信息 " +
+                              std::to_string(d->warning[w].lastinfo) + "）";
+        if (autoReset) {
+            message += "，MuJoCo 已自动重置状态";
+        }
+        return SimulationError{autoReset ? SimulationErrorKind::AutoReset : SimulationErrorKind::SolverWarning,
+                               step, std::move(message)};
+    }
+
+    // 时间应单调增加；倒退说明发生了未报告的重置。
+    if (!(d->time > previousTime)) {
+        return SimulationError{SimulationErrorKind::AutoReset, step,
+                               "仿真时间没有前进（" + std::to_string(previousTime) + " -> " +
+                                   std::to_string(d->time) + "），疑似发生重置"};
+    }
+
+    if (const mjtSize i = firstBad(d->qpos, m->nq); i >= 0) {
+        return SimulationError{SimulationErrorKind::NonFinite, step,
+                               "qpos[" + std::to_string(i) + "] 为坏值：" + std::to_string(d->qpos[i])};
+    }
+    if (const mjtSize i = firstBad(d->qvel, m->nv); i >= 0) {
+        return SimulationError{SimulationErrorKind::NonFinite, step,
+                               "qvel[" + std::to_string(i) + "] 为坏值：" + std::to_string(d->qvel[i])};
+    }
+    if (!std::isfinite(d->time) || !allFinite(d->xpos, 3 * m->nbody) || !allFinite(d->xquat, 4 * m->nbody)) {
+        return SimulationError{SimulationErrorKind::NonFinite, step, "时间或实体位姿含非有限值"};
+    }
+    return std::nullopt;
+}
 
 MujocoWorld::MujocoWorld(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
@@ -151,6 +250,11 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
     terra::data::ModelDescription& desc = impl->description;
     desc.sourcePath = path.string();
     desc.timestep = timestep;
+    desc.settings.gravity = {model->opt.gravity[0], model->opt.gravity[1], model->opt.gravity[2]};
+    desc.settings.integrator = integratorName(model->opt.integrator);
+    desc.settings.solver = solverName(model->opt.solver);
+    desc.settings.iterations = model->opt.iterations;
+    desc.settings.tolerance = model->opt.tolerance;
 
     // 实体：MuJoCo 的每个非 world body 对应一个 Terra 实体，按 body 顺序分配 ID。
     // world body（索引 0）上的静态 geom（如地面）不是实体，将来作为 collider 描述。
@@ -205,6 +309,7 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
 
     impl->model = std::move(model);
     impl->data = std::move(data);
+    impl->captureWarningBaseline();
     result.world.reset(new MujocoWorld(std::move(impl)));
     return result;
 }
@@ -213,8 +318,54 @@ const terra::data::ModelDescription& MujocoWorld::description() const noexcept {
     return impl_->description;
 }
 
+std::optional<SimulationError> MujocoWorld::step() {
+    Impl& w = *impl_;
+    const std::uint64_t target = w.stepIndex + 1;
+    if (w.faulted) {
+        return SimulationError{SimulationErrorKind::Faulted, target, "世界处于故障状态，需要 reset 后才能继续"};
+    }
+
+    const double previousTime = w.data->time;
+    // mj_step 先计算动力学再积分，积分后 xpos/xquat 等派生量仍对应积分前的状态；
+    // 再调用一次 mj_forward，使发布的位姿与新的时间一致（技术设计 2.3 节）。
+    // 已验证：额外的 mj_forward 不改变后续轨迹（见 M0-05 报告）。
+    mj_step(w.model.get(), w.data.get());
+    mj_forward(w.model.get(), w.data.get());
+
+    if (auto error = w.checkAfterStep(target, previousTime)) {
+        w.faulted = true;
+        w.captureWarningBaseline();
+        return error;
+    }
+    w.stepIndex = target;
+    return std::nullopt;
+}
+
+void MujocoWorld::reset() {
+    Impl& w = *impl_;
+    // mj_resetData 恢复 qpos0、零速度、time=0，并将 ctrl 等输入清零。
+    mj_resetData(w.model.get(), w.data.get());
+    mj_forward(w.model.get(), w.data.get());
+    w.stepIndex = 0;
+    ++w.runEpoch;
+    w.faulted = false;
+    w.captureWarningBaseline();
+}
+
 double MujocoWorld::simulationTime() const noexcept {
     return impl_->data->time;
+}
+
+std::uint64_t MujocoWorld::stepIndex() const noexcept {
+    return impl_->stepIndex;
+}
+
+std::uint64_t MujocoWorld::runEpoch() const noexcept {
+    return impl_->runEpoch;
+}
+
+bool MujocoWorld::faulted() const noexcept {
+    return impl_->faulted;
 }
 
 std::optional<terra::data::Pose> MujocoWorld::entityPose(terra::data::EntityId id) const {

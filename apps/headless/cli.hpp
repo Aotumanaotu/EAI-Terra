@@ -1,12 +1,17 @@
 #pragma once
 
-// terra_headless 命令行解析与校验（M0-03）。
-// 只依赖标准库，不涉及物理后端，便于单元测试。
+// terra_headless 命令行解析、校验与 JSON Lines 输出格式（M0-03 起）。
+// 只依赖标准库与 Terra 数据契约，不涉及物理后端，便于单元测试。
 
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
+
+#include "terra/data/geometry.hpp"
+#include "terra/data/ids.hpp"
+#include "terra/data/model_description.hpp"
 
 namespace terra::headless {
 
@@ -58,6 +63,31 @@ std::optional<std::uint64_t> stepsForDuration(double durationSeconds, double tim
 
 // 运行配置的 JSON 表示（单行，不含换行符），type 为 "config"。
 std::string configToJson(const RunOptions& options, const ResolvedRun& resolved);
+
+// ---- JSON Lines 输出记录（格式为初版，M0-06 确定正式状态格式）----
+// 每条记录为单行 JSON 对象，不含换行符；实数以 %.17g 输出，可无损还原为 double。
+
+// type "model"：仿真配置与实体、关节清单。实体名称只在这里出现，state 记录只用 ID。
+std::string modelToJson(const terra::data::ModelDescription& model);
+
+struct EntitySample {
+    terra::data::EntityId id;
+    terra::data::Pose pose;
+};
+
+// type "state"：一个观测时刻的状态。position 为 [x,y,z]，orientation 为 [w,x,y,z]。
+std::string stateToJson(std::uint64_t runEpoch, std::uint64_t step, double time,
+                        const std::vector<EntitySample>& entities);
+
+// type "summary"：正常结束。
+std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time);
+
+// type "error"：仿真错误。kind 为 snake_case 标识，如 "auto_reset"。
+std::string errorToJson(std::string_view kind, std::uint64_t runEpoch, std::uint64_t step, double time,
+                        std::string_view message);
+
+// 实数格式化（%.17g）。
+std::string formatNumber(double value);
 
 // JSON 字符串转义（不含两侧引号）。
 std::string jsonEscape(std::string_view text);

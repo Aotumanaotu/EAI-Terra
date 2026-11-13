@@ -1,6 +1,6 @@
 # EAI Terra 产品需求文档（PRD）
 
-> 产品：**EAI Terra — An Open Robotics Simulation Engine**。当前处于 M0 规划与最小原型准备阶段。本文所有功能需求均未实现、未验收；“已确定”仅指产品和技术方向。状态规则见[文档导航](README.md)。
+> 产品：**EAI Terra — An Open Robotics Simulation Engine**。当前处于 M0，已有最小工程骨架，M0-01 待验收；产品物理功能尚未实现。需求完成度以[开发记录](DEVELOPMENT_LOG.md)为准，“已确定”仅指产品和技术方向。状态规则见[文档导航](README.md)。
 
 ## 1. 产品概述
 
@@ -43,7 +43,7 @@ EAI Terra 计划构建独立、开放、可扩展的机器人三维物理仿真�
 
 ## 3. 分阶段功能需求
 
-优先级按阶段解释，定义见[文档导航](README.md)。所有条目的实现状态均为“未开始”。具体模块、接口和测试方法分别见[技术设计](TECHNICAL_DESIGN.md)与[开发计划](DEVELOPMENT_PLAN.md)。表中的验收条件是将来需满足的要求，不是已取得的结果。
+优先级按阶段解释，定义见[文档导航](README.md)。本表维护需求定义，实际实现状态统一见开发记录；工程骨架已建立不等于对应物理需求已验收。具体模块、接口和测试方法分别见[技术设计](TECHNICAL_DESIGN.md)与[开发计划](DEVELOPMENT_PLAN.md)。表中的验收条件是将来需满足的要求，不是已取得的结果。
 
 ### 3.1 M0 — 基础工程与 MuJoCo 物理集成
 

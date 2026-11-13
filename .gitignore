@@ -1,0 +1,11 @@
+/build/
+/out/
+compile_commands.json
+.cache/
+
+# MuJoCo 源码与构建产物，由 scripts/mujoco/*.sh 生成；版本记录见 third_party/mujoco/mujoco.lock
+/third_party/mujoco/downloads/
+/third_party/mujoco/src/
+/third_party/mujoco/deps/
+/third_party/mujoco/build/
+/third_party/mujoco/install/

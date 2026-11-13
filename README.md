@@ -6,7 +6,7 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0 准备阶段（Planning / Pre-Alpha），尚无引擎源码、构建工程或物理验收结果。本 README 描述目标架构与开发路线，不代表相关功能已经实现。详见[规划文档](docs/planning/README.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+> 项目状态：M0 开发中（Pre-Alpha），已建立最小工程骨架，尚无物理功能或物理验收结果。本 README 描述目标架构与开发路线，不代表相关功能已经实现。详见[规划文档](docs/planning/README.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 </div>
 
@@ -155,9 +155,21 @@ eai-terra/
 
 上述目录为规划草案，以实际代码演进为准。
 
+### 构建（M0-01 骨架）
+
+需要 GCC（C++17）、CMake ≥ 3.22 和 Ninja：
+
+```bash
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug
+```
+
+当前只能构建工程骨架（`terra_core`、`terra_headless`），不含物理功能。步骤说明与验证记录见 [M0-01 环境验证](docs/validation/M0-01-environment.md)。
+
 ## 10. 当前状态
 
-项目目前处于 **M0：技术路线确定、架构设计与最小物理原型准备阶段**。尚无引擎源码、构建工程、已验证的 MuJoCo 版本或仿真测试结果，未提供发布版本或可用性保证。实际实现进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+项目目前处于 **M0：基础工程与 MuJoCo Headless 物理集成阶段**。已建立最小 C++17 工程骨架（M0-01 待验收，基线机器构建与测试通过）；尚无物理功能、已验证的 MuJoCo 版本或仿真测试结果，未提供发布版本或可用性保证。实际实现进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 近期第一优先级：**M0-01 最小工程与环境基线 → M0-02 MuJoCo 官方依赖兼容验证 → 立方体 Headless 物理闭环**。不提前开发渲染或图形编辑器。
 
@@ -171,6 +183,7 @@ eai-terra/
 - [技术架构与设计](docs/planning/TECHNICAL_DESIGN.md)
 - [技术决策记录](docs/planning/DECISIONS.md)
 - [开发记录与当前进度](docs/planning/DEVELOPMENT_LOG.md)
+- [开发总结与下一步](docs/planning/SUMMARY.md)
 
 ## 11. 许可证
 

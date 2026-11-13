@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -126,19 +127,34 @@ void testJson() {
     options.steps = 100;
     options.sampleEvery = 5;
     options.dryRun = true;
-    const std::string json = configToJson(options, "/abs/m.xml");
+    const ResolvedRun resolved{"/abs/m.xml", 0.001, 100};
+    const std::string json = configToJson(options, resolved);
     check(json ==
               "{\"type\":\"config\",\"model\":\"m.xml\",\"model_resolved\":\"/abs/m.xml\","
-              "\"steps\":100,\"sample_every\":5,\"dry_run\":true}",
+              "\"steps\":100,\"timestep\":0.001,\"total_steps\":100,\"sample_every\":5,\"dry_run\":true}",
           "config JSON（steps）: " + json);
 
     RunOptions byDuration;
     byDuration.modelPath = "m.xml";
     byDuration.durationSeconds = 0.1;
-    const std::string json2 = configToJson(byDuration, "m.xml");
+    const std::string json2 = configToJson(byDuration, ResolvedRun{"m.xml", 0.001, 100});
     check(json2.find("\"duration\":0.10000000000000001") != std::string::npos,
           "duration 以 17 位有效数字输出，可无损往返: " + json2);
     check(json2.find("\"steps\"") == std::string::npos, "未指定 steps 时不输出");
+}
+
+void testStepsForDuration() {
+    auto steps = [](double duration, double dt) { return stepsForDuration(duration, dt); };
+    check(steps(5.0, 0.001) == 5000u, "5 s / 1 ms = 5000（浮点误差不应得到 5001）");
+    check(steps(0.3, 0.1) == 3u, "0.3 / 0.1 = 3（0.3/0.1 的浮点结果为 2.9999999999999996）");
+    check(steps(1.0, 0.003) == 334u, "不能整除时向上取整：1 / 0.003 -> 334");
+    check(steps(0.0001, 0.001) == 1u, "时长短于一步时至少运行 1 步");
+    check(steps(60.0, 0.002) == 30000u, "60 s / 2 ms");
+    check(!steps(0.0, 0.001), "时长为 0");
+    check(!steps(1.0, 0.0), "步长为 0");
+    check(!steps(1.0, -0.001), "步长为负");
+    check(!steps(1e300, 1e-300), "溢出");
+    check(!steps(1.0, std::numeric_limits<double>::quiet_NaN()), "步长为 NaN");
 }
 
 }  // namespace
@@ -148,6 +164,7 @@ int main() {
     testValidRuns();
     testUsageErrors();
     testJson();
+    testStepsForDuration();
     if (failures == 0) {
         std::printf("all passed\n");
     }

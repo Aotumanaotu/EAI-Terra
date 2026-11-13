@@ -1,20 +1,19 @@
-// EAI Terra Headless 入口（M0-03）。
+// EAI Terra Headless 入口。
 //
-// 生命周期：解析参数 → 检查物理后端 → 检查模型文件 → 运行 → 释放。
-// 物理运行（加载 MJCF、固定步进、状态输出）由 M0-04–06 接入；在此之前只有 --dry-run
-// 能完整走通，实际运行以退出码 3 如实报告“尚未接入”。
+// 生命周期：解析参数 → 检查物理后端 → 加载并初始化模型（M0-04）→ 运行 → 释放。
+// 固定步进与状态输出由 M0-05/06 接入；在此之前 --dry-run 可以完整走通，
+// 实际运行在加载成功后以退出码 3 如实报告“尚未接入”。
 //
 // 输出约定、退出码见 cli.hpp。本文件只使用 Terra 类型，不包含 MuJoCo 头文件。
 
 #include <cstdio>
 #include <exception>
-#include <filesystem>
 #include <string>
-#include <system_error>
 
 #include "cli.hpp"
 #include "terra/core/build_info.hpp"
 #include "terra/physics/mujoco/backend_info.hpp"
+#include "terra/physics/mujoco/mujoco_world.hpp"
 
 namespace {
 
@@ -51,27 +50,43 @@ int printVersion() {
     return backendUsable() ? kExitOk : kExitUnavailable;
 }
 
-std::string resolvePath(const std::string& path) {
-    std::error_code ec;
-    const std::filesystem::path resolved = std::filesystem::weakly_canonical(path, ec);
-    return ec ? path : resolved.string();
-}
-
 int run(const RunOptions& options) {
+    namespace mj = terra::physics::mujoco;
+
     if (!backendUsable()) {
         return kExitUnavailable;
     }
-    if (const std::string error = checkModelFile(options.modelPath); !error.empty()) {
-        diagnose(error);
-        return kExitModel;
+
+    mj::LoadResult loaded = mj::MujocoWorld::load(terra::data::ModelSource{options.modelPath});
+    for (const std::string& warning : loaded.warnings) {
+        diagnose("模型警告：" + warning);
+    }
+    if (loaded.error) {
+        diagnose(loaded.error->message);
+        return loaded.error->kind == mj::LoadErrorKind::Internal ? kExitInternal : kExitModel;
+    }
+    const mj::MujocoWorld& world = *loaded.world;
+
+    ResolvedRun resolved;
+    resolved.modelPath = world.description().sourcePath;
+    resolved.timestep = world.description().timestep;
+    if (options.steps) {
+        resolved.totalSteps = *options.steps;
+    } else {
+        const auto steps = stepsForDuration(*options.durationSeconds, resolved.timestep);
+        if (!steps) {
+            diagnose("--duration 换算为步数时超出范围（步长 " + std::to_string(resolved.timestep) + " 秒）");
+            return kExitUsage;
+        }
+        resolved.totalSteps = *steps;
     }
 
     if (options.dryRun) {
-        std::printf("%s\n", configToJson(options, resolvePath(options.modelPath)).c_str());
+        std::printf("%s\n", configToJson(options, resolved).c_str());
         return std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
     }
 
-    diagnose("物理运行尚未接入（M0-04–06）；可使用 --dry-run 校验参数");
+    diagnose("模型已加载，但物理步进尚未接入（M0-05）；可使用 --dry-run 校验参数与模型");
     return kExitUnavailable;
 }
 

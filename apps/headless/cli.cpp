@@ -1,13 +1,11 @@
 #include "cli.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <limits>
-#include <system_error>
 
 namespace terra::headless {
 
@@ -186,23 +184,6 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     return result;
 }
 
-std::string checkModelFile(const std::string& path) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    const fs::file_status status = fs::status(path, ec);
-    if (ec || !fs::exists(status)) {
-        return "模型文件不存在：" + path;
-    }
-    if (!fs::is_regular_file(status)) {
-        return "模型路径不是常规文件：" + path;
-    }
-    std::ifstream file{path, std::ios::binary};
-    if (!file) {
-        return "无法读取模型文件：" + path;
-    }
-    return {};
-}
-
 std::string usageText() {
     return "用法:\n"
            "  terra_headless --model <MJCF> (--steps N | --duration 秒) [--sample-every N] [--dry-run]\n"
@@ -213,14 +194,14 @@ std::string usageText() {
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1）\n"
-           "  --dry-run            只校验参数与模型文件，输出解析后的配置，不运行仿真\n"
+           "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"
            "  -h, --help           显示本帮助\n"
            "      --version        显示版本与构建信息\n"
            "\n"
            "输出: stdout 为 JSON Lines（每行一个对象，带 \"type\" 字段）；诊断信息写 stderr。\n"
            "退出码: 0 成功；1 内部错误；2 参数错误；3 后端不可用或功能未接入；4 模型错误；5 仿真错误。\n"
            "\n"
-           "当前状态: 物理运行尚未接入（M0-04–06），非 --dry-run 运行会以退出码 3 结束。\n";
+           "当前状态: 物理步进尚未接入（M0-05），非 --dry-run 运行在加载模型后以退出码 3 结束。\n";
 }
 
 std::string jsonEscape(std::string_view text) {
@@ -248,18 +229,43 @@ std::string jsonEscape(std::string_view text) {
     return out;
 }
 
-std::string configToJson(const RunOptions& options, std::string_view resolvedModelPath) {
+std::optional<std::uint64_t> stepsForDuration(double durationSeconds, double timestep) {
+    if (!std::isfinite(durationSeconds) || !std::isfinite(timestep) || durationSeconds <= 0.0 ||
+        timestep <= 0.0) {
+        return std::nullopt;
+    }
+    const double ratio = durationSeconds / timestep;
+    // 2^63：可以精确转换为 uint64 的安全上界
+    if (!std::isfinite(ratio) || ratio >= 9223372036854775808.0) {
+        return std::nullopt;
+    }
+    const double nearest = std::round(ratio);
+    const double steps =
+        std::fabs(ratio - nearest) <= 1e-9 * std::max(1.0, ratio) ? nearest : std::ceil(ratio);
+    return static_cast<std::uint64_t>(std::max(1.0, steps));
+}
+
+namespace {
+
+std::string formatDouble(double value) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.17g", value);
+    return buf;
+}
+
+}  // namespace
+
+std::string configToJson(const RunOptions& options, const ResolvedRun& resolved) {
     std::string json = "{\"type\":\"config\",\"model\":\"" + jsonEscape(options.modelPath) +
-                       "\",\"model_resolved\":\"" + jsonEscape(resolvedModelPath) + "\"";
+                       "\",\"model_resolved\":\"" + jsonEscape(resolved.modelPath) + "\"";
     if (options.steps) {
         json += ",\"steps\":" + std::to_string(*options.steps);
     }
     if (options.durationSeconds) {
-        char buf[32];
-        std::snprintf(buf, sizeof buf, "%.17g", *options.durationSeconds);
-        json += ",\"duration\":";
-        json += buf;
+        json += ",\"duration\":" + formatDouble(*options.durationSeconds);
     }
+    json += ",\"timestep\":" + formatDouble(resolved.timestep);
+    json += ",\"total_steps\":" + std::to_string(resolved.totalSteps);
     json += ",\"sample_every\":" + std::to_string(options.sampleEvery);
     json += options.dryRun ? ",\"dry_run\":true}" : ",\"dry_run\":false}";
     return json;

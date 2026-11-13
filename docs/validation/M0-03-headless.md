@@ -16,7 +16,7 @@ terra_headless --help | --version
 | `--duration 秒` | 正的有限实数，拒绝 nan、inf、溢出和下溢。换算为步数需要模型步长，在 M0-04 接入后完成 |
 | `--steps` / `--duration` | 必须且只能给一个 |
 | `--sample-every N` | 每 N 步输出一次状态，默认 1。初始状态与最后一步是否总是输出，由 M0-05/06 确定 |
-| `--dry-run` | 只校验参数与模型文件，输出解析后的配置，不运行仿真 |
+| `--dry-run` | 校验参数并加载模型（M0-04 起会编译 MJCF），输出解析后的配置（含 `timestep`、`total_steps`），不运行仿真 |
 | `--help` / `--version` | 出现在任意位置时优先处理，其余参数不再校验 |
 
 通用规则：

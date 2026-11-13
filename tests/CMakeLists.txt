@@ -2,6 +2,7 @@
 # M0-01：C++17 生效、构建信息、Headless 命令行行为与无图形依赖。
 # M0-02：MuJoCo 依赖探针、后端版本一致性、公共头不泄露 MuJoCo。
 # M0-03：Headless 参数解析、校验、退出码、--dry-run 输出。
+# M0-04：MJCF 加载与初始化、错误分类、生命周期；Headless 接入模型加载。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -35,9 +36,10 @@ target_link_libraries(test_headless_cli PRIVATE terra_headless_cli)
 terra_configure_target(test_headless_cli)
 add_test(NAME headless.cli_parser COMMAND test_headless_cli)
 
-# 占位模型文件：--dry-run 只检查文件可读，不解析 MJCF。真实测试模型由 M0-04 加入 assets/tests/。
+set(_terra_cube_model "${PROJECT_SOURCE_DIR}/assets/tests/falling_cube.xml")
+# 占位文件：存在且可读，但不是合法 MJCF。用于参数错误用例（不会读到模型）和模型编译失败用例。
 set(_terra_placeholder_model "${CMAKE_CURRENT_BINARY_DIR}/fixtures/placeholder.xml")
-file(WRITE "${_terra_placeholder_model}" "<!-- --dry-run 用占位文件，内容不会被解析 -->\n")
+file(WRITE "${_terra_placeholder_model}" "<!-- 不是合法的 MJCF -->\n")
 
 terra_add_cli_test(help EXPECT 0 STDOUT "用法" ARGS --help)
 terra_add_cli_test(no_arguments EXPECT 2 STDERR "缺少参数" ARGS)
@@ -51,14 +53,16 @@ terra_add_cli_test(model_not_found EXPECT 4 STDERR "模型文件不存在"
     ARGS --model ${CMAKE_CURRENT_BINARY_DIR}/fixtures/no_such_model.xml --steps 10 --dry-run)
 terra_add_cli_test(model_is_directory EXPECT 4 STDERR "不是常规文件"
     ARGS --model ${CMAKE_CURRENT_BINARY_DIR}/fixtures --steps 10 --dry-run)
+terra_add_cli_test(invalid_mjcf EXPECT 4 STDERR "MJCF 加载失败"
+    ARGS --model ${_terra_placeholder_model} --steps 10 --dry-run)
 terra_add_cli_test(dry_run_steps EXPECT 0
-    STDOUT "^[{].type.:.config.,.*,.steps.:5000,.sample_every.:10,.dry_run.:true}\n$"
-    ARGS --model ${_terra_placeholder_model} --steps 5000 --sample-every=10 --dry-run)
+    STDOUT "^[{].type.:.config.,.*,.steps.:5000,.timestep.:0.001,.total_steps.:5000,.sample_every.:10,.dry_run.:true}\n$"
+    ARGS --model ${_terra_cube_model} --steps 5000 --sample-every=10 --dry-run)
 terra_add_cli_test(dry_run_duration EXPECT 0
-    STDOUT "^[{].type.:.config.,.*,.duration.:5,.sample_every.:1,.dry_run.:true}\n$"
-    ARGS --dry-run --duration=5 --model=${_terra_placeholder_model})
-terra_add_cli_test(run_not_available EXPECT 3 STDERR "尚未接入"
-    ARGS --model ${_terra_placeholder_model} --steps 10)
+    STDOUT "^[{].type.:.config.,.*,.duration.:5,.timestep.:0.001,.total_steps.:5000,.sample_every.:1,.dry_run.:true}\n$"
+    ARGS --dry-run --duration=5 --model=${_terra_cube_model})
+terra_add_cli_test(run_not_available EXPECT 3 STDERR "步进尚未接入"
+    ARGS --model ${_terra_cube_model} --steps 10)
 
 add_test(NAME headless.version COMMAND terra_headless --version)
 set_tests_properties(headless.version PROPERTIES
@@ -68,7 +72,7 @@ set_tests_properties(headless.version PROPERTIES
 # 这只证明入口不需要显示服务；二进制依赖由下面的 headless.no_graphics_libs 检查。
 terra_add_cli_test(no_display EXPECT 0 NO_DISPLAY ARGS --version)
 terra_add_cli_test(no_display_dry_run EXPECT 0 NO_DISPLAY STDOUT "dry_run.:true"
-    ARGS --model ${_terra_placeholder_model} --steps 1 --dry-run)
+    ARGS --model ${_terra_cube_model} --steps 1 --dry-run)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME headless.no_graphics_libs
@@ -96,3 +100,14 @@ add_test(NAME physics.mujoco_backend_info COMMAND test_mujoco_backend_info)
 add_test(NAME boundary.no_mujoco_in_public_headers
     COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
             -P "${PROJECT_SOURCE_DIR}/cmake/TerraCheckNoMuJoCoInPublicHeaders.cmake")
+
+# MJCF 加载与初始化（M0-04）。在工作目录中生成临时模型文件；也检查不会留下 MUJOCO_LOG.TXT。
+add_executable(test_mujoco_world physics/test_mujoco_world.cpp)
+target_link_libraries(test_mujoco_world PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_mujoco_world PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests"
+    TERRA_TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/work/mujoco_world")
+terra_configure_target(test_mujoco_world)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/work")
+add_test(NAME physics.mujoco_world COMMAND test_mujoco_world
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/work")

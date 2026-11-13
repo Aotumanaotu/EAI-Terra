@@ -1,0 +1,48 @@
+<!--
+  M0 主物理夹具：立方体自由落体、触地并稳定（开发计划 4.1 节）。
+  修改任何参数都须同步更新开发计划中的基准，并重新验证容差。
+
+  几何与质量：无限水平地面（表面 Z=0）；立方体边长 0.2 m、质量 1 kg，
+             body 原点、质心与几何中心重合。
+  初态：      中心 (0, 0, 1) m，单位姿态，零速度；一个具名自由关节。
+  环境：      重力 (0, 0, -9.81)，无外力、无执行器、无空气阻力。
+  数值：      固定步长 0.001 s，Euler 积分；求解器与接触参数全部显式写出，不依赖默认值。
+-->
+<mujoco model="falling_cube">
+  <compiler angle="radian" inertiafromgeom="true" autolimits="true"/>
+
+  <option timestep="0.001"
+          gravity="0 0 -9.81"
+          wind="0 0 0"
+          density="0"
+          viscosity="0"
+          integrator="Euler"
+          cone="pyramidal"
+          jacobian="dense"
+          solver="Newton"
+          iterations="100"
+          tolerance="1e-10"
+          ls_iterations="50"
+          ls_tolerance="0.01"
+          noslip_iterations="0"
+          impratio="1"/>
+
+  <default>
+    <!-- 接触参数显式写出（数值为 MuJoCo 文档中的默认值）。margin/gap 为 0：只有实际穿透才产生接触。 -->
+    <geom condim="3"
+          friction="1 0.005 0.0001"
+          solref="0.02 1"
+          solimp="0.9 0.95 0.001 0.5 2"
+          margin="0"
+          gap="0"/>
+  </default>
+
+  <worldbody>
+    <geom name="ground" type="plane" size="0 0 1" pos="0 0 0"/>
+
+    <body name="cube" pos="0 0 1" quat="1 0 0 0">
+      <freejoint name="cube_free"/>
+      <geom name="cube_geom" type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

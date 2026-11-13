@@ -42,14 +42,22 @@ struct ParseResult {
 // --help / --version 出现在任意位置时优先处理，其余参数不再校验。
 ParseResult parseArguments(int argc, const char* const* argv);
 
-// 检查模型文件存在、是常规文件且可读。返回空字符串表示通过，否则为错误说明。
-// 只检查文件本身，不解析 MJCF（M0-04 接入）。
-std::string checkModelFile(const std::string& path);
-
 std::string usageText();
 
+// 加载模型后才能确定的运行参数。
+struct ResolvedRun {
+    std::string modelPath;     // 解析后的模型文件绝对路径
+    double timestep = 0.0;     // 模型固定步长（秒）
+    std::uint64_t totalSteps = 0;
+};
+
+// 把仿真时长换算为步数：运行到仿真时间首次 >= duration 为止。
+// duration/timestep 与整数的相对误差在 1e-9 以内时视为整数，避免 5.0/0.001 因浮点误差得到 5001 步。
+// 结果超出范围或输入无效时返回空。
+std::optional<std::uint64_t> stepsForDuration(double durationSeconds, double timestep);
+
 // 运行配置的 JSON 表示（单行，不含换行符），type 为 "config"。
-std::string configToJson(const RunOptions& options, std::string_view resolvedModelPath);
+std::string configToJson(const RunOptions& options, const ResolvedRun& resolved);
 
 // JSON 字符串转义（不含两侧引号）。
 std::string jsonEscape(std::string_view text);

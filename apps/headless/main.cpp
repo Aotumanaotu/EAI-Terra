@@ -1,32 +1,38 @@
-// EAI Terra Headless 入口（M0-01 骨架）。
+// EAI Terra Headless 入口（M0-03）。
 //
-// 当前仅提供 --help / --version。模型路径、步数、输出采样等运行参数
-// 由 M0-03 接入；物理运行能力由 M0-04–06 接入。
+// 生命周期：解析参数 → 检查物理后端 → 检查模型文件 → 运行 → 释放。
+// 物理运行（加载 MJCF、固定步进、状态输出）由 M0-04–06 接入；在此之前只有 --dry-run
+// 能完整走通，实际运行以退出码 3 如实报告“尚未接入”。
 //
-// 输出约定：stdout 留给机器可读结果，诊断信息写 stderr。
-// 退出码：0 成功；2 命令行用法错误；3 物理后端不可用（如头文件与运行库版本不一致）。
+// 输出约定、退出码见 cli.hpp。本文件只使用 Terra 类型，不包含 MuJoCo 头文件。
 
 #include <cstdio>
-#include <string_view>
+#include <exception>
+#include <filesystem>
+#include <string>
+#include <system_error>
 
+#include "cli.hpp"
 #include "terra/core/build_info.hpp"
 #include "terra/physics/mujoco/backend_info.hpp"
 
 namespace {
 
-constexpr int kExitOk = 0;
-constexpr int kExitUsage = 2;
-constexpr int kExitBackend = 3;
+using namespace terra::headless;
 
-void printUsage(std::FILE* out) {
-    std::fputs(
-        "用法: terra_headless [--help] [--version]\n"
-        "\n"
-        "  -h, --help     显示本帮助\n"
-        "      --version  显示版本与构建信息\n"
-        "\n"
-        "仿真运行参数尚未接入（M0-03）。\n",
-        out);
+void diagnose(const std::string& message) {
+    std::fprintf(stderr, "terra_headless: %s\n", message.c_str());
+}
+
+// 物理后端可用性检查：头文件与运行库版本必须一致。
+bool backendUsable() {
+    const terra::physics::mujoco::BackendInfo backend = terra::physics::mujoco::backendInfo();
+    if (!backend.versionsMatch()) {
+        diagnose("MuJoCo 头文件版本 " + std::to_string(backend.headerVersion) + " 与运行库版本 " +
+                 std::to_string(backend.libraryVersion) + " 不一致");
+        return false;
+    }
+    return true;
 }
 
 int printVersion() {
@@ -42,33 +48,62 @@ int printVersion() {
                 static_cast<int>(backend.name.size()), backend.name.data(),
                 static_cast<int>(backend.libraryVersionString.size()),
                 backend.libraryVersionString.data());
-    if (!backend.versionsMatch()) {
-        std::fprintf(stderr,
-                     "terra_headless: MuJoCo 头文件版本 %d 与运行库版本 %d 不一致\n",
-                     backend.headerVersion, backend.libraryVersion);
-        return kExitBackend;
+    return backendUsable() ? kExitOk : kExitUnavailable;
+}
+
+std::string resolvePath(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(path, ec);
+    return ec ? path : resolved.string();
+}
+
+int run(const RunOptions& options) {
+    if (!backendUsable()) {
+        return kExitUnavailable;
     }
-    return kExitOk;
+    if (const std::string error = checkModelFile(options.modelPath); !error.empty()) {
+        diagnose(error);
+        return kExitModel;
+    }
+
+    if (options.dryRun) {
+        std::printf("%s\n", configToJson(options, resolvePath(options.modelPath)).c_str());
+        return std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
+    }
+
+    diagnose("物理运行尚未接入（M0-04–06）；可使用 --dry-run 校验参数");
+    return kExitUnavailable;
+}
+
+int mainImpl(int argc, char** argv) {
+    const ParseResult parsed = parseArguments(argc, argv);
+    if (!parsed.ok()) {
+        diagnose(parsed.error);
+        std::fprintf(stderr, "\n%s", usageText().c_str());
+        return kExitUsage;
+    }
+
+    switch (parsed.command) {
+        case Command::Help:
+            std::fputs(usageText().c_str(), stdout);
+            return kExitOk;
+        case Command::Version:
+            return printVersion();
+        case Command::Run:
+            return run(parsed.options);
+    }
+    return kExitInternal;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) {
-        printUsage(argc == 1 ? stdout : stderr);
-        return argc == 1 ? kExitOk : kExitUsage;
+    try {
+        return mainImpl(argc, argv);
+    } catch (const std::exception& e) {
+        diagnose(std::string{"内部错误："} + e.what());
+    } catch (...) {
+        diagnose("内部错误：未知异常");
     }
-
-    const std::string_view arg{argv[1]};
-    if (arg == "-h" || arg == "--help") {
-        printUsage(stdout);
-        return kExitOk;
-    }
-    if (arg == "--version") {
-        return printVersion();
-    }
-
-    std::fprintf(stderr, "terra_headless: 未知参数 '%s'\n\n", argv[1]);
-    printUsage(stderr);
-    return kExitUsage;
+    return kExitInternal;
 }

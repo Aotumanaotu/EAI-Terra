@@ -95,7 +95,7 @@ cmake/TerraMuJoCo.cmake   Terra 配置时读取 mujoco.lock，核对 mjVERSION_H
 | 项目 | 结果 |
 | --- | --- |
 | `fetch.sh` | 下载约 74 MB，sha256 与 `mujoco.lock` 一致，即两台机器独立下载的校验值相同 |
-| MuJoCo 配置 | AVX 检测通过；FetchContent 按固定 commit 拉取 lodepng、qhull、tinyxml2、tinyobjloader、libccd、miniz（日志中各 commit 与 1.1 节一致）；qhull 与 libccd 应用了 MuJoCo 自带的补丁。MarchingCubeCpp 通过自定义下载命令获取，日志中未见，**待确认** |
+| MuJoCo 配置 | AVX 检测通过；FetchContent 按固定 commit 拉取 lodepng、qhull、tinyxml2、tinyobjloader、libccd、miniz（日志中各 commit 与 1.1 节一致）；qhull 与 libccd 应用了 MuJoCo 自带的补丁。MarchingCubeCpp 通过自定义下载命令获取，日志中不显示；`ls third_party/mujoco/deps` 确认 `marchingcubecpp-src` 存在，**7 个依赖均已获取** |
 | MuJoCo 构建 | 131 个构建步骤全部成功；`-Werror` 未触发失败。miniz 有 `-Wunused-function` 警告（第三方依赖，不属于 `-Werror` 的作用范围）；LTO 串行编译 104 个 LTRANS 任务（只是提示） |
 | 安装 | `lib/libmujoco.so.4.0.1`、`include/mujoco/*.h`、`lib/cmake/mujoco/mujocoTargets*.cmake`，以及附带的 `share/mujoco/model` |
 | Terra 配置 | `-- MuJoCo 4.0.1: …/third_party/mujoco/install`，版本核对通过 |
@@ -114,7 +114,7 @@ cmake/TerraMuJoCo.cmake   Terra 配置时读取 mujoco.lock，核对 mjVERSION_H
 | 应用公共头不泄露 MuJoCo 类型 | 满足 | `boundary.no_mujoco_in_public_headers`；生成的编译命令中只有适配层和探针带 MuJoCo 头文件路径 |
 | 交付物：依赖导入配置、版本兼容报告、锁定记录、私有后端骨架 | 满足（锁定记录为候选状态） | `cmake/TerraMuJoCo.cmake`、本报告、`mujoco.lock`、`terra_physics_mujoco` |
 
-**尚缺：** 评审确认；MarchingCubeCpp 是否已拉取（`ls third_party/mujoco/deps` 可查）。版本锁定按第 5 节在后续任务中完成。
+**尚缺：** 评审确认。版本锁定按第 5 节在后续任务中完成。
 
 ## 5. 锁定条件
 

@@ -1,0 +1,112 @@
+// 界面文本与字体测试（M1-13，D-028、D-029）。不需要显示。
+//   - 中英两张表覆盖全部 TextId，没有空字符串；语言切换即时生效
+//   - 字体文件存在、大小与生成记录一致
+//   - 界面用到的每一个字符（两种语言全部文本）在字体中都有字形：用 stb_truetype 查 cmap
+
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <vector>
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#define STBTT_STATIC
+#include "imstb_truetype.h"
+
+#include "terra/ui/text.hpp"
+
+#ifndef TERRA_ASSETS_DIR
+#error "需要 TERRA_ASSETS_DIR"
+#endif
+
+namespace {
+
+namespace ui = terra::ui;
+
+int failures = 0;
+
+void check(bool condition, const std::string& what) {
+    if (!condition) {
+        std::fprintf(stderr, "FAILED: %s\n", what.c_str());
+        ++failures;
+    }
+}
+
+std::vector<unsigned char> readFile(const std::string& path) {
+    std::ifstream in{path, std::ios::binary};
+    return std::vector<unsigned char>{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// UTF-8 → 码点（输入来自本项目的文本目录，假定合法）。
+std::vector<char32_t> decode(const char* s) {
+    std::vector<char32_t> out;
+    const auto* p = reinterpret_cast<const unsigned char*>(s);
+    while (*p != 0) {
+        char32_t c = *p;
+        int extra = 0;
+        if (c >= 0xF0) { c &= 0x07; extra = 3; }
+        else if (c >= 0xE0) { c &= 0x0F; extra = 2; }
+        else if (c >= 0xC0) { c &= 0x1F; extra = 1; }
+        ++p;
+        for (int i = 0; i < extra && *p != 0; ++i, ++p) c = (c << 6) | static_cast<char32_t>(*p & 0x3Fu);
+        out.push_back(c);
+    }
+    return out;
+}
+
+void testCatalog() {
+    for (const ui::Language lang : {ui::Language::Chinese, ui::Language::English}) {
+        for (int i = 0; i < ui::kTextCount; ++i) {
+            const char* t = ui::text(static_cast<ui::TextId>(i), lang);
+            check(t != nullptr && t[0] != '\0', std::string{ui::languageName(lang)} + " 文本 " + std::to_string(i) + " 为空");
+        }
+    }
+    check(std::string{ui::text(ui::TextId::Count, ui::Language::Chinese)}.empty(), "越界 id 返回空字符串");
+    ui::setLanguage(ui::Language::English);
+    check(std::string{ui::tr(ui::TextId::MenuSettings)} == "Settings" && ui::language() == ui::Language::English, "切换为英文");
+    ui::setLanguage(ui::Language::Chinese);
+    check(std::string{ui::tr(ui::TextId::MenuSettings)} == "设置", "切换回中文");
+    check(std::string{ui::languageName(ui::Language::Chinese)} == "中文" &&
+              std::string{ui::languageName(ui::Language::English)} == "English",
+          "语言名称");
+}
+
+void testFont(const char* file, std::size_t expectedBytes) {
+    const std::string path = std::string{TERRA_ASSETS_DIR} + "/fonts/" + file;
+    std::vector<unsigned char> data = readFile(path);
+    check(data.size() == expectedBytes,
+          std::string{file} + " 大小 " + std::to_string(data.size()) + " 与生成记录 " + std::to_string(expectedBytes) + " 一致");
+    if (data.empty()) return;
+    stbtt_fontinfo info;
+    if (!stbtt_InitFont(&info, data.data(), stbtt_GetFontOffsetForIndex(data.data(), 0))) {
+        check(false, std::string{file} + " 能被 stb_truetype 解析");
+        return;
+    }
+    int checked = 0;
+    std::string missing;
+    for (const ui::Language lang : {ui::Language::Chinese, ui::Language::English}) {
+        for (int i = 0; i < ui::kTextCount; ++i) {
+            for (const char32_t c : decode(ui::text(static_cast<ui::TextId>(i), lang))) {
+                if (c == U'\n') continue;
+                ++checked;
+                if (stbtt_FindGlyphIndex(&info, static_cast<int>(c)) == 0) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), " U+%04X", static_cast<unsigned>(c));
+                    missing += buf;
+                }
+            }
+        }
+    }
+    std::printf("INFO %s：%zu 字节，检查了 %d 个字符\n", file, data.size(), checked);
+    check(missing.empty(), std::string{file} + " 缺少字形：" + missing);
+}
+
+}  // namespace
+
+int main() {
+    testCatalog();
+    testFont("NotoSansSC-Regular-Subset.otf", 1956920);
+    testFont("NotoSansSC-Bold-Subset.otf", 1993812);
+    if (failures == 0) std::printf("all passed\n");
+    return failures == 0 ? 0 : 1;
+}

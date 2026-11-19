@@ -70,6 +70,8 @@ public:
     void clear(Color color, bool clearDepth = true);  // 清除当前绑定的帧缓冲
     void drawTriangles(int firstVertex, int vertexCount);  // 使用当前绑定的程序与顶点数组
     void drawLines(int firstVertex, int vertexCount);      // 每两个顶点一条线段（M1-07 起，网格与坐标轴）
+    // 从当前绑定的读帧缓冲（默认帧缓冲时为后缓冲）读回 RGBA8，行序自下而上（M1-13 起，供自检使用）。
+    std::vector<std::uint8_t> readPixels(int x, int y, int width, int height) const;
 
 private:
     struct Impl;

@@ -1,0 +1,73 @@
+#pragma once
+
+// 界面文本目录（M1-13，D-029）：中文与英文两种语言，按 TextId 查找；界面代码不写死字符串。
+// 当前语言是进程级状态，切换即时生效。所有字符串为 UTF-8，生命周期为整个进程。
+
+namespace terra::ui {
+
+enum class Language { Chinese, English };
+
+enum class TextId : int {
+    AppName,
+    MenuFile,
+    MenuFileQuit,
+    MenuView,
+    MenuViewFullscreen,
+    MenuViewResetCamera,
+    MenuWindow,
+    MenuSettings,
+    MenuSettingsLanguage,
+    MenuHelp,
+    MenuHelpControls,
+    MenuHelpAbout,
+    PanelViewport,
+    PanelOutliner,
+    PanelDetails,
+    PanelLog,
+    PanelStats,
+    OutlinerScene,
+    OutlinerGround,
+    OutlinerAxes,
+    OutlinerCube,
+    OutlinerHint,
+    DetailsCamera,
+    DetailsPosition,
+    DetailsYaw,
+    DetailsPitch,
+    DetailsFov,
+    DetailsHint,
+    LogStarted,
+    LogLanguageChanged,
+    LogDisplayModeChanged,
+    StatsFrameRate,
+    StatsFrameTime,
+    StatsRenderer,
+    StatsOpenGl,
+    StatsDisplayMode,
+    StatsViewportSize,
+    StatsContentScale,
+    StatusCamera,
+    DisplayWindowed,
+    DisplayBorderless,
+    DisplayExclusive,
+    ControlsTitle,
+    ControlsBody,
+    AboutTitle,
+    AboutBody,
+    Close,
+    Count,
+};
+
+constexpr int kTextCount = static_cast<int>(TextId::Count);
+
+// 当前语言下的文本。
+const char* tr(TextId id) noexcept;
+// 指定语言下的文本；id 越界时返回空字符串。
+const char* text(TextId id, Language language) noexcept;
+
+void setLanguage(Language language) noexcept;
+Language language() noexcept;
+// 语言自身的名称（总是用该语言书写）："中文" / "English"。
+const char* languageName(Language language) noexcept;
+
+}  // namespace terra::ui

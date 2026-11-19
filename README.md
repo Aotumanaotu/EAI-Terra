@@ -6,7 +6,7 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0 已完成，M1 进行中（Pre-Alpha）。M1-01～M1-04、M1-06、M1-07、M1-12 已完成基线验证、待验收：平台、输入、OpenGL 渲染核心、相机控制与显示模式均已实现；M1-13 编辑器界面设计待评审、未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+> 项目状态：M0 已完成，M1 进行中（Pre-Alpha）。M1-01～M1-04、M1-06、M1-07、M1-12、M1-13 已完成基线验证、待验收：平台、输入、OpenGL 渲染核心、相机控制、显示模式与中英文编辑器界面均已实现；材质、资产加载和设置持久化尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 </div>
 
@@ -196,7 +196,7 @@ bash scripts/verify/m0_acceptance.sh
 
 **M0（基础工程与 MuJoCo Headless 物理集成）已于 2026-11-19 完成验收**，下一阶段为 M1。已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；立方体主场景与辅助用例在基线机器上通过，数值容差已冻结。无图形界面，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
-近期第一优先级：评审 M1-01～M1-04、M1-06、M1-07、M1-12 及 M1-13 界面设计；设计通过后实现编辑器外壳，再推进 M1-14 设置持久化。
+近期第一优先级：评审 M1-01～M1-04、M1-06、M1-07、M1-12、M1-13；随后实现 M1-14 设置与持久化，再推进网格材质和资产加载。
 
 ### 规划文档入口
 

@@ -148,4 +148,13 @@ void RenderContext::drawLines(int firstVertex, int vertexCount) {
     glDrawArrays(GL_LINES, firstVertex, vertexCount);
 }
 
+std::vector<std::uint8_t> RenderContext::readPixels(int x, int y, int width, int height) const {
+    std::vector<std::uint8_t> pixels;
+    if (width <= 0 || height <= 0) return pixels;
+    pixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadnPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(pixels.size()), pixels.data());
+    return pixels;
+}
+
 }  // namespace terra::render

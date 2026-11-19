@@ -13,6 +13,7 @@
 # M1-06：渲染核心（仅渲染开启，graphics 标签）：离屏绘制与像素回读、深度测试、着色器错误定位、调试输出、资源 RAII。
 # M1-07：相机与视口相机控制器（仅渲染开启；自动化部分不需要显示）。
 # M1-12：显示模式（graphics.platform_display，仅渲染开启，Xvfb）。
+# M1-13：界面输入与文本（ui.input_bridge、ui.text，不需要显示）；查看器自检（graphics.viewer_selftest，Xvfb）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -277,4 +278,21 @@ if(TERRA_BUILD_RENDER)
     target_link_libraries(test_view PRIVATE terra::view terra::render terra::platform_glfw)
     terra_configure_target(test_view)
     add_test(NAME view.camera COMMAND test_view)
+
+    # 界面（M1-13）：输入桥、键位映射、界面与相机抢输入；文本目录与字体字形覆盖。不需要显示。
+    add_executable(test_ui_input ui/test_ui_input.cpp)
+    target_link_libraries(test_ui_input PRIVATE terra::ui terra::view)
+    terra_configure_target(test_ui_input)
+    add_test(NAME ui.input_bridge COMMAND test_ui_input)
+
+    add_executable(test_ui_text ui/test_ui_text.cpp)
+    target_link_libraries(test_ui_text PRIVATE terra::ui)
+    target_compile_definitions(test_ui_text PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+    terra_configure_target(test_ui_text)
+    add_test(NAME ui.text COMMAND test_ui_text)
+
+    # 查看器自检（M1-13）：在 Xvfb + llvmpipe 中运行 40 帧完整外壳，中途切换为英文，检查字体、GL 错误与像素。
+    add_test(NAME graphics.viewer_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe)
+    set_tests_properties(graphics.viewer_selftest PROPERTIES LABELS graphics)
 endif()

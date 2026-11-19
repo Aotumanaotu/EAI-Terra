@@ -3,6 +3,7 @@
 #   GLFW/   只允许在 engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
 #   glad/、GL/、KHR/  只允许在 engine/render/、engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
 #   X11/、wayland-、SDL、vulkan/  engine/ 与 apps/ 中一律不允许（将来的适配器另行登记）
+#   imgui   只允许在 engine/ui/、apps/viewer/ 与 tests/（M1-13，D-024：ImGui 是应用层界面 API）
 # 另外，engine/input/ 与 engine/platform/include/（接口层）不得包含任何上述头文件。
 if(NOT DEFINED SOURCE_DIR)
     message(FATAL_ERROR "需要 -DSOURCE_DIR")
@@ -13,6 +14,7 @@ file(GLOB_RECURSE files
 
 set(glfw_allowed "/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(gl_allowed "/engine/render/|/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
+set(imgui_allowed "/engine/ui/|/apps/viewer/|/tests/")
 
 set(violations "")
 set(checked 0)
@@ -30,6 +32,9 @@ foreach(f IN LISTS files)
         endif()
         if(line MATCHES "[<\"](glad/|GL/|KHR/)" AND NOT rel MATCHES "${gl_allowed}")
             list(APPEND violations "${rel}: ${line}（OpenGL 头文件只能出现在渲染与平台实现中）")
+        endif()
+        if(line MATCHES "[<\"](imgui|imstb_)" AND NOT rel MATCHES "${imgui_allowed}")
+            list(APPEND violations "${rel}: ${line}（ImGui 只能在界面模块与应用中使用）")
         endif()
         if(line MATCHES "[<\"](X11/|wayland-|SDL|vulkan/)" AND rel MATCHES "^/(engine|apps)/")
             list(APPEND violations "${rel}: ${line}（窗口系统或其他图形 API 头文件不允许直接使用）")

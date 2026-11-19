@@ -89,6 +89,7 @@ public:
 
     bool closeRequested() const override { return glfwWindowShouldClose(handle_) == GLFW_TRUE; }
     void requestClose() override { glfwSetWindowShouldClose(handle_, GLFW_TRUE); }
+    void setTitle(const std::string& title) override { glfwSetWindowTitle(handle_, title.c_str()); }
 
     Extent windowSize() const override {
         Extent e;

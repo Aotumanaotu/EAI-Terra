@@ -80,12 +80,14 @@ run_preset() {  # run_preset <preset> <名称> [额外配置参数...]
     if cmake --preset "$preset" "$@" >"$log" 2>&1 && cmake --build --preset "$preset" -j "$jobs" >>"$log" 2>&1; then
         if grep -q "warning:" "$log"; then
             record "$label 构建" "有编译警告（见 $log）" 0
+            grep -A3 "warning:" "$log" | head -20 | sed 's/^/    /'
         fi
         ctest --preset "$preset" >>"$log" 2>&1
         local rc=$?
         record "$label 测试" "$(ctest_result "$log")" "$(ok $rc)"
     else
         record "$label 构建" "失败（见 $log）" 0
+        grep -E -A3 "error:|warning:" "$log" | head -20 | sed 's/^/    /'
     fi
 }
 

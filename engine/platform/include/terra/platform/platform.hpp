@@ -54,6 +54,7 @@ public:
 
     virtual bool closeRequested() const = 0;
     virtual void requestClose() = 0;
+    virtual void setTitle(const std::string& title) = 0;  // UTF-8
     virtual Extent windowSize() const = 0;       // 屏幕坐标
     virtual Extent framebufferSize() const = 0;  // 像素，用于 glViewport
     virtual float contentScale() const = 0;      // 显示缩放（高 DPI 时 > 1）

@@ -39,6 +39,8 @@ endif()
 #   terra_input           engine/input                    输入抽象（M1-04），只依赖标准库，总是构建
 #   terra_platform        engine/platform                 窗口与上下文接口（M1-03），仅 TERRA_BUILD_RENDER=ON
 #   terra_platform_glfw   engine/platform/backends/glfw   GLFW 实现与键鼠适配器，PRIVATE 链接 GLFW
+#   terra_render          engine/render                   渲染核心（M1-06），PRIVATE 链接 glad，不依赖平台与物理
+#   terra_view            engine/view                     相机与视口相机控制器（M1-07），只消费输入动作，PRIVATE 使用 GLM
 #   terra_headless        apps/headless                   命令行入口，只链接 Terra 目标
 #   terra_bench           apps/bench                      性能基线程序（M0-09），只链接 Terra 目标
 add_subdirectory(engine/core)
@@ -46,6 +48,8 @@ add_subdirectory(engine/physics)
 add_subdirectory(engine/input)
 if(TERRA_BUILD_RENDER)
     add_subdirectory(engine/platform)
+    add_subdirectory(engine/render)
+    add_subdirectory(engine/view)
 endif()
 add_subdirectory(apps/headless)
 add_subdirectory(apps/bench)

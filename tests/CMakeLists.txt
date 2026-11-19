@@ -10,6 +10,8 @@
 # M0-09：性能基线程序冒烟测试。
 # M1-02：渲染依赖探针（仅 TERRA_BUILD_RENDER=ON，graphics 标签，Xvfb + llvmpipe）。
 # M1-03/04：输入系统（总是运行）、渲染隔离边界检查（总是运行）；GLFW 翻译表与平台窗口（仅渲染开启）。
+# M1-06：渲染核心（仅渲染开启，graphics 标签）：离屏绘制与像素回读、深度测试、着色器错误定位、调试输出、资源 RAII。
+# M1-07：相机与两种相机控制器（仅渲染开启；自动化部分不需要显示）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -259,4 +261,17 @@ if(TERRA_BUILD_RENDER)
         COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
                 $<TARGET_FILE:test_platform_window> no-display)
     set_tests_properties(graphics.platform_window graphics.platform_no_display PROPERTIES LABELS graphics)
+
+    # 渲染核心（M1-06）。--show 模式供桌面展示，不在 CTest 中运行。
+    add_executable(test_render_core render/test_render_core.cpp)
+    target_link_libraries(test_render_core PRIVATE terra::render terra::platform_glfw terra::glad)
+    terra_configure_target(test_render_core)
+    add_test(NAME graphics.render_core COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_core> llvmpipe)
+    set_tests_properties(graphics.render_core PROPERTIES LABELS graphics)
+
+    # 相机与相机控制器（M1-07）。自动化部分只用虚拟设备与数学检查，不需要显示；--show 模式供桌面交互展示。
+    add_executable(test_view view/test_view.cpp)
+    target_link_libraries(test_view PRIVATE terra::view terra::render terra::platform_glfw)
+    terra_configure_target(test_view)
+    add_test(NAME view.camera COMMAND test_view)
 endif()

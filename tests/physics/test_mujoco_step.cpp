@@ -1,4 +1,4 @@
-// MujocoWorld 固定步进与 reset 测试（M0-05）。
+// MuJoCo 后端（经 PhysicsWorld 接口）固定步进与 reset 测试（M0-05）。
 // 只通过 Terra 公共头访问后端，本文件不包含 MuJoCo 头文件。
 //
 // 数值门槛来自开发计划 4.2 节的候选容差（尚未冻结，M0-08 正式评审）。
@@ -14,7 +14,8 @@
 #include <vector>
 
 #include "terra/core/run_schedule.hpp"
-#include "terra/physics/mujoco/mujoco_world.hpp"
+#include "terra/physics/mujoco/mujoco_backend.hpp"
+#include "terra/physics/physics_world.hpp"
 
 #ifndef TERRA_TEST_ASSETS_DIR
 #error "需要 TERRA_TEST_ASSETS_DIR"
@@ -25,8 +26,8 @@ namespace {
 using terra::data::EntityId;
 using terra::data::ModelSource;
 using terra::data::Pose;
-using terra::physics::mujoco::MujocoWorld;
-using terra::physics::mujoco::SimulationErrorKind;
+using terra::physics::PhysicsWorld;
+using terra::physics::SimulationErrorKind;
 
 constexpr double kGravity = 9.81;
 const std::string kAssets = TERRA_TEST_ASSETS_DIR;
@@ -40,22 +41,22 @@ void check(bool condition, const std::string& what) {
     }
 }
 
-std::unique_ptr<MujocoWorld> loadWorld(const std::string& file) {
-    auto r = MujocoWorld::load(ModelSource{kAssets + "/" + file});
+std::unique_ptr<PhysicsWorld> loadWorld(const std::string& file) {
+    auto r = terra::physics::mujoco::loadWorld(ModelSource{kAssets + "/" + file});
     if (!r.world) {
         check(false, "加载 " + file + " 失败：" + (r.error ? r.error->message : ""));
     }
     return std::move(r.world);
 }
 
-Pose cubePose(const MujocoWorld& world) {
-    const auto pose = world.entityPose(EntityId{1});
-    check(pose.has_value(), "cube 有位姿");
-    return pose.value_or(Pose{});
+Pose cubePose(const PhysicsWorld& world) {
+    const auto snap = world.snapshot();
+    check(!snap->entities.empty() && snap->entities[0].id == EntityId{1}, "快照中有 cube");
+    return snap->entities.empty() ? Pose{} : snap->entities[0].pose;
 }
 
 // 连续推进 n 步；出错时记录失败并返回 false。
-bool stepN(MujocoWorld& world, std::uint64_t n) {
+bool stepN(PhysicsWorld& world, std::uint64_t n) {
     for (std::uint64_t i = 0; i < n; ++i) {
         if (const auto error = world.step()) {
             check(false, "第 " + std::to_string(error->step) + " 步出错：" + error->message);
@@ -194,7 +195,7 @@ void testObservationDoesNotAffectSimulation() {
 void testFaults() {
     // 状态发散：第 5 步 |qpos| > 1e10，由 Terra 检测（MuJoCo 要到下一步开始时才会发现）
     if (auto world = loadWorld("fault_runaway.xml")) {
-        std::optional<terra::physics::mujoco::SimulationError> error;
+        std::optional<terra::physics::SimulationError> error;
         for (int i = 0; i < 20 && !error; ++i) {
             error = world->step();
         }

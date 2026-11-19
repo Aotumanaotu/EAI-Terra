@@ -7,6 +7,7 @@ namespace terra::data {
 
 // Terra 运行时标识。值 0 表示无效；有效值由 Terra 分配，不是任何物理后端的内部索引。
 // M0：同一次加载内保持稳定；不保证跨进程或重新加载后数值相同。
+// ID 不携带世界信息，需配合 ModelDescription::worldInstance 判断所属世界。
 template <typename Tag>
 struct Id {
     std::uint32_t value = 0;
@@ -20,6 +21,7 @@ struct Id {
 
 using EntityId = Id<struct EntityTag>;
 using JointId = Id<struct JointTag>;
+using ActuatorId = Id<struct ActuatorTag>;
 
 }  // namespace terra::data
 

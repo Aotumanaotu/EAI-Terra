@@ -277,7 +277,12 @@ const char* jointTypeName(terra::data::JointType type) {
 
 std::string modelToJson(const terra::data::ModelDescription& model) {
     const auto& st = model.settings;
-    std::string json = "{\"type\":\"model\",\"timestep\":" + formatNumber(model.timestep) +
+    std::string json = "{\"type\":\"model\",\"contract_revision\":" +
+                       std::to_string(terra::data::PhysicsSnapshot::kContractRevision) +
+                       ",\"conventions\":{\"units\":\"SI\",\"up_axis\":\"+z\",\"quaternion\":\"wxyz\","
+                       "\"entity_velocity\":\"entity_origin_world\",\"free_joint_angular_velocity\":\"body_local\","
+                       "\"ball_joint_angular_velocity\":\"child_local\",\"contact_entity_0\":\"world_static\"}" +
+                       ",\"timestep\":" + formatNumber(model.timestep) +
                        ",\"gravity\":" + vec3Json(st.gravity) + ",\"integrator\":" + quotedJson(st.integrator) +
                        ",\"solver\":" + quotedJson(st.solver) + ",\"iterations\":" + std::to_string(st.iterations) +
                        ",\"tolerance\":" + formatNumber(st.tolerance) + ",\"entities\":[";
@@ -296,24 +301,69 @@ std::string modelToJson(const terra::data::ModelDescription& model) {
                 ",\"nq\":" + std::to_string(j.configurationSize) + ",\"nv\":" + std::to_string(j.velocitySize) +
                 "}";
     }
+    json += "],\"actuators\":[";
+    for (std::size_t i = 0; i < model.actuators.size(); ++i) {
+        const auto& a = model.actuators[i];
+        json += (i ? "," : "");
+        json += "{\"id\":" + std::to_string(a.id.value) + ",\"name\":" + quotedJson(a.name) +
+                ",\"transmission\":\"" +
+                (a.transmission == terra::data::ActuatorTransmission::Joint ? "joint" : "other") +
+                "\",\"joint\":" + std::to_string(a.joint.value) + ",\"inputs\":[";
+        for (std::size_t k = 0; k < a.inputs.size(); ++k) {
+            const auto& in = a.inputs[k];
+            json += (k ? "," : "");
+            json += "{\"name\":" + quotedJson(in.name) + ",\"limited\":" + (in.limited ? "true" : "false");
+            if (in.limited) {
+                json += ",\"range\":[" + formatNumber(in.min) + "," + formatNumber(in.max) + "]";
+            }
+            json += "}";
+        }
+        json += "]}";
+    }
     json += "]}";
     return json;
 }
 
-std::string stateToJson(std::uint64_t runEpoch, std::uint64_t step, double time,
-                        const std::vector<EntitySample>& entities) {
-    std::string json = "{\"type\":\"state\",\"run_epoch\":" + std::to_string(runEpoch) +
-                       ",\"step\":" + std::to_string(step) + ",\"time\":" + formatNumber(time) +
-                       ",\"entities\":[";
-    for (std::size_t i = 0; i < entities.size(); ++i) {
-        const auto& e = entities[i];
+std::string stateToJson(const terra::data::PhysicsSnapshot& snapshot) {
+    std::string json = "{\"type\":\"state\",\"run_epoch\":" + std::to_string(snapshot.runEpoch) +
+                       ",\"step\":" + std::to_string(snapshot.stepIndex) +
+                       ",\"time\":" + formatNumber(snapshot.simulationTime) + ",\"entities\":[";
+    for (std::size_t i = 0; i < snapshot.entities.size(); ++i) {
+        const auto& e = snapshot.entities[i];
         const auto& q = e.pose.orientation;
         json += (i ? "," : "");
         json += "{\"id\":" + std::to_string(e.id.value) + ",\"position\":" + vec3Json(e.pose.position) +
                 ",\"orientation\":[" + formatNumber(q.w) + "," + formatNumber(q.x) + "," + formatNumber(q.y) + "," +
-                formatNumber(q.z) + "]}";
+                formatNumber(q.z) + "],\"linear_velocity\":" + vec3Json(e.linearVelocity) +
+                ",\"angular_velocity\":" + vec3Json(e.angularVelocity) + "}";
     }
-    json += "]}";
+    json += "],\"joints\":[";
+    for (std::size_t i = 0; i < snapshot.joints.size(); ++i) {
+        const auto& j = snapshot.joints[i];
+        json += (i ? "," : "");
+        json += "{\"id\":" + std::to_string(j.id.value) + ",\"position\":[";
+        for (int k = 0; k < j.positionSize; ++k) {
+            json += (k ? "," : "") + formatNumber(j.position[static_cast<std::size_t>(k)]);
+        }
+        json += "],\"velocity\":[";
+        for (int k = 0; k < j.velocitySize; ++k) {
+            json += (k ? "," : "") + formatNumber(j.velocity[static_cast<std::size_t>(k)]);
+        }
+        json += "]}";
+    }
+    const auto& c = snapshot.contacts;
+    json += "],\"contacts\":{\"candidates\":" + std::to_string(c.candidateCount) +
+            ",\"active\":" + std::to_string(c.activeCount) + ",\"pairs\":[";
+    for (std::size_t i = 0; i < c.pairs.size(); ++i) {
+        const auto& pr = c.pairs[i];
+        json += (i ? "," : "");
+        json += "{\"entities\":[" + std::to_string(pr.entityA.value) + "," + std::to_string(pr.entityB.value) +
+                "],\"points\":" + std::to_string(pr.pointCount) +
+                ",\"normal_force\":" + formatNumber(pr.normalForce) + "}";
+    }
+    json += "]},\"diagnostics\":{\"finite\":";
+    json += snapshot.diagnostics.finite ? "true" : "false";
+    json += ",\"solver_iterations\":" + std::to_string(snapshot.diagnostics.solverIterations) + "}}";
     return json;
 }
 

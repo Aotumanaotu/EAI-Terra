@@ -12,6 +12,7 @@
 #include "terra/data/geometry.hpp"
 #include "terra/data/ids.hpp"
 #include "terra/data/model_description.hpp"
+#include "terra/data/state.hpp"
 
 namespace terra::headless {
 
@@ -64,20 +65,15 @@ std::optional<std::uint64_t> stepsForDuration(double durationSeconds, double tim
 // 运行配置的 JSON 表示（单行，不含换行符），type 为 "config"。
 std::string configToJson(const RunOptions& options, const ResolvedRun& resolved);
 
-// ---- JSON Lines 输出记录（格式为初版，M0-06 确定正式状态格式）----
+// ---- JSON Lines 输出记录（M0-06 确定的格式，修订号见 model 记录的 contract_revision）----
 // 每条记录为单行 JSON 对象，不含换行符；实数以 %.17g 输出，可无损还原为 double。
 
-// type "model"：仿真配置与实体、关节清单。实体名称只在这里出现，state 记录只用 ID。
+// type "model"：仿真配置、单位与坐标约定、实体、关节与执行器清单。实体名称只在这里出现，state 记录只用 ID。
+// actuators 字段由 M0-07 加入，属于兼容的新增字段，contract_revision 不变。
 std::string modelToJson(const terra::data::ModelDescription& model);
 
-struct EntitySample {
-    terra::data::EntityId id;
-    terra::data::Pose pose;
-};
-
-// type "state"：一个观测时刻的状态。position 为 [x,y,z]，orientation 为 [w,x,y,z]。
-std::string stateToJson(std::uint64_t runEpoch, std::uint64_t step, double time,
-                        const std::vector<EntitySample>& entities);
+// type "state"：一个观测时刻的完整状态（实体位姿与速度、关节状态、接触摘要、诊断）。
+std::string stateToJson(const terra::data::PhysicsSnapshot& snapshot);
 
 // type "summary"：正常结束。
 std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time);

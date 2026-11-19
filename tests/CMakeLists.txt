@@ -4,6 +4,10 @@
 # M0-03：Headless 参数解析、校验、退出码、--dry-run 输出。
 # M0-04：MJCF 加载与初始化、错误分类、生命周期；Headless 接入模型加载。
 # M0-05：固定步进、reset、故障检测；Headless 实际运行与 JSON Lines 记录。
+# M0-06：状态快照（速度、关节、接触、诊断）、不可变性、立方体主基准中的速度与接触判定。
+# M0-07：后端无关接口、执行器描述与控制输入、错误语义、只依赖 Terra 类型的调用方。
+# M0-08：主场景正式判定与冻结容差、无重力、reset 再运行、生命周期、连续运行、后端致命错误。
+# M0-09：性能基线程序冒烟测试。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -76,6 +80,9 @@ terra_add_cli_test(run_fault_runaway EXPECT 5
     STDOUT "[{].type.:.error.,.kind.:.non_finite.,.run_epoch.:0,.step.:5,"
     STDERR "第 5 步出错"
     ARGS --model ${PROJECT_SOURCE_DIR}/assets/tests/fault_runaway.xml --steps 20)
+# 运行内存不足（M0-08）：MuJoCo 编译时试跑一步，栈溢出被编译器捕获，Terra 报告为模型错误。
+terra_add_cli_test(arena_too_small EXPECT 4 STDERR "MJCF 加载失败.*mj_stackAlloc"
+    ARGS --model ${PROJECT_SOURCE_DIR}/assets/tests/fault_arena_too_small.xml --steps 10 --dry-run)
 terra_add_cli_test(run_fault_auto_reset EXPECT 5
     STDOUT "[{].type.:.error.,.kind.:.auto_reset.,.run_epoch.:0,.step.:1,"
     ARGS --model ${PROJECT_SOURCE_DIR}/assets/tests/fault_bad_acceleration.xml --steps 20)
@@ -135,3 +142,70 @@ target_compile_definitions(test_mujoco_step PRIVATE
     TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
 terra_configure_target(test_mujoco_step)
 add_test(NAME physics.mujoco_step COMMAND test_mujoco_step)
+
+# 状态读取与快照（M0-06）
+add_executable(test_mujoco_state physics/test_mujoco_state.cpp)
+target_link_libraries(test_mujoco_state PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_mujoco_state PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests"
+    TERRA_TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/work/mujoco_state")
+terra_configure_target(test_mujoco_state)
+add_test(NAME physics.mujoco_state COMMAND test_mujoco_state)
+
+# 执行器描述与控制输入（M0-07）
+add_executable(test_physics_control physics/test_physics_control.cpp)
+target_link_libraries(test_physics_control PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_physics_control PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests"
+    TERRA_TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/work/physics_control")
+terra_configure_target(test_physics_control)
+add_test(NAME physics.control COMMAND test_physics_control)
+
+# 后端无关调用方（M0-07 ⑥）：调用方库只链接仅头文件的 terra::physics，没有 MuJoCo 头文件路径；
+# 能编译即证明调用方不需要 MuJoCo。测试程序再链接后端，用于创建世界。
+add_library(terra_test_physics_consumer STATIC physics/consumer/physics_consumer.cpp)
+target_include_directories(terra_test_physics_consumer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/physics/consumer")
+target_link_libraries(terra_test_physics_consumer PUBLIC terra::physics)
+terra_configure_target(terra_test_physics_consumer)
+
+add_executable(test_physics_consumer physics/test_physics_consumer.cpp)
+target_link_libraries(test_physics_consumer PRIVATE terra_test_physics_consumer terra::physics_mujoco)
+target_compile_definitions(test_physics_consumer PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_physics_consumer)
+add_test(NAME physics.consumer COMMAND test_physics_consumer)
+
+# 物理场景验证（M0-08）：主场景正式判定、无重力、reset 再运行、生命周期。门槛见 physics/m0_tolerances.hpp。
+add_executable(test_physics_scenarios physics/test_physics_scenarios.cpp)
+target_link_libraries(test_physics_scenarios PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_physics_scenarios PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_physics_scenarios)
+add_test(NAME physics.scenarios COMMAND test_physics_scenarios)
+
+# 连续运行 60 s 仿真时间（M0-08），记录内存走势。
+add_executable(test_physics_continuous physics/test_physics_continuous.cpp)
+target_link_libraries(test_physics_continuous PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_physics_continuous PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_physics_continuous)
+add_test(NAME physics.continuous COMMAND test_physics_continuous)
+
+# 后端不可恢复错误（M0-08）：独立子进程中触发 mju_error，判定退出码、stderr 与不写日志文件。
+# 与 test_mujoco_probe 一样直接链接 MuJoCo（后端测试）。
+add_executable(test_backend_fatal physics/test_backend_fatal.cpp)
+target_link_libraries(test_backend_fatal PRIVATE terra::physics_mujoco mujoco::mujoco)
+terra_configure_target(test_backend_fatal)
+add_test(NAME physics.backend_fatal
+    COMMAND "${CMAKE_COMMAND}" -DEXPECTED=1 -DCOMMAND=$<TARGET_FILE:test_backend_fatal>
+            "-DSTDERR_REGEX=terra fatal probe 42.*probe-atexit: no log file"
+            -P "${_terra_check_exit}"
+            "${PROJECT_SOURCE_DIR}/assets/tests/falling_cube.xml"
+            "${CMAKE_CURRENT_BINARY_DIR}/work/backend_fatal")
+
+# 性能基线程序冒烟测试（M0-09）：只确认能运行并输出 BENCH 记录；正式测量由验收脚本执行，不设门槛。
+add_test(NAME bench.smoke
+    COMMAND terra_bench --model "${PROJECT_SOURCE_DIR}/assets/tests/falling_cube.xml"
+            --steps 100 --repeat 1 --warmup 1 --sample-every 10)
+set_tests_properties(bench.smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION "BENCH mode=step .*BENCH mode=snapshot .*BENCH mode=jsonl ")

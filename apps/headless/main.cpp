@@ -1,8 +1,9 @@
 // EAI Terra Headless 入口。
 //
 // 生命周期：解析参数 → 检查物理后端 → 加载并初始化模型（M0-04）→ 固定步进运行（M0-05）→ 释放。
+// 世界通过后端无关的 PhysicsWorld 接口使用（M0-07）；不设置控制，执行器保持模型的中性值。
 // 按步数离线运行，不按墙钟 sleep 或追赶实时；输出采样不影响仿真。
-// 状态记录格式为初版，正式格式在 M0-06 确定。
+// 输出格式见 cli.hpp 与 M0-06 报告。
 //
 // 输出约定、退出码见 cli.hpp。本文件只使用 Terra 类型，不包含 MuJoCo 头文件。
 
@@ -15,7 +16,8 @@
 #include "terra/core/build_info.hpp"
 #include "terra/core/run_schedule.hpp"
 #include "terra/physics/mujoco/backend_info.hpp"
-#include "terra/physics/mujoco/mujoco_world.hpp"
+#include "terra/physics/mujoco/mujoco_backend.hpp"
+#include "terra/physics/physics_world.hpp"
 
 namespace {
 
@@ -52,14 +54,14 @@ int printVersion() {
     return backendUsable() ? kExitOk : kExitUnavailable;
 }
 
-namespace mj = terra::physics::mujoco;
+namespace physics = terra::physics;
 
-const char* errorKindName(mj::SimulationErrorKind kind) {
+const char* errorKindName(physics::SimulationErrorKind kind) {
     switch (kind) {
-        case mj::SimulationErrorKind::NonFinite: return "non_finite";
-        case mj::SimulationErrorKind::AutoReset: return "auto_reset";
-        case mj::SimulationErrorKind::SolverWarning: return "solver_warning";
-        case mj::SimulationErrorKind::Faulted: return "faulted";
+        case physics::SimulationErrorKind::NonFinite: return "non_finite";
+        case physics::SimulationErrorKind::AutoReset: return "auto_reset";
+        case physics::SimulationErrorKind::SolverWarning: return "solver_warning";
+        case physics::SimulationErrorKind::Faulted: return "faulted";
     }
     return "unknown";
 }
@@ -69,15 +71,8 @@ bool emit(const std::string& line) {
     return std::fputs(line.c_str(), stdout) >= 0 && std::fputc('\n', stdout) != EOF;
 }
 
-std::string sampleState(const mj::MujocoWorld& world) {
-    std::vector<EntitySample> samples;
-    samples.reserve(world.description().entities.size());
-    for (const auto& entity : world.description().entities) {
-        if (const auto pose = world.entityPose(entity.id)) {
-            samples.push_back({entity.id, *pose});
-        }
-    }
-    return stateToJson(world.runEpoch(), world.stepIndex(), world.simulationTime(), samples);
+std::string sampleState(const physics::PhysicsWorld& world) {
+    return stateToJson(*world.snapshot());
 }
 
 int run(const RunOptions& options) {
@@ -85,15 +80,16 @@ int run(const RunOptions& options) {
         return kExitUnavailable;
     }
 
-    mj::LoadResult loaded = mj::MujocoWorld::load(terra::data::ModelSource{options.modelPath});
+    // 唯一与具体后端相关的调用；之后只通过 PhysicsWorld 接口使用世界。
+    physics::LoadResult loaded = terra::physics::mujoco::loadWorld(terra::data::ModelSource{options.modelPath});
     for (const std::string& warning : loaded.warnings) {
         diagnose("模型警告：" + warning);
     }
     if (loaded.error) {
         diagnose(loaded.error->message);
-        return loaded.error->kind == mj::LoadErrorKind::Internal ? kExitInternal : kExitModel;
+        return loaded.error->kind == physics::LoadErrorKind::Internal ? kExitInternal : kExitModel;
     }
-    mj::MujocoWorld& world = *loaded.world;
+    physics::PhysicsWorld& world = *loaded.world;
 
     ResolvedRun resolved;
     resolved.modelPath = world.description().sourcePath;

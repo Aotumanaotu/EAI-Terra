@@ -28,13 +28,15 @@ include(TerraMuJoCo)
 
 # 目标边界（M0-01 评审结果，详见 docs/validation/M0-01-environment.md）：
 #   terra_core            engine/core                     最小公共类型与构建信息，不依赖任何物理或图形库
-#   terra_physics_mujoco  engine/physics/backends/mujoco  MuJoCo 私有适配层（M0-02），PRIVATE 链接 mujoco::mujoco
+#   terra_data            engine/core/data                数据契约（ID、模型描述、状态快照），仅头文件
+#   terra_physics         engine/physics                  后端无关接口 PhysicsWorld（M0-07），仅头文件
+#   terra_physics_mujoco  engine/physics/backends/mujoco  MuJoCo 私有适配层（M0-02 起），实现 PhysicsWorld，PRIVATE 链接 mujoco::mujoco
 #   terra_headless        apps/headless                   命令行入口，只链接 Terra 目标
-# 尚待后续任务接入：
-#   terra_physics         engine/physics                  后端无关接口（M0-04–07）
+#   terra_bench           apps/bench                      性能基线程序（M0-09），只链接 Terra 目标
 add_subdirectory(engine/core)
 add_subdirectory(engine/physics)
 add_subdirectory(apps/headless)
+add_subdirectory(apps/bench)
 
 if(TERRA_BUILD_TESTS)
     enable_testing()

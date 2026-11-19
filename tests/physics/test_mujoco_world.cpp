@@ -1,4 +1,4 @@
-// MujocoWorld 加载与初始化测试（M0-04）。
+// MuJoCo 后端（经 PhysicsWorld 接口）加载与初始化测试（M0-04）。
 // 只通过 Terra 公共头访问后端，本文件不包含 MuJoCo 头文件。
 
 #include <cmath>
@@ -10,7 +10,8 @@
 #include <string>
 #include <vector>
 
-#include "terra/physics/mujoco/mujoco_world.hpp"
+#include "terra/physics/mujoco/mujoco_backend.hpp"
+#include "terra/physics/physics_world.hpp"
 
 #ifndef TERRA_TEST_ASSETS_DIR
 #error "需要 TERRA_TEST_ASSETS_DIR"
@@ -26,9 +27,9 @@ using terra::data::EntityId;
 using terra::data::JointId;
 using terra::data::JointType;
 using terra::data::ModelSource;
-using terra::physics::mujoco::LoadErrorKind;
-using terra::physics::mujoco::LoadResult;
-using terra::physics::mujoco::MujocoWorld;
+using terra::physics::LoadErrorKind;
+using terra::physics::LoadResult;
+using terra::physics::PhysicsWorld;
 
 int failures = 0;
 
@@ -63,7 +64,16 @@ fs::path writeFile(const fs::path& relative, const std::string& content) {
 }
 
 LoadResult load(const fs::path& path) {
-    return MujocoWorld::load(ModelSource{path.string()});
+    return terra::physics::mujoco::loadWorld(ModelSource{path.string()});
+}
+
+// 从快照中取实体位姿；未知 ID 返回空。
+std::optional<terra::data::Pose> poseOf(const PhysicsWorld& world, EntityId id) {
+    const auto snap = world.snapshot();
+    for (const auto& e : snap->entities) {
+        if (e.id == id) return e.pose;
+    }
+    return std::nullopt;
 }
 
 // 期望加载失败：没有世界，错误类型一致，错误信息包含指定片段。
@@ -84,7 +94,7 @@ void testFallingCube() {
     if (!r.world) return;
     check(r.warnings.empty(), "立方体夹具没有编译警告");
 
-    const MujocoWorld& world = *r.world;
+    const PhysicsWorld& world = *r.world;
     const auto& desc = world.description();
     check(desc.timestep == 0.001, "步长 0.001");
     check(fs::path{desc.sourcePath}.is_absolute(), "sourcePath 为绝对路径");
@@ -113,7 +123,7 @@ void testFallingCube() {
 
     check(world.simulationTime() == 0.0, "初始时间为 0");
     if (cube != nullptr) {
-        const auto pose = world.entityPose(cube->id);
+        const auto pose = poseOf(world, cube->id);
         check(pose.has_value(), "cube 有位姿");
         if (pose) {
             check(near(pose->position.x, 0) && near(pose->position.y, 0) && near(pose->position.z, 1),
@@ -123,8 +133,8 @@ void testFallingCube() {
                   "初始姿态为单位四元数");
         }
     }
-    check(!world.entityPose(EntityId{}).has_value(), "无效 ID 没有位姿");
-    check(!world.entityPose(EntityId{2}).has_value(), "越界 ID 没有位姿");
+    check(!poseOf(world, EntityId{}).has_value(), "无效 ID 没有位姿");
+    check(!poseOf(world, EntityId{2}).has_value(), "越界 ID 没有位姿");
 }
 
 void testRelativePaths() {
@@ -234,7 +244,7 @@ void testInitialOrientation() {
     const auto* e = r.world->description().findEntity("rotated");
     check(e != nullptr, "找到旋转实体");
     if (e == nullptr) return;
-    const std::optional<terra::data::Pose> pose = r.world->entityPose(e->id);
+    const std::optional<terra::data::Pose> pose = poseOf(*r.world, e->id);
     check(pose.has_value(), "旋转实体有位姿");
     if (!pose) return;
     const terra::data::Quaternion q = pose->orientation;
@@ -248,7 +258,7 @@ void testInitialOrientation() {
 void testLoadFailures() {
     expectFailure(load(workDir() / "no_such_model.xml"), LoadErrorKind::FileUnavailable, "no_such_model.xml",
                   "文件不存在");
-    expectFailure(MujocoWorld::load(ModelSource{""}), LoadErrorKind::FileUnavailable, "为空", "空路径");
+    expectFailure(terra::physics::mujoco::loadWorld(ModelSource{""}), LoadErrorKind::FileUnavailable, "为空", "空路径");
     expectFailure(load(workDir()), LoadErrorKind::FileUnavailable, "不是常规文件", "路径是目录");
 
     expectFailure(load(writeFile("malformed.xml", "<mujoco><worldbody><body name=\"a\">")),
@@ -299,7 +309,7 @@ void testLifecycle() {
     }
     worlds.erase(worlds.begin() + 1);  // 中途释放一个世界
     if (worlds.front().world) {
-        const auto pose = worlds.front().world->entityPose(EntityId{1});
+        const auto pose = poseOf(*worlds.front().world, EntityId{1});
         check(pose && near(pose->position.z, 1), "释放其他世界后，剩余世界状态不变");
     }
 }

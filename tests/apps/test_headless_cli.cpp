@@ -161,24 +161,69 @@ void testRecords() {
     joint.configurationSize = 1;
     joint.velocitySize = 1;
     model.joints.push_back(joint);
+    terra::data::ActuatorDescription motor;
+    motor.id = terra::data::ActuatorId{1};
+    motor.name = "drive";
+    motor.transmission = terra::data::ActuatorTransmission::Joint;
+    motor.joint = terra::data::JointId{1};
+    motor.inputs.push_back({"", true, -1.5, 2});
+    motor.inputs.push_back({"qw", false, 0, 0});
+    model.actuators.push_back(motor);
+    terra::data::ActuatorDescription tendon;
+    tendon.id = terra::data::ActuatorId{2};
+    model.actuators.push_back(tendon);
     const std::string m = modelToJson(model);
     check(m ==
-              "{\"type\":\"model\",\"timestep\":0.002,\"gravity\":[0,0,-9.5],\"integrator\":\"Euler\","
+              "{\"type\":\"model\",\"contract_revision\":1,\"conventions\":{\"units\":\"SI\",\"up_axis\":\"+z\","
+              "\"quaternion\":\"wxyz\",\"entity_velocity\":\"entity_origin_world\","
+              "\"free_joint_angular_velocity\":\"body_local\",\"ball_joint_angular_velocity\":\"child_local\","
+              "\"contact_entity_0\":\"world_static\"},\"timestep\":0.002,\"gravity\":[0,0,-9.5],\"integrator\":\"Euler\","
               "\"solver\":\"Newton\",\"iterations\":50,\"tolerance\":1e-08,\"entities\":["
               "{\"id\":1,\"name\":\"base\",\"parent\":0},{\"id\":2,\"name\":\"arm\\\"x\",\"parent\":1}],"
-              "\"joints\":[{\"id\":1,\"name\":\"shoulder\",\"type\":\"hinge\",\"entity\":2,\"nq\":1,\"nv\":1}]}",
+              "\"joints\":[{\"id\":1,\"name\":\"shoulder\",\"type\":\"hinge\",\"entity\":2,\"nq\":1,\"nv\":1}],"
+              "\"actuators\":[{\"id\":1,\"name\":\"drive\",\"transmission\":\"joint\",\"joint\":1,\"inputs\":["
+              "{\"name\":\"\",\"limited\":true,\"range\":[-1.5,2]},{\"name\":\"qw\",\"limited\":false}]},"
+              "{\"id\":2,\"name\":\"\",\"transmission\":\"other\",\"joint\":0,\"inputs\":[]}]}",
           "model 记录: " + m);
 
-    terra::data::Pose pose;
-    pose.position = {1, 2, 0.5};
-    pose.orientation = {0.5, 0.5, 0.5, 0.5};
-    const std::string st = stateToJson(3, 42, 0.25, {EntitySample{terra::data::EntityId{1}, pose}});
+    terra::data::PhysicsSnapshot snap;
+    snap.runEpoch = 3;
+    snap.stepIndex = 42;
+    snap.simulationTime = 0.25;
+    terra::data::EntityState e;
+    e.id = terra::data::EntityId{1};
+    e.pose.position = {1, 2, 0.5};
+    e.pose.orientation = {0.5, 0.5, 0.5, 0.5};
+    e.linearVelocity = {0, 0, -1.5};
+    e.angularVelocity = {0.1, 0, 0};
+    snap.entities.push_back(e);
+    terra::data::JointState hinge;
+    hinge.id = terra::data::JointId{1};
+    hinge.positionSize = 1;
+    hinge.velocitySize = 1;
+    hinge.position[0] = 0.75;
+    hinge.velocity[0] = -2;
+    snap.joints.push_back(hinge);
+    snap.contacts.candidateCount = 5;
+    snap.contacts.activeCount = 4;
+    snap.contacts.pairs.push_back({terra::data::EntityId{}, terra::data::EntityId{1}, 4, 9.75});
+    snap.diagnostics.finite = true;
+    snap.diagnostics.solverIterations = 7;
+    const std::string st = stateToJson(snap);
     check(st ==
               "{\"type\":\"state\",\"run_epoch\":3,\"step\":42,\"time\":0.25,\"entities\":["
-              "{\"id\":1,\"position\":[1,2,0.5],\"orientation\":[0.5,0.5,0.5,0.5]}]}",
+              "{\"id\":1,\"position\":[1,2,0.5],\"orientation\":[0.5,0.5,0.5,0.5],"
+              "\"linear_velocity\":[0,0,-1.5],\"angular_velocity\":[0.10000000000000001,0,0]}],"
+              "\"joints\":[{\"id\":1,\"position\":[0.75],\"velocity\":[-2]}],"
+              "\"contacts\":{\"candidates\":5,\"active\":4,\"pairs\":[{\"entities\":[0,1],\"points\":4,"
+              "\"normal_force\":9.75}]},\"diagnostics\":{\"finite\":true,\"solver_iterations\":7}}",
           "state 记录: " + st);
-    check(stateToJson(0, 0, 0, {}) == "{\"type\":\"state\",\"run_epoch\":0,\"step\":0,\"time\":0,\"entities\":[]}",
-          "无实体的 state 记录");
+    const std::string empty = stateToJson(terra::data::PhysicsSnapshot{});
+    check(empty ==
+              "{\"type\":\"state\",\"run_epoch\":0,\"step\":0,\"time\":0,\"entities\":[],\"joints\":[],"
+              "\"contacts\":{\"candidates\":0,\"active\":0,\"pairs\":[]},"
+              "\"diagnostics\":{\"finite\":true,\"solver_iterations\":0}}",
+          "空快照的 state 记录: " + empty);
 
     check(summaryToJson(1, 5000, 5) ==
               "{\"type\":\"summary\",\"run_epoch\":1,\"steps\":5000,\"time\":5,\"status\":\"ok\"}",

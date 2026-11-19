@@ -1,12 +1,17 @@
-#include "terra/physics/mujoco/mujoco_world.hpp"
+#include "mujoco_world.hpp"
 
+#include "terra/physics/mujoco/mujoco_backend.hpp"
+
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <system_error>
 #include <utility>
@@ -17,6 +22,7 @@ namespace terra::physics::mujoco {
 
 namespace {
 
+using terra::data::ActuatorId;
 using terra::data::EntityId;
 using terra::data::JointId;
 using terra::data::JointType;
@@ -120,6 +126,19 @@ std::string checkFile(const std::filesystem::path& path) {
     return {};
 }
 
+// 用于错误信息的执行器标识，如 "执行器 2（'shoulder'）"。
+std::string actuatorLabel(ActuatorId id, const std::string& name) {
+    std::string label = "执行器 " + std::to_string(id.value);
+    if (!name.empty()) {
+        label += "（'" + name + "'）";
+    }
+    return label;
+}
+
+ControlError controlError(ControlErrorKind kind, ActuatorId actuator, int input, std::string message) {
+    return ControlError{kind, actuator, input, std::move(message)};
+}
+
 }  // namespace
 
 struct MujocoWorld::Impl {
@@ -128,8 +147,12 @@ struct MujocoWorld::Impl {
     DataPtr data;
 
     terra::data::ModelDescription description;
-    // Terra 实体 ID（value - 1 为下标）到 MuJoCo body 索引的私有映射。
+    // Terra 实体 ID（value - 1 为下标）到 MuJoCo body 索引的私有映射，以及反向映射（world 为无效 ID）。
     std::vector<int> entityToBody;
+    std::vector<EntityId> bodyToEntity;
+
+    // 当前观测时刻的快照缓存；step/reset 后清空，下次请求时重新构建。
+    std::shared_ptr<const terra::data::PhysicsSnapshot> cachedSnapshot;
 
     std::uint64_t stepIndex = 0;
     std::uint64_t runEpoch = 0;
@@ -145,7 +168,100 @@ struct MujocoWorld::Impl {
 
     // 检查刚完成的一步。返回错误时不修改 stepIndex。
     std::optional<SimulationError> checkAfterStep(std::uint64_t step, double previousTime) const;
+
+    std::shared_ptr<const terra::data::PhysicsSnapshot> buildSnapshot() const;
 };
+
+std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::Impl::buildSnapshot() const {
+    const mjModel* m = model.get();
+    const mjData* d = data.get();
+    auto snap = std::make_shared<terra::data::PhysicsSnapshot>();
+    snap->worldInstance = description.worldInstance;
+    snap->runEpoch = runEpoch;
+    snap->stepIndex = stepIndex;
+    snap->simulationTime = d->time;
+    snap->fixedTimestep = m->opt.timestep;
+    bool finite = std::isfinite(d->time);
+
+    // 实体：位姿取 body 坐标系原点（xpos/xquat）。速度用 mjOBJ_XBODY：参考点为 body 原点；
+    // 注意 mjOBJ_BODY 的参考点是质心（xipos），不符合 Terra 的约定。flg_local=0 表示世界坐标朝向。
+    // 返回值顺序为 [角速度; 线速度]。
+    snap->entities.reserve(entityToBody.size());
+    for (std::size_t i = 0; i < entityToBody.size(); ++i) {
+        const int b = entityToBody[i];
+        const auto bi = static_cast<std::size_t>(b);
+        const mjtNum* p = d->xpos + 3 * bi;
+        const mjtNum* q = d->xquat + 4 * bi;
+        mjtNum v[6];
+        mj_objectVelocity(m, d, mjOBJ_XBODY, b, v, 0);
+        terra::data::EntityState e;
+        e.id = description.entities[i].id;
+        e.pose.position = {p[0], p[1], p[2]};
+        e.pose.orientation = {q[0], q[1], q[2], q[3]};
+        e.angularVelocity = {v[0], v[1], v[2]};
+        e.linearVelocity = {v[3], v[4], v[5]};
+        finite = finite && allFinite(p, 3) && allFinite(q, 4) && allFinite(v, 6);
+        snap->entities.push_back(e);
+    }
+
+    // 关节：按类型复制配置量与速度量（维度由 ModelDescription 给出）。
+    snap->joints.reserve(description.joints.size());
+    for (std::size_t j = 0; j < description.joints.size(); ++j) {
+        const auto& jd = description.joints[j];
+        terra::data::JointState js;
+        js.id = jd.id;
+        js.type = jd.type;
+        js.positionSize = jd.configurationSize;
+        js.velocitySize = jd.velocitySize;
+        const mjtNum* qpos = d->qpos + m->jnt_qposadr[j];
+        const mjtNum* qvel = d->qvel + m->jnt_dofadr[j];
+        for (int k = 0; k < js.positionSize; ++k) js.position[static_cast<std::size_t>(k)] = qpos[k];
+        for (int k = 0; k < js.velocitySize; ++k) js.velocity[static_cast<std::size_t>(k)] = qvel[k];
+        finite = finite && allFinite(qpos, js.positionSize) && allFinite(qvel, js.velocitySize);
+        snap->joints.push_back(js);
+    }
+
+    // 接触：只统计参与约束求解（exclude==0 且 efc_address>=0）且法向力 > 0 的接触点。
+    // 法向力由 mj_contactForce 在接触坐标系中给出，result[0] 为法向分量（正值表示相互推开）。
+    // flex 接触（geom 为 -1）在 M0 中不计入实体对。
+    auto& contacts = snap->contacts;
+    contacts.candidateCount = static_cast<std::uint32_t>(d->ncon);
+    std::map<std::pair<std::uint32_t, std::uint32_t>, terra::data::ContactPair> pairs;
+    for (int i = 0; i < d->ncon; ++i) {
+        const mjContact& c = d->contact[i];
+        if (c.exclude != 0 || c.efc_address < 0 || c.geom[0] < 0 || c.geom[1] < 0) {
+            continue;
+        }
+        mjtNum force[6];
+        mj_contactForce(m, d, i, force);
+        if (!(force[0] > 0)) {
+            continue;
+        }
+        EntityId a = bodyToEntity[static_cast<std::size_t>(m->geom_bodyid[c.geom[0]])];
+        EntityId b = bodyToEntity[static_cast<std::size_t>(m->geom_bodyid[c.geom[1]])];
+        if (b < a) std::swap(a, b);
+        auto& pair = pairs[{a.value, b.value}];
+        pair.entityA = a;
+        pair.entityB = b;
+        ++pair.pointCount;
+        pair.normalForce += force[0];
+        ++contacts.activeCount;
+        finite = finite && std::isfinite(force[0]);
+    }
+    contacts.pairs.reserve(pairs.size());
+    for (const auto& [key, pair] : pairs) {
+        contacts.pairs.push_back(pair);
+    }
+
+    int iterations = 0;
+    const int islands = std::min(std::max(d->nisland, 1), static_cast<int>(mjNISLAND));
+    for (int k = 0; k < islands; ++k) {
+        iterations = std::max(iterations, d->solver_niter[k]);
+    }
+    snap->diagnostics.finite = finite;
+    snap->diagnostics.solverIterations = iterations;
+    return snap;
+}
 
 std::optional<SimulationError> MujocoWorld::Impl::checkAfterStep(std::uint64_t step,
                                                                  double previousTime) const {
@@ -230,7 +346,8 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         return failure(LoadErrorKind::InvalidModel, "模型步长无效：" + std::to_string(timestep));
     }
     if (model->nbody > std::numeric_limits<std::uint32_t>::max() ||
-        model->njnt > std::numeric_limits<std::uint32_t>::max()) {
+        model->njnt > std::numeric_limits<std::uint32_t>::max() ||
+        model->nactuator > std::numeric_limits<std::uint32_t>::max()) {
         return failure(LoadErrorKind::InvalidModel, "模型规模超出 Terra ID 范围");
     }
 
@@ -259,7 +376,8 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
     // 实体：MuJoCo 的每个非 world body 对应一个 Terra 实体，按 body 顺序分配 ID。
     // world body（索引 0）上的静态 geom（如地面）不是实体，将来作为 collider 描述。
     const int nbody = static_cast<int>(model->nbody);
-    std::vector<EntityId> bodyToEntity(static_cast<std::size_t>(nbody));  // world 保持无效 ID
+    std::vector<EntityId>& bodyToEntity = impl->bodyToEntity;
+    bodyToEntity.assign(static_cast<std::size_t>(nbody), EntityId{});  // world 保持无效 ID
     desc.entities.reserve(static_cast<std::size_t>(nbody > 0 ? nbody - 1 : 0));
     impl->entityToBody.reserve(desc.entities.capacity());
     for (int b = 1; b < nbody; ++b) {
@@ -307,6 +425,48 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         desc.joints.push_back(std::move(joint));
     }
 
+    // 执行器：一个 MuJoCo actuator 对应一个 Terra 执行器，按顺序分配 ID。
+    // 注意控制量数 nu 不一定等于执行器数：每个执行器有 actuator_ctrlnum 个输入，
+    // ctrllimited/ctrlrange 按输入（nu）索引（M0-07 报告第 2 节）。
+    const int nact = static_cast<int>(model->nactuator);
+    desc.actuators.reserve(static_cast<std::size_t>(nact));
+    for (int a = 0; a < nact; ++a) {
+        terra::data::ActuatorDescription act;
+        act.id = ActuatorId{static_cast<std::uint32_t>(a + 1)};
+        act.name = nameOf(model.get(), mjOBJ_ACTUATOR, a);
+        const std::string label = actuatorLabel(act.id, act.name);
+        // 带延迟或历史缓冲时，力由历史控制计算，“下一步生效”不成立；插件执行器的语义不在 M0 范围内。
+        if (model->actuator_delay[a] > 0 || model->actuator_history[2 * a] > 0) {
+            return failure(LoadErrorKind::Unsupported,
+                           label + " 带控制延迟或历史缓冲，M0 不支持（控制须在下一步生效）");
+        }
+        if (model->actuator_plugin[a] >= 0) {
+            return failure(LoadErrorKind::Unsupported, label + " 是插件执行器，M0 不支持");
+        }
+        const int trntype = model->actuator_trntype[a];
+        if (trntype == mjTRN_JOINT || trntype == mjTRN_JOINTINPARENT) {
+            act.transmission = terra::data::ActuatorTransmission::Joint;
+            act.joint = JointId{static_cast<std::uint32_t>(model->actuator_trnid[2 * a] + 1)};
+        }
+        const int ctrladr = model->actuator_ctrladr[a];
+        for (int k = 0; k < model->actuator_ctrlnum[a]; ++k) {
+            const auto u = static_cast<std::size_t>(ctrladr + k);
+            terra::data::ControlInput input;
+            if (const char* inputName = mj_actuatorInputName(model.get(), a, k)) {
+                input.name = inputName;
+            }
+            input.limited = model->actuator_ctrllimited[u] != 0;
+            input.min = model->actuator_ctrlrange[2 * u];
+            input.max = model->actuator_ctrlrange[2 * u + 1];
+            act.inputs.push_back(std::move(input));
+        }
+        desc.actuators.push_back(std::move(act));
+    }
+
+    // 只在加载成功时分配实例号，失败的加载不消耗编号。
+    static std::atomic<std::uint64_t> nextWorldInstance{1};
+    desc.worldInstance = nextWorldInstance.fetch_add(1, std::memory_order_relaxed);
+
     impl->model = std::move(model);
     impl->data = std::move(data);
     impl->captureWarningBaseline();
@@ -329,6 +489,7 @@ std::optional<SimulationError> MujocoWorld::step() {
     // mj_step 先计算动力学再积分，积分后 xpos/xquat 等派生量仍对应积分前的状态；
     // 再调用一次 mj_forward，使发布的位姿与新的时间一致（技术设计 2.3 节）。
     // 已验证：额外的 mj_forward 不改变后续轨迹（见 M0-05 报告）。
+    w.cachedSnapshot.reset();
     mj_step(w.model.get(), w.data.get());
     mj_forward(w.model.get(), w.data.get());
 
@@ -343,13 +504,74 @@ std::optional<SimulationError> MujocoWorld::step() {
 
 void MujocoWorld::reset() {
     Impl& w = *impl_;
-    // mj_resetData 恢复 qpos0、零速度、time=0，并将 ctrl 等输入清零。
+    // mj_resetData 恢复 qpos0、零速度、time=0，并通过 mj_resetCtrl 把 ctrl 恢复为中性值
+    // （普通输入为 0，四元数输入为单位四元数）。
+    w.cachedSnapshot.reset();
     mj_resetData(w.model.get(), w.data.get());
     mj_forward(w.model.get(), w.data.get());
     w.stepIndex = 0;
     ++w.runEpoch;
     w.faulted = false;
     w.captureWarningBaseline();
+}
+
+std::optional<ControlError> MujocoWorld::setControl(const std::vector<ActuatorCommand>& commands) {
+    Impl& w = *impl_;
+    if (w.faulted) {
+        return controlError(ControlErrorKind::Faulted, ActuatorId{}, -1, "世界处于故障状态，需要 reset 后才能设置控制");
+    }
+
+    // 先校验全部命令，全部通过后才写入（原子）。
+    std::vector<bool> seen(w.description.actuators.size(), false);
+    for (const ActuatorCommand& command : commands) {
+        const terra::data::ActuatorDescription* act = w.description.actuator(command.actuator);
+        if (act == nullptr) {
+            return controlError(ControlErrorKind::UnknownActuator, command.actuator, -1,
+                                "未知执行器 ID " + std::to_string(command.actuator.value));
+        }
+        const std::string label = actuatorLabel(act->id, act->name);
+        const auto index = static_cast<std::size_t>(command.actuator.value - 1);
+        if (seen[index]) {
+            return controlError(ControlErrorKind::DuplicateActuator, command.actuator, -1,
+                                label + " 在同一次调用中出现多次");
+        }
+        seen[index] = true;
+        if (command.values.size() != act->inputs.size()) {
+            return controlError(ControlErrorKind::SizeMismatch, command.actuator, -1,
+                                label + " 需要 " + std::to_string(act->inputs.size()) + " 个控制量，收到 " +
+                                    std::to_string(command.values.size()) + " 个");
+        }
+        for (std::size_t k = 0; k < command.values.size(); ++k) {
+            const double v = command.values[k];
+            const terra::data::ControlInput& input = act->inputs[k];
+            const int inputIndex = static_cast<int>(k);
+            const std::string where = label + " 的输入 " + std::to_string(k);
+            if (!std::isfinite(v)) {
+                return controlError(ControlErrorKind::NonFinite, command.actuator, inputIndex,
+                                    where + " 不是有限值：" + std::to_string(v));
+            }
+            if (input.limited && (v < input.min || v > input.max)) {
+                return controlError(ControlErrorKind::OutOfRange, command.actuator, inputIndex,
+                                    where + " = " + std::to_string(v) + " 超出范围 [" + std::to_string(input.min) +
+                                        ", " + std::to_string(input.max) + "]");
+            }
+            // MuJoCo 把 |u| > mjMAXVAL 视为坏值，会清零全部控制并发出警告；在这里提前拒绝。
+            if (v > mjMAXVAL || v < -mjMAXVAL) {
+                return controlError(ControlErrorKind::OutOfRange, command.actuator, inputIndex,
+                                    where + " = " + std::to_string(v) + " 超出后端有效数值范围（|u| <= 1e10）");
+            }
+        }
+    }
+
+    // 写入 ctrl，下一次 mj_step 起生效。不重算物理，当前观测与已缓存的快照保持不变。
+    for (const ActuatorCommand& command : commands) {
+        const int a = static_cast<int>(command.actuator.value - 1);
+        mjtNum* ctrl = w.data->ctrl + w.model->actuator_ctrladr[a];
+        for (std::size_t k = 0; k < command.values.size(); ++k) {
+            ctrl[k] = command.values[k];
+        }
+    }
+    return std::nullopt;
 }
 
 double MujocoWorld::simulationTime() const noexcept {
@@ -368,17 +590,15 @@ bool MujocoWorld::faulted() const noexcept {
     return impl_->faulted;
 }
 
-std::optional<terra::data::Pose> MujocoWorld::entityPose(terra::data::EntityId id) const {
-    if (impl_->description.entity(id) == nullptr) {
-        return std::nullopt;
+std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::snapshot() const {
+    if (!impl_->cachedSnapshot) {
+        impl_->cachedSnapshot = impl_->buildSnapshot();
     }
-    const auto body = static_cast<std::size_t>(impl_->entityToBody[id.value - 1]);
-    const mjtNum* p = impl_->data->xpos + 3 * body;
-    const mjtNum* q = impl_->data->xquat + 4 * body;  // MuJoCo 四元数顺序同为 w, x, y, z
-    terra::data::Pose pose;
-    pose.position = {p[0], p[1], p[2]};
-    pose.orientation = {q[0], q[1], q[2], q[3]};
-    return pose;
+    return impl_->cachedSnapshot;
+}
+
+LoadResult loadWorld(const terra::data::ModelSource& source) {
+    return MujocoWorld::load(source);
 }
 
 }  // namespace terra::physics::mujoco

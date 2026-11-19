@@ -1,0 +1,26 @@
+<!--
+  M0-08 辅助夹具：无重力、无初速度（开发计划 4.3 节）。
+  立方体放在非零位置、带非单位姿态，用于发现坐标、四元数顺序和初始化错误：
+  中心 (0.3, -0.2, 1.5) m；姿态为绕 +Y 转 30°，wxyz = (cos15°, 0, sin15°, 0)。
+  无重力、无地面、无接触、无执行器；固定步长 0.001 s，Euler 积分。多步后位姿与速度应保持不变。
+-->
+<mujoco model="floating_cube">
+  <compiler angle="radian" inertiafromgeom="true"/>
+
+  <option timestep="0.001"
+          gravity="0 0 0"
+          wind="0 0 0"
+          density="0"
+          viscosity="0"
+          integrator="Euler"
+          solver="Newton"
+          iterations="100"
+          tolerance="1e-10"/>
+
+  <worldbody>
+    <body name="cube" pos="0.3 -0.2 1.5" quat="0.96592582628906831 0 0.25881904510252074 0">
+      <freejoint name="cube_free"/>
+      <geom name="cube_geom" type="box" size="0.1 0.1 0.1" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

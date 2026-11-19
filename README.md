@@ -6,7 +6,7 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0 开发中（Pre-Alpha），已建立最小工程骨架，尚无物理功能或物理验收结果。本 README 描述目标架构与开发路线，不代表相关功能已经实现。详见[规划文档](docs/planning/README.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+> 项目状态：M0 收尾中（Pre-Alpha）。Headless 物理闭环、状态快照、统一物理接口与场景验证已完成，M0-01 至 M0-08 已验收；M0-09 待基线统一验收运行。渲染、机器人、传感器和 ROS2 尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 </div>
 
@@ -168,19 +168,32 @@ cmake --build --preset debug
 ctest --preset debug
 ```
 
-当前只有工程骨架和 MuJoCo 依赖接入，不含物理功能。说明与验证记录见 [M0-01 环境验证](docs/validation/M0-01-environment.md) 和 [M0-02 MuJoCo 集成](docs/validation/M0-02-mujoco.md)。
+运行立方体下落示例（无图形，stdout 为 JSON Lines：config → model → state … → summary）：
+
+```bash
+build/debug/apps/headless/terra_headless --model assets/tests/falling_cube.xml --duration 5 --sample-every 500
+```
+
+完整复现 M0 验收（三种构建配置的全量测试、变异测试、场景判定、重复运行、依赖检查与性能基线，约数分钟）：
+
+```bash
+bash scripts/verify/m0_acceptance.sh
+```
+
+说明与验证记录见 [`docs/validation/`](docs/validation/)，M0 汇总见 [M0-09 验收报告](docs/validation/M0-09-acceptance.md)。
 
 ## 10. 当前状态
 
-项目目前处于 **M0：基础工程与 MuJoCo Headless 物理集成阶段**。已建立最小 C++17 工程骨架（M0-01 待验收，基线机器构建与测试通过）；尚无物理功能、已验证的 MuJoCo 版本或仿真测试结果，未提供发布版本或可用性保证。实际实现进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+项目目前处于 **M0：基础工程与 MuJoCo Headless 物理集成阶段**，M0-01 至 M0-08 待验收，M0-09（阶段验收）进行中。已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；立方体主场景与辅助用例在基线机器上通过，数值容差已冻结。无图形界面，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
-近期第一优先级：**M0-01 最小工程与环境基线 → M0-02 MuJoCo 官方依赖兼容验证 → 立方体 Headless 物理闭环**。不提前开发渲染或图形编辑器。
+近期第一优先级：**完成 M0 阶段验收**，之后进入 M1（自研基础渲染器）。M0 验收通过前不开发渲染或图形编辑器。
 
 ### 规划文档入口
 
 项目主 README 保留在根目录，详细规划及开发记录集中在 `docs/planning/`：
 
 - [文档导航与维护说明](docs/planning/README.md)
+- [验证报告](docs/validation/)（M0-01 至 M0-09）
 - [产品需求 PRD](docs/planning/PRD.md)
 - [开发计划与阶段验收](docs/planning/DEVELOPMENT_PLAN.md)
 - [技术架构与设计](docs/planning/TECHNICAL_DESIGN.md)

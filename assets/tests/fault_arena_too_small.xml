@@ -1,0 +1,17 @@
+<!--
+  故障夹具：后端运行内存不足（M0-08，开发计划 4.3 节“加载与调用失败”）。
+  <size memory="16"/> 只给 MuJoCo 16 字节的运行内存。MuJoCo 4.0.1 编译模型时会试跑一步，
+  试跑中的栈溢出（mj_stackAlloc）由编译器捕获并作为编译错误返回，因此 Terra 报告为模型错误
+  （InvalidModel，Headless 退出码 4），进程不会被 MuJoCo 直接终止。
+  运行期真正不可恢复的后端错误另由 test_backend_fatal 子进程用例验证。
+-->
+<mujoco model="fault_arena_too_small">
+  <size memory="16"/>
+  <worldbody>
+    <geom type="plane" size="0 0 1"/>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>

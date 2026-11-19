@@ -1,5 +1,7 @@
 # MuJoCo 源码锁定记录（M0-02）。由 scripts/mujoco/*.sh 读取，修改后须重新执行验证。
-# 状态：候选版本，尚未锁定。锁定条件见 docs/validation/M0-02-mujoco.md。
+# 状态：已锁定（2026-11-18，M0-09）。锁定条件（docs/validation/M0-02-mujoco.md 第 5 节）均已满足：
+# M0-02 验收、M0-04–08 物理回归、第三方依赖许可核查（docs/validation/M0-09-acceptance.md）。
+# 升级版本须重新执行 scripts/verify/m0_acceptance.sh 并重新评审 M0-08 冻结的容差。
 # MuJoCo 自身依赖（abseil、Eigen、qhull 等）的 commit 固定在其源码的
 # cmake/MujocoDependencies.cmake 中。
 MUJOCO_VERSION=4.0.1

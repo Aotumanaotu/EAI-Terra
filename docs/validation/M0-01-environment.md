@@ -1,6 +1,6 @@
 # M0-01 环境与工程初始化验证
 
-> 状态：**待验收**。基线机器上 Debug/Release 干净构建与测试全部通过（4.2 节）；待评审确认并关联提交后转为“已验收”。
+> 状态：**已验收**。基线机器上 Debug/Release 干净构建与测试全部通过（4.2 节）；用户于 2026-11-19 确认评审通过。
 
 ## 1. 目标边界（M0-01 评审结果）
 
@@ -117,6 +117,6 @@ cmake --preset release -DTERRA_WARNINGS_AS_ERRORS=ON && cmake --build --preset r
 | C++17 配置生效 | 满足 | `core.build_info`；开发机检查 `compile_commands.json` 为 `-std=c++17` |
 | 物理目标不要求窗口系统和图形开发包 | 满足（当前目标范围） | `headless.no_graphics_libs`、`headless.no_display`；`terra_physics` 尚未创建，M0-02 起由同一测试继续约束 |
 | 明确哪些目标尚待后续任务接入 | 满足 | 第 1 节 |
-| 工具精确版本可追溯 | 满足 | 4.2 工具链表；CMake/Ninja 来源待核实 |
+| 工具精确版本可追溯 | 满足 | 4.2 工具链表；CMake/Ninja 来源由 M0-09 验收脚本的环境清单（dpkg 归属）核实，见 [M0-09 报告](M0-09-acceptance.md) |
 
-**尚缺：** 评审确认，以及包含本文件的 Git 提交号（在开发记录中关联）。
+**验收结论：** 2026-11-19 用户评审通过；本报告随 M0-06～M0-09 交付提交归档，可通过 Git 日志关联提交。

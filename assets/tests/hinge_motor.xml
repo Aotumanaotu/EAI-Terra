@@ -1,0 +1,46 @@
+<!--
+  M0-07 控制夹具：单铰链电机（方向与大小有离散解析解），外加一个多输入执行器用于维度与中性值检查。
+
+  arm：   铰链 shoulder 绕 +Y 轴，关节与质心都在 body 原点，绕 Y 轴转动惯量 I = 0.1 kg·m²；
+          无阻尼、无摩擦、无电枢惯量、无关节限位。
+          执行器 drive：motor，gear 1，ctrlrange [-1, 1]，控制值是关节力矩（N·m）。
+          Euler（半隐式）下，恒定控制 u 时 a = u / I，θₖ = a·dt²·k(k+1)/2，ωₖ = a·dt·k。
+  head：  独立的球关节 neck（与 arm 无耦合）。
+          执行器 aim：orientation，input="quat"，4 个控制输入，ctrlrange [-1, 1]；中性值为单位四元数。
+  trim：  第二个作用于 shoulder 的 motor，gear 1，非对称 ctrlrange [-0.2, 0.3]。放在 aim 之后，
+          它的控制地址（5）不等于执行器下标（2），用于发现“按执行器下标索引控制量”的错误。
+  环境：  无重力、无接触（所有 geom 的 contype/conaffinity 为 0）；固定步长 0.001 s，Euler 积分。
+-->
+<mujoco model="hinge_motor">
+  <compiler angle="radian" autolimits="true"/>
+
+  <option timestep="0.001"
+          gravity="0 0 0"
+          wind="0 0 0"
+          density="0"
+          viscosity="0"
+          integrator="Euler"
+          solver="Newton"
+          iterations="100"
+          tolerance="1e-10"/>
+
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="shoulder" type="hinge" axis="0 1 0" damping="0" frictionloss="0" armature="0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+      <geom type="capsule" fromto="0 0 0 0.5 0 0" size="0.02" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="head" pos="1 0 1">
+      <joint name="neck" type="ball" damping="0" armature="0"/>
+      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      <geom type="box" size="0.05 0.05 0.05" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="drive" joint="shoulder" gear="1" ctrlrange="-1 1"/>
+    <orientation name="aim" joint="neck" input="quat" kp="1" kv="0.1" ctrlrange="-1 1"/>
+    <motor name="trim" joint="shoulder" gear="1" ctrlrange="-0.2 0.3"/>
+  </actuator>
+</mujoco>

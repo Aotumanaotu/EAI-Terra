@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # M0-01 环境清单：只读收集系统与工具链信息，不安装、不修改任何东西。
+# M0-09 起增加工具来源（dpkg 归属），用于核实 CMake/Ninja 的安装来源。
 # 用法：scripts/env_inventory.sh > env.txt
 # 在 Ubuntu 22.04 / x86-64 基线机器上运行，输出用于填写 docs/validation/M0-01-environment.md。
 set -u
@@ -46,6 +47,20 @@ show "ninja" ninja --version
 show "ctest" ctest --version
 show "git" git --version
 show "ld" ld --version
+
+section "工具来源（dpkg 归属；不属于任何软件包时为手动安装）"
+for tool in gcc g++ cmake ctest ninja; do
+    path=$(command -v "$tool" 2>/dev/null) || { printf '%s: 未安装\n' "$tool"; continue; }
+    real=$(readlink -f "$path")
+    owner=$(dpkg -S "$real" 2>/dev/null | head -n 1 | cut -d: -f1)
+    [ -n "$owner" ] || owner=$(dpkg -S "$path" 2>/dev/null | head -n 1 | cut -d: -f1)
+    if [ -n "$owner" ]; then
+        version=$(dpkg-query -W -f='${Version}' "$owner" 2>/dev/null)
+        printf '%s: %s -> 软件包 %s %s\n' "$tool" "$real" "$owner" "$version"
+    else
+        printf '%s: %s -> 不属于 dpkg 软件包（手动安装）\n' "$tool" "$real"
+    fi
+done
 
 section "显示与图形（M0 不应依赖，仅记录现状）"
 printf '%s: %s\n' "DISPLAY" "${DISPLAY:-<未设置>}"

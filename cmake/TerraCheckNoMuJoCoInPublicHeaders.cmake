@@ -1,11 +1,12 @@
 # 用法：cmake -DSOURCE_DIR=<仓库根目录> -P TerraCheckNoMuJoCoInPublicHeaders.cmake
-# 检查 Terra 公共头（engine/ 下任意 include/ 目录）与应用（apps/）中没有包含 MuJoCo 头文件（D-009）。
+# 检查 Terra 公共头（engine/ 下任意 include/ 目录）、应用（apps/）与后端无关调用方（tests/physics/consumer/）
+# 中没有包含 MuJoCo 头文件（D-009、M0-07）。
 if(NOT DEFINED SOURCE_DIR)
     message(FATAL_ERROR "需要 -DSOURCE_DIR")
 endif()
 
 file(GLOB_RECURSE engine_files "${SOURCE_DIR}/engine/*")
-file(GLOB_RECURSE app_files "${SOURCE_DIR}/apps/*")
+file(GLOB_RECURSE app_files "${SOURCE_DIR}/apps/*" "${SOURCE_DIR}/tests/physics/consumer/*")
 
 set(files "")
 foreach(f IN LISTS engine_files)

@@ -1,6 +1,6 @@
 # M1-03 / M1-04 平台窗口与输入抽象：接口设计
 
-> 状态：**设计待评审，未实现**。依据：D-017（GLFW 为首个适配器）、D-018（输入独立抽象）、D-021（OpenGL 4.5 core）、开发计划第 8 节 M1-03/04/05、PRD F-M1-01/F-M1-04。评审通过后实现，实现与验证另写报告。
+> 状态：**待验收**。设计已评审通过（2026-11-19，第 7 节 5 条全部同意）；实现与测试见第 8–9 节。基线机器（2026-11-19）全部通过：渲染关闭 37/37，渲染开启 Debug 与 Release + `-Werror` 41/41，ASan 全部通过，变异 8/8（第 10.2 节）。依据：D-017（GLFW 为首个适配器）、D-018（输入独立抽象）、D-021（OpenGL 4.5 core）、开发计划第 8 节 M1-03/04/05、PRD F-M1-01/F-M1-04。
 
 ## 1. 目标与约束
 
@@ -208,10 +208,67 @@ Result<std::unique_ptr<Platform>> createGlfwPlatform(InputSink& input);
 
 真实键鼠事件很难在 Xvfb 中可靠地合成，GLFW 回调本身只做“翻译后转发”，覆盖方式是：翻译表单元测试 + 输入系统单元测试 + M1-07 时在桌面会话做一次人工交互检查。
 
-## 7. 待评审
+## 7. 评审结论（2026-11-19，第 1–5 条全部同意）
 
 1. **整体分层与 `InputSink` 写入协议**（第 3.1–3.3 节）。
 2. **分期调整**：死区与热插拔核心逻辑提前到 M1-04（第 5 节）。
 3. **多来源仲裁的默认策略**：建议 `LargestMagnitude`（第 3.6 节）。
 4. **动作映射的配置方式**（开发计划 8.3 节待定项）：建议 M1 先用代码注册（数据结构即配置），配置文件格式在有外部配置需求时再定；数据结构从一开始就设计成可序列化。
 5. **键盘按物理键位命名**（第 3.2 节），文本输入不在 M1 范围内。
+
+## 8. 实现
+
+| 部分 | 位置 | 说明 |
+| --- | --- | --- |
+| 设备与控件 | `engine/input/include/terra/input/types.hpp` | `DeviceKind`、`DeviceId`、`Control`；`Key`（105 个物理键位）、`MouseControl`、`GamepadControl`；`DeviceDescription` |
+| 写入协议 | `input_sink.hpp` | `connectDevice`、`disconnectDevice`、`resetDevice`（焦点丢失）、`setControl`、`addDelta` |
+| 动作映射 | `action_map.hpp` | 四种动作类型；`Binding`（Single、Pair、Composite1D/2D，修饰键、处理器、消费、来源优先级）；`Processor`（轴向/径向死区、缩放、裁剪）；三种仲裁策略；纯数据结构，可序列化 |
+| 输入系统 | `input_system.hpp`、`src/input_system.cpp` | `InputSystem : InputSink`；注册时校验并原子生效；`update()` 按动作表优先级计算、消费与仲裁；帧内快速点按通过上升沿记录保留；非有限值忽略 |
+| 平台接口 | `engine/platform/include/terra/platform/platform.hpp` | `Platform`、`Window`、`WindowDescription`、五类 `PlatformError`；`GlProcLoader` 为纯函数指针类型 |
+| GLFW 实现 | `engine/platform/backends/glfw/` | `createPlatform(InputSink&)`；4.5 core、forward-compatible，可选调试上下文；版本不足或请求 < 4.5 时明确报错；GLFW 生命周期由共享指针管理（窗口可晚于平台销毁）；连接 GLFW 键盘与鼠标两个设备；键鼠回调翻译后写入 `InputSink`；指针首次进入不产生增量；失去焦点时 `resetDevice` |
+| 翻译表 | `src/glfw_translation.cpp` | `translateKey`、`translateMouseButton`，纯函数 |
+| 边界检查 | `cmake/TerraCheckRenderIsolation.cmake` | GLFW 头只在 GLFW 实现与测试中；OpenGL 头只在渲染、平台实现与测试中；`engine/`、`apps/` 不得直接使用 X11、Wayland、SDL、Vulkan 头 |
+
+`terra_input` 总是构建；`terra_platform`、`terra_platform_glfw` 只在 `TERRA_BUILD_RENDER=ON` 时构建。M1-05（GLFW 手柄适配器）未包含在本次实现中。
+
+## 9. 测试
+
+渲染关闭 37 项（M0 的 35 项 + 2），渲染开启 41 项（+ M1-02 探针与本次 3 项）。
+
+| 测试 | 环境 | 内容 |
+| --- | --- | --- |
+| `input.system` | 无图形，总是运行 | 按钮边沿与帧内快速点按；WASD 组合与相反键抵消；修饰键；同帧增量累加与下一帧清零；轴向死区 6 个数值点；径向死区（小于内径、重新归一化、长度 1、斜向保留方向）；缩放与裁剪；扳机作为按钮；热插拔（按住时断开 → 抬起与归零、旧 ID 写入被忽略、新设备自动生效、ID 不复用）；焦点丢失释放；三张动作表的优先级、消费与非消费绑定、停用后让出；三种仲裁策略（含“本地手柄接管 ROS2 指令”场景）；10 种配置错误且失败不部分注册；非有限值 |
+| `boundary.render_isolation` | 无图形，总是运行 | 见第 8 节 |
+| `input.glfw_translation` | 渲染开启，不需要显示 | 区间与单个键位；未知键；Terra 的 105 个键全部有对应且无冲突；鼠标键 |
+| `graphics.platform_window` | Xvfb + llvmpipe | 平台连接键鼠设备；重复创建被拒绝；请求 3.3 被拒绝；**请求 4.6 返回 `ContextUnavailable`**；4.5 窗口、glad 经 `glProcLoader` 加载、渲染器为 llvmpipe、调试标志；窗口与帧缓冲尺寸；关闭请求；时钟；平台先于窗口销毁后窗口仍可用、设备已断开；全部销毁后可重建平台 |
+| `graphics.platform_no_display` | 清除 `DISPLAY`，不启动 Xvfb | 返回 `NoDisplay`，不连接任何设备 |
+
+**变异测试（脚本内执行，8 项）：**死区不重新归一化；径向死区按分量判断；断开设备不释放控件；动作表之间不消费；帧内快速点按丢失；最近变化仲裁失效；忽略修饰键；焦点丢失不释放。
+
+真实键鼠事件无法在 Xvfb 中可靠合成，GLFW 回调只做“翻译后转发”：由翻译表测试与输入系统测试覆盖，M1-07 时在桌面会话做人工交互检查。
+
+## 10. 验证记录
+
+### 10.1 开发机
+
+未编译、未运行。静态检查：脚本 `bash -n`；8 个变异锚点在源码中唯一匹配；按项目警告选项人工复查全部新代码。
+
+### 10.2 基线机器
+
+- **日期：**2026-11-19；命令：`bash scripts/verify/m1_03_04.sh`。
+- **结果：**
+
+| 项目 | 结果 |
+| --- | --- |
+| 渲染关闭 Debug | **37/37 通过** |
+| 渲染开启 Debug / Release + `-Werror` | 均 **41/41 通过** |
+| ASan/UBSan（渲染开启） | 非图形 38 项（含 LeakSanitizer）**全部通过**；图形 3 项（不查泄漏）**全部通过** |
+| 变异测试 | **8/8 被发现**（失败检查数：死区不归一化 4、径向按分量 1、断开不释放 5、不消费 3、点按丢失 1、最近变化失效 1、忽略修饰键 1、焦点不释放 1）；源文件已恢复 |
+
+- **测试输出要点：**
+  - 10 种配置错误均被拒绝，消息定位到动作表、动作与绑定序号。
+  - **请求 4.6：`ContextUnavailable`**，GLFW 错误 `0x10007`（`GLFW_VERSION_UNAVAILABLE`）“GLX: Failed to create context: GLXBadFBConfig”——确认了实现前基于 GLFW 源码的判断。
+  - 4.5 上下文；`GL_RENDERER=llvmpipe (LLVM 15.0.7, 256 bits)`；窗口与帧缓冲均 320×240，缩放 1.00。
+  - 无显示：`NoDisplay`。
+  - 翻译表：105 个 GLFW 键码对应 Terra 的 105 个键，无冲突。
+- **之后的修改：**错误消息中“第 N 个绑定 的…”多余的空格已删除（只改字符串，不影响逻辑与变异锚点；下次运行时确认）。

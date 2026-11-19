@@ -6,7 +6,7 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0 已完成，M1 进行中（Pre-Alpha）。OpenGL 4.5 core 图形环境与 GLFW/GLM/glad 渲染依赖已完成基线验证、待验收；实际窗口、输入和渲染器尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+> 项目状态：M0 已完成，M1 进行中（Pre-Alpha）。M1-01～M1-04 已完成基线验证、待验收：OpenGL 4.5 core 环境、渲染依赖、平台窗口/上下文及独立输入系统均已实现；相机和实际网格渲染器尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 </div>
 
@@ -196,7 +196,7 @@ bash scripts/verify/m0_acceptance.sh
 
 **M0（基础工程与 MuJoCo Headless 物理集成）已于 2026-11-19 完成验收**，下一阶段为 M1。已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；立方体主场景与辅助用例在基线机器上通过，数值容差已冻结。无图形界面，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
-近期第一优先级：评审 M1-01 图形环境、M1-02 渲染依赖及 M1-03/04 平台窗口与输入抽象设计；评审通过后开始实现。
+近期第一优先级：评审 M1-01～M1-04；随后实现 M1-06 渲染核心（M1-05 GLFW 手柄适配器为 P1，可后置）。
 
 ### 规划文档入口
 

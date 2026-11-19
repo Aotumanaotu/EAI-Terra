@@ -36,10 +36,17 @@ endif()
 #   terra_data            engine/core/data                数据契约（ID、模型描述、状态快照），仅头文件
 #   terra_physics         engine/physics                  后端无关接口 PhysicsWorld（M0-07），仅头文件
 #   terra_physics_mujoco  engine/physics/backends/mujoco  MuJoCo 私有适配层（M0-02 起），实现 PhysicsWorld，PRIVATE 链接 mujoco::mujoco
+#   terra_input           engine/input                    输入抽象（M1-04），只依赖标准库，总是构建
+#   terra_platform        engine/platform                 窗口与上下文接口（M1-03），仅 TERRA_BUILD_RENDER=ON
+#   terra_platform_glfw   engine/platform/backends/glfw   GLFW 实现与键鼠适配器，PRIVATE 链接 GLFW
 #   terra_headless        apps/headless                   命令行入口，只链接 Terra 目标
 #   terra_bench           apps/bench                      性能基线程序（M0-09），只链接 Terra 目标
 add_subdirectory(engine/core)
 add_subdirectory(engine/physics)
+add_subdirectory(engine/input)
+if(TERRA_BUILD_RENDER)
+    add_subdirectory(engine/platform)
+endif()
 add_subdirectory(apps/headless)
 add_subdirectory(apps/bench)
 

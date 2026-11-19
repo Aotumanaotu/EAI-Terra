@@ -9,6 +9,7 @@
 # M0-08：主场景正式判定与冻结容差、无重力、reset 再运行、生命周期、连续运行、后端致命错误。
 # M0-09：性能基线程序冒烟测试。
 # M1-02：渲染依赖探针（仅 TERRA_BUILD_RENDER=ON，graphics 标签，Xvfb + llvmpipe）。
+# M1-03/04：输入系统（总是运行）、渲染隔离边界检查（总是运行）；GLFW 翻译表与平台窗口（仅渲染开启）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -211,6 +212,17 @@ add_test(NAME bench.smoke
 set_tests_properties(bench.smoke PROPERTIES
     PASS_REGULAR_EXPRESSION "BENCH mode=step .*BENCH mode=snapshot .*BENCH mode=jsonl ")
 
+# ---- 输入（M1-04，总是构建，无图形依赖）----
+add_executable(test_input_system input/test_input_system.cpp)
+target_link_libraries(test_input_system PRIVATE terra::input)
+terra_configure_target(test_input_system)
+add_test(NAME input.system COMMAND test_input_system)
+
+# 渲染隔离（M1-03/04）：GLFW、OpenGL 等头文件只出现在允许的位置；控制器与输入模块不得直接使用窗口库。
+add_test(NAME boundary.render_isolation
+    COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+            -P "${PROJECT_SOURCE_DIR}/cmake/TerraCheckRenderIsolation.cmake")
+
 # ---- 渲染（M1 起，仅 TERRA_BUILD_RENDER=ON）----
 # 图形测试带 graphics 标签，可用 ctest -L graphics / -LE graphics 单独运行或排除（NFR-06）。
 # 自动化图形测试固定在 Xvfb + Mesa llvmpipe 上运行（D-022）：清除 DISPLAY，强制 GLVND 选择 Mesa，
@@ -231,4 +243,20 @@ if(TERRA_BUILD_RENDER)
     terra_configure_target(test_render_deps)
     add_test(NAME graphics.render_deps COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_deps> llvmpipe)
     set_tests_properties(graphics.render_deps PROPERTIES LABELS graphics)
+
+    # GLFW 编码翻译表（M1-04）：纯函数，不初始化 GLFW，不需要显示。
+    add_executable(test_glfw_translation platform/test_glfw_translation.cpp)
+    target_link_libraries(test_glfw_translation PRIVATE terra::platform_glfw terra::glfw)
+    terra_configure_target(test_glfw_translation)
+    add_test(NAME input.glfw_translation COMMAND test_glfw_translation)
+
+    # 平台窗口（M1-03）：Xvfb + llvmpipe 中创建窗口与上下文；另一用例在无显示环境中确认返回 NoDisplay。
+    add_executable(test_platform_window platform/test_platform_window.cpp)
+    target_link_libraries(test_platform_window PRIVATE terra::platform_glfw terra::glad)
+    terra_configure_target(test_platform_window)
+    add_test(NAME graphics.platform_window COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_platform_window> window)
+    add_test(NAME graphics.platform_no_display
+        COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
+                $<TARGET_FILE:test_platform_window> no-display)
+    set_tests_properties(graphics.platform_window graphics.platform_no_display PROPERTIES LABELS graphics)
 endif()

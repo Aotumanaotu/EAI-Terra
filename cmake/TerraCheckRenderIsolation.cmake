@@ -1,0 +1,47 @@
+# 用法：cmake -DSOURCE_DIR=<仓库根目录> -P TerraCheckRenderIsolation.cmake
+# 检查窗口库与图形 API 头文件只出现在允许的位置（D-017、D-018、NFR-01）：
+#   GLFW/   只允许在 engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
+#   glad/、GL/、KHR/  只允许在 engine/render/、engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
+#   X11/、wayland-、SDL、vulkan/  engine/ 与 apps/ 中一律不允许（将来的适配器另行登记）
+# 另外，engine/input/ 与 engine/platform/include/（接口层）不得包含任何上述头文件。
+if(NOT DEFINED SOURCE_DIR)
+    message(FATAL_ERROR "需要 -DSOURCE_DIR")
+endif()
+
+file(GLOB_RECURSE files
+    "${SOURCE_DIR}/engine/*" "${SOURCE_DIR}/apps/*" "${SOURCE_DIR}/tests/*")
+
+set(glfw_allowed "/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
+set(gl_allowed "/engine/render/|/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
+
+set(violations "")
+set(checked 0)
+foreach(f IN LISTS files)
+    if(NOT f MATCHES "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx|inl|ipp)$")
+        continue()
+    endif()
+    math(EXPR checked "${checked} + 1")
+    file(RELATIVE_PATH rel "${SOURCE_DIR}" "${f}")
+    set(rel "/${rel}")
+    file(STRINGS "${f}" includes REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"]")
+    foreach(line IN LISTS includes)
+        if(line MATCHES "[<\"]GLFW/" AND NOT rel MATCHES "${glfw_allowed}")
+            list(APPEND violations "${rel}: ${line}（GLFW 只能出现在 GLFW 平台实现中）")
+        endif()
+        if(line MATCHES "[<\"](glad/|GL/|KHR/)" AND NOT rel MATCHES "${gl_allowed}")
+            list(APPEND violations "${rel}: ${line}（OpenGL 头文件只能出现在渲染与平台实现中）")
+        endif()
+        if(line MATCHES "[<\"](X11/|wayland-|SDL|vulkan/)" AND rel MATCHES "^/(engine|apps)/")
+            list(APPEND violations "${rel}: ${line}（窗口系统或其他图形 API 头文件不允许直接使用）")
+        endif()
+    endforeach()
+endforeach()
+
+if(checked EQUAL 0)
+    message(FATAL_ERROR "没有找到任何待检查的文件，SOURCE_DIR 可能有误：${SOURCE_DIR}")
+endif()
+if(violations)
+    string(REPLACE ";" "\n" violations "${violations}")
+    message(FATAL_ERROR "渲染隔离检查失败：\n${violations}")
+endif()
+message(STATUS "已检查 ${checked} 个文件，窗口库与图形 API 头文件只出现在允许的位置")

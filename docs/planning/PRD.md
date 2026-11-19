@@ -1,6 +1,6 @@
 # EAI Terra 产品需求文档（PRD）
 
-> 产品：**EAI Terra — An Open Robotics Simulation Engine**。M0 物理基础已全部验收，当前处于 M1 渲染基础阶段；实际窗口、输入与渲染器尚未实现。需求完成度以[开发记录](DEVELOPMENT_LOG.md)为准，“已确定”仅指产品和技术方向。状态规则见[文档导航](README.md)。
+> 产品：**EAI Terra — An Open Robotics Simulation Engine**。M0 物理基础已全部验收，当前处于 M1 渲染基础阶段；平台窗口与输入系统已实现、待验收，实际网格渲染器尚未实现。需求完成度以[开发记录](DEVELOPMENT_LOG.md)为准，“已确定”仅指产品和技术方向。状态规则见[文档导航](README.md)。
 
 ## 1. 产品概述
 

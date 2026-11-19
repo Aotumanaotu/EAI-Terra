@@ -1,0 +1,10 @@
+# HDRI 环境贴图锁定记录（M1-08b，D-027）。由 scripts/assets/fetch_hdri.sh 读取。
+# 来源：Poly Haven（https://polyhaven.com），许可 CC0 1.0（公有领域，可商用、可再分发、无需署名）。
+# 运行时使用官方 2K Radiance .hdr（2048×1024）；md5 与 Poly Haven 接口（api.polyhaven.com/files/<名称>）一致。
+# 用户另保存了同两张贴图的官方 4K 原件（仓库根目录 HDRI/，不提交；md5 均与 Poly Haven 接口一致），可用于以后的高分辨率背景：
+#   rural_asphalt_road_4k.hdr sha256 325e8626aefa9cfdf66026bdfd669209d44cba1a32536e172db215e0e21a22d7
+#   studio_small_09_4k.hdr    sha256 71a876b4315e691cc095e7340228dc9bc48417c26a681b4fc30938161fc85e39
+#   （此前的 4K OpenEXR 版本 sha256 a820bef6…59f6a793 / bbb83755…65ffda558，用户已换成 .hdr）
+# 格式：名称|URL|sha256|作者|用途
+rural_asphalt_road_2k.hdr|https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/rural_asphalt_road_2k.hdr|e135ecfe1852e716b202ddb23678b1063aab41e350588eb21b2a102b2ac74d63|Alexander Scholten|默认室外环境
+studio_small_09_2k.hdr|https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/studio_small_09_2k.hdr|36724313c0fc66dab126ff90f081b85a0b1ef47be65eda1417bd20b033f0573f|Sergej Majboroda|摄影棚（材质检查、画质基线）

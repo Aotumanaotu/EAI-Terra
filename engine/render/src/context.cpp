@@ -72,6 +72,11 @@ ContextResult RenderContext::create(GlLoader loader) {
     gl.renderer = glString(GL_RENDERER);
     gl.version = glString(GL_VERSION);
     gl.glslVersion = glString(GL_SHADING_LANGUAGE_VERSION);
+    {
+        GLint samples = 1;
+        glGetIntegerv(GL_MAX_SAMPLES, &samples);
+        gl.maxSamples = samples > 0 ? samples : 1;
+    }
     if (gl.major < 4 || (gl.major == 4 && gl.minor < 5)) {
         result.error = "OpenGL 版本 " + std::to_string(gl.major) + "." + std::to_string(gl.minor) +
                        " 低于 Terra 要求的 4.5（D-021）；渲染器：" + gl.renderer;
@@ -147,6 +152,44 @@ void RenderContext::drawTriangles(int firstVertex, int vertexCount) {
 void RenderContext::drawLines(int firstVertex, int vertexCount) {
     glDrawArrays(GL_LINES, firstVertex, vertexCount);
 }
+
+void RenderContext::drawIndexed(int indexCount) {
+    glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, nullptr);
+}
+
+void RenderContext::setCullBackFaces(bool enabled) {
+    if (enabled) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+}
+
+void RenderContext::setDepthWrite(bool enabled) { glDepthMask(enabled ? GL_TRUE : GL_FALSE); }
+
+void RenderContext::setDepthLessEqual(bool enabled) { glDepthFunc(enabled ? GL_LEQUAL : GL_LESS); }
+
+void RenderContext::setAlphaBlend(bool enabled) {
+    if (enabled) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+        glDisable(GL_BLEND);
+    }
+}
+
+void RenderContext::setPolygonOffset(bool enabled, float factor, float units) {
+    if (enabled) {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(factor, units);
+    } else {
+        glDisable(GL_POLYGON_OFFSET_FILL);
+    }
+}
+
+void RenderContext::bindTexture(std::uint32_t unit, std::uint32_t texture) { glBindTextureUnit(unit, texture); }
 
 std::vector<std::uint8_t> RenderContext::readPixels(int x, int y, int width, int height) const {
     std::vector<std::uint8_t> pixels;

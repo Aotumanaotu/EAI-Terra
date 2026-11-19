@@ -329,6 +329,43 @@ st::WindowMode toWindowMode(terra::platform::DisplayMode mode) noexcept {
     return st::WindowMode::Windowed;
 }
 
+terra::render::ToneMapper toToneMapper(st::ToneMapperSetting mapper) noexcept {
+    switch (mapper) {
+        case st::ToneMapperSetting::AgX: return terra::render::ToneMapper::AgX;
+        case st::ToneMapperSetting::PbrNeutral: return terra::render::ToneMapper::PbrNeutral;
+        case st::ToneMapperSetting::Aces: return terra::render::ToneMapper::Aces;
+        case st::ToneMapperSetting::None: return terra::render::ToneMapper::None;
+    }
+    return terra::render::ToneMapper::AgX;
+}
+
+terra::render::SunLight toSunLight(const st::RenderSettings& render) {
+    const double az = render.sunAzimuthDegrees * kRadiansPerDegree;
+    const double el = render.sunElevationDegrees * kRadiansPerDegree;
+    terra::render::SunLight sun;
+    sun.direction = {static_cast<float>(std::cos(el) * std::cos(az)), static_cast<float>(std::cos(el) * std::sin(az)),
+                     static_cast<float>(std::sin(el))};
+    sun.color = {1.0f, 0.95f, 0.88f};  // 略暖的白光
+    sun.intensity = static_cast<float>(render.sunIntensity);
+    return sun;
+}
+
+terra::render::HemisphereLight toEnvironment(const st::RenderSettings& render) {
+    terra::render::HemisphereLight env;  // 天空色与地面色用渲染模块的默认值
+    env.intensity = static_cast<float>(render.ambientIntensity);
+    return env;
+}
+
+terra::render::RenderSettings toRenderSettings(const st::RenderSettings& render) {
+    terra::render::RenderSettings out;
+    out.toneMapper = toToneMapper(render.toneMapper);
+    out.exposureEv = static_cast<float>(render.exposureEv);
+    out.msaaSamples = render.msaaSamples;
+    out.shadows = render.shadows;
+    out.grid = render.grid;
+    return out;
+}
+
 std::vector<in::Binding> buttonBindings(const st::KeySlots& slots) {
     std::vector<in::Binding> out;
     for (const in::Key k : slots) {

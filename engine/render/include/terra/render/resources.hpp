@@ -53,6 +53,8 @@ public:
     void setVertexBuffer(std::uint32_t binding, const Buffer& buffer, std::size_t offset, std::size_t stride);
     // 顶点属性 location：components 个 float，从顶点起始处 offset 字节开始，读自绑定点 binding。
     void setFloatAttribute(std::uint32_t location, std::uint32_t binding, int components, std::size_t offset);
+    // 索引缓冲（32 位无符号索引，M1-08）。
+    void setIndexBuffer(const Buffer& buffer);
     void bind() const;
 
     std::uint32_t name() const noexcept { return name_; }
@@ -101,6 +103,9 @@ public:
     int uniformLocation(const std::string& uniform) const;
     void setUniform(int location, float x, float y, float z, float w);
     void setUniformMatrix4(int location, const float* columnMajor16);
+    void setUniformInt(int location, int value);  // 也用于采样器绑定的纹理单元
+    void setUniformFloat(int location, float value);
+    void setUniformVec3(int location, float x, float y, float z);
 
     std::uint32_t name() const noexcept { return name_; }
 
@@ -118,11 +123,32 @@ class Framebuffer;
 
 struct FramebufferResult;
 
-// 离屏帧缓冲：RGBA8 颜色纹理 + 可选 DEPTH24_STENCIL8 深度。
+enum class ColorFormat {
+    None,     // 无颜色附件（仅深度，如阴影图）
+    Rgba8,    // 8 位，供显示与回读
+    Rgba16F,  // 半精度浮点，HDR 场景渲染（M1-08）
+};
+
+enum class DepthFormat {
+    None,
+    Renderbuffer,     // DEPTH24_STENCIL8 渲染缓冲，不可采样
+    ShadowTexture,    // DEPTH32F 纹理，开启深度比较（sampler2DShadow），边界外视为不在阴影中
+};
+
+struct FramebufferDesc {
+    int width = 0;
+    int height = 0;
+    ColorFormat color = ColorFormat::Rgba8;
+    DepthFormat depth = DepthFormat::Renderbuffer;
+    int samples = 1;  // > 1 时为多重采样（颜色与深度都是多重采样渲染缓冲，需 resolveTo 后才能采样或回读）
+};
+
+// 离屏帧缓冲。默认：RGBA8 颜色纹理 + DEPTH24_STENCIL8 深度。
 class Framebuffer {
 public:
     Framebuffer() = default;
     static FramebufferResult create(int width, int height, bool withDepth);
+    static FramebufferResult create(const FramebufferDesc& desc);
 
     ~Framebuffer();
     Framebuffer(Framebuffer&& other) noexcept;
@@ -135,21 +161,28 @@ public:
     // 恢复默认帧缓冲（窗口）；视口由调用方设置。
     static void bindDefault();
 
-    // 读回 RGBA8 像素，行序自下而上（OpenGL 约定），每行 width*4 字节。
+    // 读回 RGBA8 像素，行序自下而上（OpenGL 约定），每行 width*4 字节。仅单采样、带颜色附件时有效。
     std::vector<std::uint8_t> readPixels(int x, int y, int width, int height) const;
+    // 把颜色复制到同尺寸的 target（多重采样时即解析），使用最近邻过滤。
+    void resolveTo(const Framebuffer& target) const;
 
     int width() const noexcept { return width_; }
     int height() const noexcept { return height_; }
     std::uint32_t name() const noexcept { return name_; }
-    std::uint32_t colorTexture() const noexcept { return color_; }
+    std::uint32_t colorTexture() const noexcept { return colorIsTexture_ ? color_ : 0u; }
+    std::uint32_t depthTexture() const noexcept { return depthIsTexture_ ? depth_ : 0u; }
+    int samples() const noexcept { return samples_; }
 
 private:
     void release() noexcept;
     std::uint32_t name_ = 0;
-    std::uint32_t color_ = 0;
+    std::uint32_t color_ = 0;  // 纹理或（多重采样时）渲染缓冲
     std::uint32_t depth_ = 0;
+    bool colorIsTexture_ = false;
+    bool depthIsTexture_ = false;
     int width_ = 0;
     int height_ = 0;
+    int samples_ = 1;
 };
 
 struct FramebufferResult {

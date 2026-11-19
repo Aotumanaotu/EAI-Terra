@@ -1,0 +1,277 @@
+#include "terra/render/pbr.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+namespace terra::render::pbr {
+
+namespace {
+
+Vec3f add(Vec3f a, Vec3f b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+Vec3f sub(Vec3f a, Vec3f b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Vec3f mul(Vec3f a, Vec3f b) { return {a.x * b.x, a.y * b.y, a.z * b.z}; }
+Vec3f scale(Vec3f a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+float dot(Vec3f a, Vec3f b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+Vec3f normalize(Vec3f a) {
+    const float len = std::sqrt(dot(a, a));
+    return len > 0.0f ? scale(a, 1.0f / len) : a;
+}
+Vec3f mix(Vec3f a, Vec3f b, float t) { return add(scale(a, 1.0f - t), scale(b, t)); }
+float clamp01(float x) { return std::min(std::max(x, 0.0f), 1.0f); }
+Vec3f clamp01(Vec3f a) { return {clamp01(a.x), clamp01(a.y), clamp01(a.z)}; }
+Vec3f reflect(Vec3f i, Vec3f n) { return sub(i, scale(n, 2.0f * dot(n, i))); }
+
+// GLSL mat3(c0, c1, c2) 按列存储：m · v = c0·v.x + c1·v.y + c2·v.z。
+Vec3f mulColumns(const float m[9], Vec3f v) {
+    return {m[0] * v.x + m[3] * v.y + m[6] * v.z, m[1] * v.x + m[4] * v.y + m[7] * v.z, m[2] * v.x + m[5] * v.y + m[8] * v.z};
+}
+
+// AgX 最小近似（Benjamin Wrensch，iolite；Blender 4 的 AgX 视图变换的常用实时近似）。
+constexpr float kAgxIn[9] = {0.842479062253094f, 0.0423282422610123f, 0.0423756549057051f,
+                             0.0784335999999992f, 0.878468636469772f, 0.0784336f,
+                             0.0792237451477643f, 0.0791661274605434f, 0.879142973793104f};
+constexpr float kAgxOut[9] = {1.19687900512017f, -0.0528968517574562f, -0.0529716355144438f,
+                              -0.0980208811401368f, 1.15190312990417f, -0.0980434501171241f,
+                              -0.0990297440797205f, -0.0989611768448433f, 1.15107367264116f};
+constexpr float kAgxMinEv = -12.47393f;
+constexpr float kAgxMaxEv = 4.026069f;
+
+float agxContrast(float x) {
+    const float x2 = x * x;
+    const float x4 = x2 * x2;
+    return 15.5f * x4 * x2 - 40.14f * x4 * x + 31.96f * x4 - 6.868f * x2 * x + 0.4298f * x2 + 0.1191f * x - 0.00232f;
+}
+
+Vec3f agx(Vec3f c) {
+    Vec3f v = mulColumns(kAgxIn, c);
+    const auto encode = [](float x) {
+        const float ev = std::min(std::max(std::log2(std::max(x, 1e-10f)), kAgxMinEv), kAgxMaxEv);
+        return agxContrast((ev - kAgxMinEv) / (kAgxMaxEv - kAgxMinEv));
+    };
+    v = {encode(v.x), encode(v.y), encode(v.z)};
+    v = mulColumns(kAgxOut, v);
+    return {std::pow(std::max(v.x, 0.0f), 2.2f), std::pow(std::max(v.y, 0.0f), 2.2f), std::pow(std::max(v.z, 0.0f), 2.2f)};
+}
+
+// Khronos PBR Neutral（2024）。
+Vec3f pbrNeutral(Vec3f c) {
+    constexpr float kStart = 0.8f - 0.04f;
+    constexpr float kDesaturation = 0.15f;
+    const float x = std::min(c.x, std::min(c.y, c.z));
+    const float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+    c = sub(c, Vec3f{offset, offset, offset});
+    const float peak = std::max(c.x, std::max(c.y, c.z));
+    if (peak < kStart) return c;
+    constexpr float d = 1.0f - kStart;
+    const float newPeak = 1.0f - d * d / (peak + d - kStart);
+    c = scale(c, newPeak / peak);
+    const float g = 1.0f - 1.0f / (kDesaturation * (peak - newPeak) + 1.0f);
+    return mix(c, Vec3f{newPeak, newPeak, newPeak}, g);
+}
+
+// ACES 拟合（Krzysztof Narkowicz，输入先乘 0.6）。
+float acesChannel(float x) {
+    x *= 0.6f;
+    return (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
+}
+
+}  // namespace
+
+float distributionGgx(float NoH, float alpha) {
+    const float a2 = alpha * alpha;
+    const float f = (NoH * a2 - NoH) * NoH + 1.0f;
+    return a2 / (kPi * f * f);
+}
+
+float visibilitySmithGgxCorrelated(float NoV, float NoL, float alpha) {
+    const float a2 = alpha * alpha;
+    const float ggxl = NoV * std::sqrt((-NoL * a2 + NoL) * NoL + a2);
+    const float ggxv = NoL * std::sqrt((-NoV * a2 + NoV) * NoV + a2);
+    return 0.5f / (ggxv + ggxl);
+}
+
+Vec3f fresnelSchlick(Vec3f f0, float VoH) {
+    const float f = std::pow(1.0f - VoH, 5.0f);
+    return add(Vec3f{f, f, f}, scale(f0, 1.0f - f));
+}
+
+Vec3f hemisphere(const HemisphereLight& env, Vec3f direction) {
+    return scale(mix(env.ground, env.sky, 0.5f * direction.z + 0.5f), env.intensity);
+}
+
+Vec3f shade(const Material& m, Vec3f n, Vec3f v, const SunLight& sun, const HemisphereLight& env, float shadow) {
+    const float rough = std::max(m.roughness, kMinRoughness);
+    const float alpha = rough * rough;
+    const Vec3f diffuseColor = scale(m.baseColor, 1.0f - m.metallic);
+    const float r0 = 0.16f * m.reflectance * m.reflectance;
+    const Vec3f f0 = mix(Vec3f{r0, r0, r0}, m.baseColor, m.metallic);
+    const float NoV = std::max(dot(n, v), 1e-4f);
+    Vec3f color = m.emissive;
+
+    const Vec3f l = sun.direction;
+    const float NoL = clamp01(dot(n, l));
+    if (NoL > 0.0f) {
+        const Vec3f h = normalize(add(v, l));
+        const float NoH = clamp01(dot(n, h));
+        const float LoH = clamp01(dot(l, h));
+        const Vec3f F = fresnelSchlick(f0, LoH);
+        const float D = distributionGgx(NoH, alpha);
+        const float V = visibilitySmithGgxCorrelated(NoV, NoL, alpha);
+        const Vec3f Fr = scale(F, D * V);
+        const Vec3f Fd = scale(diffuseColor, 1.0f / kPi);
+        const Vec3f radiance = scale(sun.color, sun.intensity * NoL * shadow);
+        color = add(color, mul(add(Fd, Fr), radiance));
+    }
+
+    const float fresnel = std::pow(1.0f - NoV, 5.0f);
+    const Vec3f rough3{1.0f - rough, 1.0f - rough, 1.0f - rough};
+    const Vec3f Fa = add(f0, scale(sub(Vec3f{std::max(rough3.x, f0.x), std::max(rough3.y, f0.y), std::max(rough3.z, f0.z)}, f0),
+                                   fresnel));
+    const Vec3f r = normalize(mix(reflect(scale(v, -1.0f), n), n, alpha));
+    const Vec3f one{1.0f, 1.0f, 1.0f};
+    color = add(color, add(mul(mul(hemisphere(env, n), diffuseColor), sub(one, Fa)), mul(hemisphere(env, r), Fa)));
+    return color;
+}
+
+Vec3f toneMap(Vec3f c, ToneMapper mapper, float exposureEv) {
+    c = scale(c, std::exp2(exposureEv));
+    c = {std::max(c.x, 0.0f), std::max(c.y, 0.0f), std::max(c.z, 0.0f)};
+    switch (mapper) {
+        case ToneMapper::AgX: c = agx(c); break;
+        case ToneMapper::PbrNeutral: c = pbrNeutral(c); break;
+        case ToneMapper::Aces: c = {acesChannel(c.x), acesChannel(c.y), acesChannel(c.z)}; break;
+        case ToneMapper::None: break;
+    }
+    return clamp01(c);
+}
+
+float srgbEncode(float x) {
+    x = clamp01(x);
+    return x <= 0.0031308f ? 12.92f * x : 1.055f * std::pow(x, 1.0f / 2.4f) - 0.055f;
+}
+
+std::array<std::uint8_t, 3> displayPixel(Vec3f radiance, ToneMapper mapper, float exposureEv) {
+    const Vec3f t = toneMap(radiance, mapper, exposureEv);
+    const auto to8 = [](float x) { return static_cast<std::uint8_t>(std::lround(srgbEncode(x) * 255.0f)); };
+    return {to8(t.x), to8(t.y), to8(t.z)};
+}
+
+const char* shaderLibrary() {
+    // 与上面的 C++ 实现逐项对应。
+    return R"GLSL(
+const float PI = 3.14159265358979;
+const float MIN_ROUGHNESS = 0.045;
+
+uniform vec3 uSky;
+uniform vec3 uGround;
+uniform float uAmbient;
+
+float D_GGX(float NoH, float a) {
+    float a2 = a * a;
+    float f = (NoH * a2 - NoH) * NoH + 1.0;
+    return a2 / (PI * f * f);
+}
+
+float V_SmithGGXCorrelated(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float ggxl = NoV * sqrt((-NoL * a2 + NoL) * NoL + a2);
+    float ggxv = NoL * sqrt((-NoV * a2 + NoV) * NoV + a2);
+    return 0.5 / (ggxv + ggxl);
+}
+
+vec3 F_Schlick(vec3 f0, float VoH) {
+    float f = pow(1.0 - VoH, 5.0);
+    return vec3(f) + f0 * (1.0 - f);
+}
+
+vec3 hemisphere(vec3 d) {
+    return mix(uGround, uSky, 0.5 * d.z + 0.5) * uAmbient;
+}
+
+vec3 shadeSurface(vec3 baseColor, float metallic, float roughness, float reflectance, vec3 emissive,
+                  vec3 n, vec3 v, vec3 l, vec3 sunRadiance, float shadow) {
+    float rough = max(roughness, MIN_ROUGHNESS);
+    float a = rough * rough;
+    vec3 diffuseColor = baseColor * (1.0 - metallic);
+    float r0 = 0.16 * reflectance * reflectance;
+    vec3 f0 = mix(vec3(r0), baseColor, metallic);
+    float NoV = max(dot(n, v), 1e-4);
+    vec3 color = emissive;
+    float NoL = clamp(dot(n, l), 0.0, 1.0);
+    if (NoL > 0.0) {
+        vec3 h = normalize(v + l);
+        float NoH = clamp(dot(n, h), 0.0, 1.0);
+        float LoH = clamp(dot(l, h), 0.0, 1.0);
+        vec3 F = F_Schlick(f0, LoH);
+        float D = D_GGX(NoH, a);
+        float V = V_SmithGGXCorrelated(NoV, NoL, a);
+        vec3 Fr = F * (D * V);
+        vec3 Fd = diffuseColor * (1.0 / PI);
+        color += (Fd + Fr) * (sunRadiance * (NoL * shadow));
+    }
+    float fresnel = pow(1.0 - NoV, 5.0);
+    vec3 Fa = f0 + (max(vec3(1.0 - rough), f0) - f0) * fresnel;
+    vec3 r = normalize(mix(reflect(-v, n), n, a));
+    color += hemisphere(n) * diffuseColor * (vec3(1.0) - Fa) + hemisphere(r) * Fa;
+    return color;
+}
+
+vec3 agxContrast(vec3 x) {
+    vec3 x2 = x * x;
+    vec3 x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+vec3 agx(vec3 c) {
+    const mat3 agxIn = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+                            0.0784335999999992, 0.878468636469772, 0.0784336,
+                            0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const mat3 agxOut = mat3(1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+                             -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+                             -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+    const float minEv = -12.47393;
+    const float maxEv = 4.026069;
+    vec3 v = agxIn * c;
+    v = clamp(log2(max(v, vec3(1e-10))), minEv, maxEv);
+    v = agxContrast((v - minEv) / (maxEv - minEv));
+    v = agxOut * v;
+    return pow(max(v, vec3(0.0)), vec3(2.2));
+}
+
+vec3 pbrNeutral(vec3 c) {
+    const float startCompression = 0.8 - 0.04;
+    const float desaturation = 0.15;
+    float x = min(c.r, min(c.g, c.b));
+    float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    c -= offset;
+    float peak = max(c.r, max(c.g, c.b));
+    if (peak < startCompression) return c;
+    const float d = 1.0 - startCompression;
+    float newPeak = 1.0 - d * d / (peak + d - startCompression);
+    c *= newPeak / peak;
+    float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+    return mix(c, vec3(newPeak), g);
+}
+
+vec3 aces(vec3 x) {
+    x *= 0.6;
+    return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+}
+
+// mode：0 AgX、1 PBR Neutral、2 ACES、3 无
+vec3 toneMap(vec3 c, int mode, float exposureEv) {
+    c = max(c * exp2(exposureEv), vec3(0.0));
+    if (mode == 0) c = agx(c);
+    else if (mode == 1) c = pbrNeutral(c);
+    else if (mode == 2) c = aces(c);
+    return clamp(c, 0.0, 1.0);
+}
+
+float srgbEncode(float x) {
+    x = clamp(x, 0.0, 1.0);
+    return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+)GLSL";
+}
+
+}  // namespace terra::render::pbr

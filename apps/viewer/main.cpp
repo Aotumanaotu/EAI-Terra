@@ -30,7 +30,10 @@
 #include "terra/input/input_system.hpp"
 #include "terra/platform/glfw/glfw_platform.hpp"
 #include "terra/render/context.hpp"
+#include "terra/render/mesh.hpp"
+#include "terra/render/pbr.hpp"
 #include "terra/render/resources.hpp"
+#include "terra/render/scene_renderer.hpp"
 #include "terra/settings/settings.hpp"
 #include "terra/ui/text.hpp"
 #include "terra/ui/ui_context.hpp"
@@ -89,117 +92,74 @@ bool parseOptions(int argc, char** argv, Options& o) {
     return true;
 }
 
-// ---- 视口中的预览场景：地面网格、坐标轴、彩色立方体（M1-08 起由正式的网格与材质替代）----
+// ---- 视口演示场景（M1-08a）：地面、立方体、两排材质球（金属度 0→1、粗糙度 0→1）、圆柱、胶囊 ----
+// 网格与材质由 Terra Render 绘制（PBR、太阳光阴影、色调映射）；地面网格与 X/Y 轴由渲染器在着色器中绘制。
 
-struct Vertex {
-    float position[3];
-    float color[3];
-};
-
-class ScenePreview {
+class DemoScene {
 public:
-    bool create(std::string& error) {
-        const char* vs = R"(#version 450 core
-layout(location = 0) in vec3 aPosition;
-layout(location = 1) in vec3 aColor;
-uniform mat4 uViewProjection;
-out vec3 vColor;
-void main() { vColor = aColor; gl_Position = uViewProjection * vec4(aPosition, 1.0); }
-)";
-        const char* fs = R"(#version 450 core
-in vec3 vColor;
-out vec4 fragColor;
-void main() { fragColor = vec4(vColor, 1.0); }
-)";
-        auto shader = r::ShaderProgram::create({{r::ShaderStage::Vertex, "preview.vert", vs},
-                                                {r::ShaderStage::Fragment, "preview.frag", fs}});
-        if (!shader.program) {
-            error = shader.error ? shader.error->summary() : std::string{"着色器创建失败"};
-            return false;
-        }
-        program_ = std::move(*shader.program);
-        location_ = program_.uniformLocation("uViewProjection");
-        const std::vector<Vertex> verts = build();
-        buffer_ = r::Buffer::create(verts.size() * sizeof(Vertex), verts.data());
-        vao_ = r::VertexArray::create();
-        vao_.setVertexBuffer(0, buffer_, 0, sizeof(Vertex));
-        vao_.setFloatAttribute(0, 0, 3, offsetof(Vertex, position));
-        vao_.setFloatAttribute(1, 0, 3, offsetof(Vertex, color));
-        return true;
+    static r::Material cubeMaterial() {
+        r::Material m;
+        m.baseColor = {0.80f, 0.42f, 0.22f};
+        m.roughness = 0.45f;
+        return m;
     }
 
-    void draw(r::RenderContext& ctx, const v::Camera& camera, double aspect) {
-        const v::Matrix4 vp = multiply(camera.projectionMatrix(aspect), camera.viewMatrix());
-        program_.use();
-        program_.setUniformMatrix4(location_, vp.data());
-        vao_.bind();
-        ctx.drawLines(0, gridCount_);
-        ctx.drawLines(axesFirst_, 6);
-        ctx.drawTriangles(cubeFirst_, 36);
+    // 网格存放在本对象中，items 指向它们：创建后不能移动。
+    void create() {
+        ground_ = r::GpuMesh::create(r::meshes::plane(20.0f, 20.0f));
+        cube_ = r::GpuMesh::create(r::meshes::box(0.5f, 0.5f, 0.5f));
+        sphere_ = r::GpuMesh::create(r::meshes::sphere(0.45f));
+        cylinder_ = r::GpuMesh::create(r::meshes::cylinder(0.35f, 0.5f));
+        capsule_ = r::GpuMesh::create(r::meshes::capsule(0.3f, 0.35f));
+
+        r::Material ground;
+        ground.baseColor = {0.42f, 0.42f, 0.43f};
+        ground.roughness = 0.85f;
+        items_.push_back({&ground_, r::identityMatrix(), ground, false});
+        items_.push_back({&cube_, r::translationScale({0.0f, 0.0f, 0.5f}), cubeMaterial(), true});
+        for (int i = 0; i < 5; ++i) {
+            const float t = static_cast<float>(i) / 4.0f;
+            const float y = -3.2f + 1.6f * static_cast<float>(i);
+            r::Material metal;  // 金属度 0 → 1
+            metal.baseColor = {0.95f, 0.72f, 0.30f};
+            metal.roughness = 0.3f;
+            metal.metallic = t;
+            items_.push_back({&sphere_, r::translationScale({2.2f, y, 0.45f}), metal, true});
+            r::Material rough;  // 粗糙度 0 → 1
+            rough.baseColor = {0.15f, 0.38f, 0.80f};
+            rough.roughness = t;
+            items_.push_back({&sphere_, r::translationScale({3.4f, y, 0.45f}), rough, true});
+        }
+        r::Material green;
+        green.baseColor = {0.30f, 0.65f, 0.38f};
+        green.roughness = 0.6f;
+        items_.push_back({&cylinder_, r::translationScale({0.5f, -2.2f, 0.5f}), green, true});
+        r::Material steel;
+        steel.baseColor = {0.86f, 0.86f, 0.88f};
+        steel.metallic = 1.0f;
+        steel.roughness = 0.25f;
+        items_.push_back({&capsule_, r::translationScale({0.5f, 2.2f, 0.65f}), steel, true});
     }
+
+    const std::vector<r::RenderItem>& items() const noexcept { return items_; }
 
 private:
-    static v::Matrix4 multiply(const v::Matrix4& a, const v::Matrix4& b) {
-        v::Matrix4 out{};
-        for (std::size_t c = 0; c < 4; ++c) {
-            for (std::size_t row = 0; row < 4; ++row) {
-                float s = 0.0f;
-                for (std::size_t k = 0; k < 4; ++k) s += a[k * 4 + row] * b[c * 4 + k];
-                out[c * 4 + row] = s;
-            }
-        }
-        return out;
-    }
-
-    std::vector<Vertex> build() {
-        std::vector<Vertex> verts;
-        for (int i = -10; i <= 10; ++i) {
-            if (i == 0) continue;
-            const float c = i % 5 == 0 ? 0.36f : 0.24f;
-            const auto fi = static_cast<float>(i);
-            verts.push_back({{fi, -10, 0}, {c, c, c}});
-            verts.push_back({{fi, 10, 0}, {c, c, c}});
-            verts.push_back({{-10, fi, 0}, {c, c, c}});
-            verts.push_back({{10, fi, 0}, {c, c, c}});
-        }
-        verts.push_back({{-10, 0, 0}, {0.30f, 0.30f, 0.30f}});
-        verts.push_back({{0, 0, 0}, {0.30f, 0.30f, 0.30f}});
-        verts.push_back({{0, -10, 0}, {0.30f, 0.30f, 0.30f}});
-        verts.push_back({{0, 0, 0}, {0.30f, 0.30f, 0.30f}});
-        gridCount_ = static_cast<int>(verts.size());
-        axesFirst_ = gridCount_;
-        verts.push_back({{0, 0, 0.001f}, {0.90f, 0.25f, 0.25f}});
-        verts.push_back({{10, 0, 0.001f}, {0.90f, 0.25f, 0.25f}});
-        verts.push_back({{0, 0, 0.001f}, {0.45f, 0.80f, 0.30f}});
-        verts.push_back({{0, 10, 0.001f}, {0.45f, 0.80f, 0.30f}});
-        verts.push_back({{0, 0, 0}, {0.30f, 0.50f, 0.95f}});
-        verts.push_back({{0, 0, 2}, {0.30f, 0.50f, 0.95f}});
-        cubeFirst_ = static_cast<int>(verts.size());
-        const float h = 0.5f;
-        const float corners[8][3] = {{-h, -h, 0}, {h, -h, 0}, {h, h, 0}, {-h, h, 0},
-                                     {-h, -h, 1}, {h, -h, 1}, {h, h, 1}, {-h, h, 1}};
-        const int faces[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {1, 2, 6, 5}, {3, 0, 4, 7}};
-        const float colors[6][3] = {{0.35f, 0.35f, 0.40f}, {0.85f, 0.85f, 0.88f}, {0.80f, 0.45f, 0.30f},
-                                    {0.30f, 0.60f, 0.85f}, {0.85f, 0.70f, 0.30f}, {0.45f, 0.75f, 0.50f}};
-        for (int f = 0; f < 6; ++f) {
-            const int* q = faces[f];
-            const float* col = colors[f];
-            for (const int idx : {q[0], q[1], q[2], q[0], q[2], q[3]}) {
-                const float* p = corners[idx];
-                verts.push_back({{p[0], p[1], p[2]}, {col[0], col[1], col[2]}});
-            }
-        }
-        return verts;
-    }
-
-    r::ShaderProgram program_;
-    r::Buffer buffer_;
-    r::VertexArray vao_;
-    int location_ = -1;
-    int gridCount_ = 0;
-    int axesFirst_ = 0;
-    int cubeFirst_ = 0;
+    r::GpuMesh ground_;
+    r::GpuMesh cube_;
+    r::GpuMesh sphere_;
+    r::GpuMesh cylinder_;
+    r::GpuMesh capsule_;
+    std::vector<r::RenderItem> items_;
 };
+
+r::ViewParams viewParams(const v::Camera& camera, double aspect) {
+    r::ViewParams p;
+    p.view = camera.viewMatrix();
+    p.projection = camera.projectionMatrix(aspect);
+    p.cameraPosition = {static_cast<float>(camera.position.x), static_cast<float>(camera.position.y),
+                        static_cast<float>(camera.position.z)};
+    return p;
+}
 
 // ---- 应用状态 ----
 
@@ -351,8 +311,8 @@ struct Frame {
     r::RenderContext& ctx;
     v::Camera& camera;
     v::CameraController& controller;
-    ScenePreview& scene;
-    std::optional<r::Framebuffer>& viewportFb;
+    DemoScene& scene;
+    r::SceneRenderer& renderer;
     AppState& state;
     SettingsRuntime& settings;
 };
@@ -561,17 +521,11 @@ void viewportPanel(Frame& f) {
         const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
         const int w = std::max(1, static_cast<int>(avail.x * scale.x));
         const int h = std::max(1, static_cast<int>(avail.y * scale.y));
-        if (!f.viewportFb || f.viewportFb->width() != w || f.viewportFb->height() != h) {
-            auto made = r::Framebuffer::create(w, h, true);
-            if (made.framebuffer) f.viewportFb = std::move(made.framebuffer);
-        }
-        if (f.viewportFb && avail.x >= 1.0f && avail.y >= 1.0f) {
-            f.viewportFb->bind();
-            f.ctx.setDepthTest(true);
-            f.ctx.clear({0.11f, 0.11f, 0.12f, 1.0f});
-            f.scene.draw(f.ctx, f.camera, static_cast<double>(w) / static_cast<double>(h));
-            r::Framebuffer::bindDefault();
-            ImGui::Image(static_cast<ImTextureID>(f.viewportFb->colorTexture()), avail, ImVec2(0, 1), ImVec2(1, 0));
+        if (avail.x >= 1.0f && avail.y >= 1.0f) {
+            const st::RenderSettings& rs = f.settings.current.render;
+            f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)), f.scene.items(),
+                              vw::toSunLight(rs), vw::toEnvironment(rs), vw::toRenderSettings(rs));
+            ImGui::Image(static_cast<ImTextureID>(f.renderer.outputTexture()), avail, ImVec2(0, 1), ImVec2(1, 0));
             f.state.viewportHovered = ImGui::IsItemHovered();
             f.state.viewportImageMin = ImGui::GetItemRectMin();
             f.state.viewportImageMax = ImGui::GetItemRectMax();
@@ -589,7 +543,8 @@ void outlinerPanel(Frame& f) {
     if (ImGui::Begin(label(TextId::PanelOutliner, "Outliner").c_str(), &visible)) {
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         if (ImGui::TreeNode(tr(TextId::OutlinerScene))) {
-            for (const TextId item : {TextId::OutlinerGround, TextId::OutlinerAxes, TextId::OutlinerCube}) {
+            for (const TextId item : {TextId::OutlinerGround, TextId::OutlinerAxes, TextId::OutlinerCube, TextId::OutlinerSpheres,
+                                      TextId::OutlinerCylinder, TextId::OutlinerCapsule, TextId::OutlinerSun}) {
                 ImGui::BulletText("%s", tr(item));
             }
             ImGui::TreePop();
@@ -598,6 +553,54 @@ void outlinerPanel(Frame& f) {
         ImGui::TextDisabled("%s", tr(TextId::OutlinerHint));
     }
     ImGui::End();
+}
+
+// 属性面板的“渲染”分组（M1-08）：直接修改设置，下一帧生效并自动保存。
+void renderControls(st::RenderSettings& rs) {
+    ImGui::SeparatorText(tr(TextId::DetailsRender));
+    const auto slider = [](TextId name, const char* id, double& value, st::Range range, const char* format) {
+        ImGui::TextUnformatted(tr(name));
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SliderScalar(id, ImGuiDataType_Double, &value, &range.min, &range.max, format, ImGuiSliderFlags_AlwaysClamp);
+    };
+    slider(TextId::RenderSunAzimuth, "##sunAzimuth", rs.sunAzimuthDegrees, st::ranges::kAzimuth, "%.0f°");
+    slider(TextId::RenderSunElevation, "##sunElevation", rs.sunElevationDegrees, st::ranges::kElevation, "%.0f°");
+    slider(TextId::RenderSunIntensity, "##sunIntensity", rs.sunIntensity, st::ranges::kSunIntensity, "%.2f");
+    slider(TextId::RenderAmbient, "##ambient", rs.ambientIntensity, st::ranges::kAmbient, "%.2f");
+    slider(TextId::RenderExposure, "##exposure", rs.exposureEv, st::ranges::kExposure, "%+.1f EV");
+
+    const std::pair<st::ToneMapperSetting, TextId> mappers[] = {{st::ToneMapperSetting::AgX, TextId::ToneMapperAgx},
+                                                                {st::ToneMapperSetting::PbrNeutral, TextId::ToneMapperNeutral},
+                                                                {st::ToneMapperSetting::Aces, TextId::ToneMapperAces},
+                                                                {st::ToneMapperSetting::None, TextId::ToneMapperNone}};
+    const char* currentMapper = "";
+    for (const auto& [m, text] : mappers) {
+        if (m == rs.toneMapper) currentMapper = tr(text);
+    }
+    ImGui::TextUnformatted(tr(TextId::RenderToneMapper));
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##toneMapper", currentMapper)) {
+        for (const auto& [m, text] : mappers) {
+            if (ImGui::Selectable(tr(text), m == rs.toneMapper)) rs.toneMapper = m;
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::TextUnformatted(tr(TextId::RenderMsaa));
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const auto msaaText = [](int samples) {
+        return samples <= 1 ? std::string{tr(TextId::RenderMsaaOff)} : std::to_string(samples) + "×";
+    };
+    if (ImGui::BeginCombo("##msaa", msaaText(rs.msaaSamples).c_str())) {
+        for (const int samples : {1, 2, 4, 8}) {
+            if (ImGui::Selectable(msaaText(samples).c_str(), samples == rs.msaaSamples)) rs.msaaSamples = samples;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::Checkbox(tr(TextId::RenderShadows), &rs.shadows);
+    ImGui::SameLine();
+    ImGui::Checkbox(tr(TextId::RenderGrid), &rs.grid);
+    if (ImGui::Button(tr(TextId::RenderRestore))) rs = st::RenderSettings{};
 }
 
 void detailsPanel(Frame& f) {
@@ -626,6 +629,7 @@ void detailsPanel(Frame& f) {
             row(tr(TextId::DetailsFov), buf);
             ImGui::EndTable();
         }
+        renderControls(f.settings.current.render);
         ImGui::Spacing();
         ImGui::TextDisabled("%s", tr(TextId::DetailsHint));
     }
@@ -663,9 +667,11 @@ void statsPanel(Frame& f) {
             row(TextId::StatsRenderer, info.renderer);
             row(TextId::StatsOpenGl, info.version);
             row(TextId::StatsDisplayMode, displayModeText(f.window.displayMode()));
-            if (f.viewportFb) {
-                std::snprintf(buf, sizeof(buf), "%d × %d", f.viewportFb->width(), f.viewportFb->height());
+            if (f.renderer.width() > 0) {
+                std::snprintf(buf, sizeof(buf), "%d × %d", f.renderer.width(), f.renderer.height());
                 row(TextId::StatsViewportSize, buf);
+                const int samples = f.renderer.lastFrame().samples;
+                row(TextId::StatsMsaa, samples > 1 ? std::to_string(samples) + "×" : std::string{tr(TextId::RenderMsaaOff)});
             }
             std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(f.window.contentScale()));
             row(TextId::StatsContentScale, buf);
@@ -768,14 +774,42 @@ int selfTest(Frame& f, const ui::UiContext& uiContext, const Options& options) {
     check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误（含 ImGui 渲染后端）");
     check(std::string{tr(TextId::MenuFile)} == "File", "语言已切换为英文");
 
-    // 视口离屏帧缓冲：画面中心是立方体朝向相机的面（默认视角下为绿色面 (115, 191, 128)）
-    const Rgb cubeFace{115, 191, 128};
-    if (f.viewportFb) {
-        const Rgb center = pixelAt(f.viewportFb->readPixels(f.viewportFb->width() / 2, f.viewportFb->height() / 2, 1, 1));
-        std::printf("INFO 视口 %d×%d，中心像素 %s\n", f.viewportFb->width(), f.viewportFb->height(), str(center).c_str());
-        check(near(center, cubeFace, 3), "视口中心为立方体正面颜色");
+    // 视口：画面中心是立方体朝向相机的 -X 面；期望颜色由 C++ 参考着色（与着色器同一公式）按当前渲染设置算出（M1-08a）
+    Rgb cubeFace{0, 0, 0};
+    {
+        const auto& cam = f.camera.position;
+        const auto fwd = f.camera.forward();
+        const double t = (-0.5 - cam.x) / fwd.x;  // 与 x = -0.5 平面相交
+        const r::Vec3f hit{static_cast<float>(cam.x + t * fwd.x), static_cast<float>(cam.y + t * fwd.y),
+                           static_cast<float>(cam.z + t * fwd.z)};
+        check(t > 0.0 && std::fabs(hit.y) < 0.5f && hit.z > 0.0f && hit.z < 1.0f, "视口中心射线落在立方体的 -X 面上");
+        const r::Vec3f toEye{static_cast<float>(cam.x) - hit.x, static_cast<float>(cam.y) - hit.y, static_cast<float>(cam.z) - hit.z};
+        const float len = std::sqrt(toEye.x * toEye.x + toEye.y * toEye.y + toEye.z * toEye.z);
+        const st::RenderSettings& rs = f.settings.current.render;
+        const r::Vec3f radiance = r::pbr::shade(DemoScene::cubeMaterial(), {-1.0f, 0.0f, 0.0f},
+                                                {toEye.x / len, toEye.y / len, toEye.z / len}, vw::toSunLight(rs),
+                                                vw::toEnvironment(rs), 1.0f);
+        const auto px = r::pbr::displayPixel(radiance, vw::toToneMapper(rs.toneMapper), static_cast<float>(rs.exposureEv));
+        cubeFace = {px[0], px[1], px[2]};
+    }
+    if (f.renderer.width() > 0) {
+        const Rgb center = pixelAt(f.renderer.readOutput(f.renderer.width() / 2, f.renderer.height() / 2, 1, 1));
+        std::printf("INFO 视口 %d×%d（%d× MSAA，阴影投射物 %d 个），中心像素 %s，参考着色 %s\n", f.renderer.width(),
+                    f.renderer.height(), f.renderer.lastFrame().samples, f.renderer.lastFrame().shadowCasters,
+                    str(center).c_str(), str(cubeFace).c_str());
+        check(near(center, cubeFace, 3), "视口中心与 C++ 参考着色一致（立方体受光面，AgX）");
+        check(f.renderer.lastFrame().shadowsDrawn, "绘制了太阳光阴影");
     } else {
-        check(false, "视口帧缓冲已创建");
+        check(false, "视口已渲染");
+    }
+    {
+        const r::RenderSettings a = vw::toRenderSettings(st::RenderSettings{});
+        const r::RenderSettings b;
+        check(a.toneMapper == b.toneMapper && a.exposureEv == b.exposureEv && a.msaaSamples == b.msaaSamples &&
+                  a.shadows == b.shadows && a.grid == b.grid &&
+                  vw::toEnvironment(st::RenderSettings{}).intensity == r::HemisphereLight{}.intensity &&
+                  vw::toSunLight(st::RenderSettings{}).intensity == r::SunLight{}.intensity,
+              "设置的默认渲染参数与渲染器默认值一致");
     }
 
     // 窗口画面（尚未交换的后缓冲）：视口图像中心显示同一颜色；菜单栏右端为菜单栏背景色
@@ -986,14 +1020,15 @@ int main(int argc, char** argv) {
     (void)input.addActionMap(app);
     const in::ActionHandle fullscreenAction = input.findAction(kAppMap, "fullscreen");
 
-    ScenePreview scene;
-    std::string sceneError;
-    if (!scene.create(sceneError)) {
-        std::fprintf(stderr, "无法创建预览场景：%s\n", sceneError.c_str());
+    auto rendererMade = r::SceneRenderer::create(ctx);
+    if (!rendererMade.renderer) {
+        std::fprintf(stderr, "无法创建场景渲染器：%s\n", rendererMade.error.value_or("").c_str());
         return 1;
     }
+    r::SceneRenderer& renderer = *rendererMade.renderer;
+    DemoScene scene;
+    scene.create();
 
-    std::optional<r::Framebuffer> viewportFb;
     AppState state;
     state.autoUiScale = autoUiScale;
     state.monitors = monitors;
@@ -1012,7 +1047,7 @@ int main(int argc, char** argv) {
         for (const auto& w : loaded->warnings) state.log.push_back(tr(TextId::LogSettingsWarning) + w);
     }
     settings.applied = settings.current;
-    Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, viewportFb, state, settings};
+    Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, state, settings};
 
     // 设置中的全屏模式在窗口创建后进入；失败时退回窗口模式。
     if (settings.current.display.mode != st::WindowMode::Windowed && !options.selfTest) {

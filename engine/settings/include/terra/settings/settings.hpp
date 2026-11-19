@@ -69,6 +69,23 @@ struct CameraSettings {
     double fovDegrees = 60.0;           // 竖直视场角，[20, 120]
 };
 
+// ---- 渲染（M1-08，与 terra::render 的光照与 RenderSettings 对应）----
+enum class ToneMapperSetting { AgX, PbrNeutral, Aces, None };
+// 文件中的名称："agx" | "pbrNeutral" | "aces" | "none"。
+const char* toneMapperName(ToneMapperSetting mapper) noexcept;
+
+struct RenderSettings {
+    double sunAzimuthDegrees = 150.0;   // 太阳方位角：从 +X 起逆时针（从上往下看），[0, 360]
+    double sunElevationDegrees = 50.0;  // 太阳高度角，[1, 90]
+    double sunIntensity = 3.0;          // [0, 20]
+    double ambientIntensity = 0.6;      // 半球环境光强度，[0, 5]
+    double exposureEv = 0.0;            // [-10, 10]
+    ToneMapperSetting toneMapper = ToneMapperSetting::AgX;
+    int msaaSamples = 4;                // 1、2、4、8
+    bool shadows = true;
+    bool grid = true;
+};
+
 struct Range {
     double min;
     double max;
@@ -80,6 +97,11 @@ constexpr Range kBoost{1.0, 20.0};
 constexpr Range kWheelStep{0.01, 10.0};
 constexpr Range kPan{0.0005, 0.5};
 constexpr Range kFov{20.0, 120.0};
+constexpr Range kAzimuth{0.0, 360.0};
+constexpr Range kElevation{1.0, 90.0};
+constexpr Range kSunIntensity{0.0, 20.0};
+constexpr Range kAmbient{0.0, 5.0};
+constexpr Range kExposure{-10.0, 10.0};
 }  // namespace ranges
 
 // ---- 按键 ----
@@ -131,6 +153,7 @@ struct Settings {
     InterfaceSettings ui;
     DisplaySettings display;
     CameraSettings camera;
+    RenderSettings render;
     KeyMap keys;
 };
 
@@ -138,11 +161,13 @@ bool operator==(const VideoModeSetting& a, const VideoModeSetting& b) noexcept;
 bool operator==(const InterfaceSettings& a, const InterfaceSettings& b) noexcept;
 bool operator==(const DisplaySettings& a, const DisplaySettings& b) noexcept;
 bool operator==(const CameraSettings& a, const CameraSettings& b) noexcept;
+bool operator==(const RenderSettings& a, const RenderSettings& b) noexcept;
 bool operator==(const Settings& a, const Settings& b) noexcept;
 inline bool operator!=(const VideoModeSetting& a, const VideoModeSetting& b) noexcept { return !(a == b); }
 inline bool operator!=(const InterfaceSettings& a, const InterfaceSettings& b) noexcept { return !(a == b); }
 inline bool operator!=(const DisplaySettings& a, const DisplaySettings& b) noexcept { return !(a == b); }
 inline bool operator!=(const CameraSettings& a, const CameraSettings& b) noexcept { return !(a == b); }
+inline bool operator!=(const RenderSettings& a, const RenderSettings& b) noexcept { return !(a == b); }
 inline bool operator!=(const Settings& a, const Settings& b) noexcept { return !(a == b); }
 
 // ---- 序列化 ----

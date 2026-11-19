@@ -77,6 +77,8 @@ void VertexArray::setFloatAttribute(std::uint32_t location, std::uint32_t bindin
     glVertexArrayAttribBinding(name_, location, binding);
 }
 
+void VertexArray::setIndexBuffer(const Buffer& buffer) { glVertexArrayElementBuffer(name_, buffer.name()); }
+
 void VertexArray::bind() const { glBindVertexArray(name_); }
 
 // ---- ShaderProgram ----
@@ -234,27 +236,95 @@ void ShaderProgram::setUniformMatrix4(int location, const float* columnMajor16) 
     if (location >= 0) glProgramUniformMatrix4fv(name_, location, 1, GL_FALSE, columnMajor16);
 }
 
+void ShaderProgram::setUniformInt(int location, int value) {
+    if (location >= 0) glProgramUniform1i(name_, location, value);
+}
+
+void ShaderProgram::setUniformFloat(int location, float value) {
+    if (location >= 0) glProgramUniform1f(name_, location, value);
+}
+
+void ShaderProgram::setUniformVec3(int location, float x, float y, float z) {
+    if (location >= 0) glProgramUniform3f(name_, location, x, y, z);
+}
+
 // ---- Framebuffer ----
 
 FramebufferResult Framebuffer::create(int width, int height, bool withDepth) {
+    FramebufferDesc desc;
+    desc.width = width;
+    desc.height = height;
+    desc.depth = withDepth ? DepthFormat::Renderbuffer : DepthFormat::None;
+    return create(desc);
+}
+
+FramebufferResult Framebuffer::create(const FramebufferDesc& desc) {
     FramebufferResult result;
+    const int width = desc.width;
+    const int height = desc.height;
     if (width <= 0 || height <= 0) {
         result.error = "帧缓冲尺寸无效：" + std::to_string(width) + "x" + std::to_string(height);
+        return result;
+    }
+    if (desc.samples < 1) {
+        result.error = "采样数无效：" + std::to_string(desc.samples);
+        return result;
+    }
+    if (desc.color == ColorFormat::None && desc.depth == DepthFormat::None) {
+        result.error = "帧缓冲既没有颜色也没有深度";
+        return result;
+    }
+    if (desc.samples > 1 && desc.depth == DepthFormat::ShadowTexture) {
+        result.error = "阴影深度纹理不支持多重采样";
         return result;
     }
     Framebuffer f;
     f.width_ = width;
     f.height_ = height;
+    f.samples_ = desc.samples;
+    const bool multisample = desc.samples > 1;
     glCreateFramebuffers(1, &f.name_);
-    glCreateTextures(GL_TEXTURE_2D, 1, &f.color_);
-    glTextureStorage2D(f.color_, 1, GL_RGBA8, width, height);
-    glTextureParameteri(f.color_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTextureParameteri(f.color_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glNamedFramebufferTexture(f.name_, GL_COLOR_ATTACHMENT0, f.color_, 0);
-    if (withDepth) {
+    if (desc.color != ColorFormat::None) {
+        const GLenum format = desc.color == ColorFormat::Rgba16F ? GL_RGBA16F : GL_RGBA8;
+        if (multisample) {
+            glCreateRenderbuffers(1, &f.color_);
+            glNamedRenderbufferStorageMultisample(f.color_, desc.samples, format, width, height);
+            glNamedFramebufferRenderbuffer(f.name_, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, f.color_);
+        } else {
+            glCreateTextures(GL_TEXTURE_2D, 1, &f.color_);
+            glTextureStorage2D(f.color_, 1, format, width, height);
+            glTextureParameteri(f.color_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTextureParameteri(f.color_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTextureParameteri(f.color_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(f.color_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glNamedFramebufferTexture(f.name_, GL_COLOR_ATTACHMENT0, f.color_, 0);
+            f.colorIsTexture_ = true;
+        }
+    } else {
+        glNamedFramebufferDrawBuffer(f.name_, GL_NONE);
+        glNamedFramebufferReadBuffer(f.name_, GL_NONE);
+    }
+    if (desc.depth == DepthFormat::Renderbuffer) {
         glCreateRenderbuffers(1, &f.depth_);
-        glNamedRenderbufferStorage(f.depth_, GL_DEPTH24_STENCIL8, width, height);
+        if (multisample) {
+            glNamedRenderbufferStorageMultisample(f.depth_, desc.samples, GL_DEPTH24_STENCIL8, width, height);
+        } else {
+            glNamedRenderbufferStorage(f.depth_, GL_DEPTH24_STENCIL8, width, height);
+        }
         glNamedFramebufferRenderbuffer(f.name_, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, f.depth_);
+    } else if (desc.depth == DepthFormat::ShadowTexture) {
+        glCreateTextures(GL_TEXTURE_2D, 1, &f.depth_);
+        glTextureStorage2D(f.depth_, 1, GL_DEPTH_COMPONENT32F, width, height);
+        glTextureParameteri(f.depth_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(f.depth_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(f.depth_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTextureParameteri(f.depth_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        const float border[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // 阴影图范围外：深度最远，即不在阴影中
+        glTextureParameterfv(f.depth_, GL_TEXTURE_BORDER_COLOR, border);
+        glTextureParameteri(f.depth_, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+        glTextureParameteri(f.depth_, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+        glNamedFramebufferTexture(f.name_, GL_DEPTH_ATTACHMENT, f.depth_, 0);
+        f.depthIsTexture_ = true;
     }
     const GLenum status = glCheckNamedFramebufferStatus(f.name_, GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
@@ -269,17 +339,31 @@ FramebufferResult Framebuffer::create(int width, int height, bool withDepth) {
 
 void Framebuffer::release() noexcept {
     if (name_ != 0) glDeleteFramebuffers(1, &name_);
-    if (color_ != 0) glDeleteTextures(1, &color_);
-    if (depth_ != 0) glDeleteRenderbuffers(1, &depth_);
+    if (color_ != 0) {
+        if (colorIsTexture_) {
+            glDeleteTextures(1, &color_);
+        } else {
+            glDeleteRenderbuffers(1, &color_);
+        }
+    }
+    if (depth_ != 0) {
+        if (depthIsTexture_) {
+            glDeleteTextures(1, &depth_);
+        } else {
+            glDeleteRenderbuffers(1, &depth_);
+        }
+    }
     name_ = color_ = depth_ = 0;
+    colorIsTexture_ = depthIsTexture_ = false;
 }
 
 Framebuffer::~Framebuffer() { release(); }
 
 Framebuffer::Framebuffer(Framebuffer&& other) noexcept
     : name_(std::exchange(other.name_, 0u)), color_(std::exchange(other.color_, 0u)),
-      depth_(std::exchange(other.depth_, 0u)), width_(std::exchange(other.width_, 0)),
-      height_(std::exchange(other.height_, 0)) {}
+      depth_(std::exchange(other.depth_, 0u)), colorIsTexture_(std::exchange(other.colorIsTexture_, false)),
+      depthIsTexture_(std::exchange(other.depthIsTexture_, false)), width_(std::exchange(other.width_, 0)),
+      height_(std::exchange(other.height_, 0)), samples_(std::exchange(other.samples_, 1)) {}
 
 Framebuffer& Framebuffer::operator=(Framebuffer&& other) noexcept {
     if (this != &other) {
@@ -287,10 +371,19 @@ Framebuffer& Framebuffer::operator=(Framebuffer&& other) noexcept {
         name_ = std::exchange(other.name_, 0u);
         color_ = std::exchange(other.color_, 0u);
         depth_ = std::exchange(other.depth_, 0u);
+        colorIsTexture_ = std::exchange(other.colorIsTexture_, false);
+        depthIsTexture_ = std::exchange(other.depthIsTexture_, false);
         width_ = std::exchange(other.width_, 0);
         height_ = std::exchange(other.height_, 0);
+        samples_ = std::exchange(other.samples_, 1);
     }
     return *this;
+}
+
+void Framebuffer::resolveTo(const Framebuffer& target) const {
+    if (name_ == 0 || target.name_ == 0) return;
+    glBlitNamedFramebuffer(name_, target.name_, 0, 0, width_, height_, 0, 0, target.width_, target.height_,
+                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
 }
 
 void Framebuffer::bind() const {

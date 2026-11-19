@@ -14,6 +14,7 @@
 # M1-07：相机与视口相机控制器（仅渲染开启；自动化部分不需要显示）。
 # M1-12：显示模式（graphics.platform_display，仅渲染开启，Xvfb）。
 # M1-13：界面输入与文本（ui.input_bridge、ui.text，不需要显示）；查看器自检（graphics.viewer_selftest，Xvfb）。
+# M1-08a：网格与 PBR 数学（render.math）、PBR 场景渲染（graphics.render_pbr）。
 # M1-14：设置模型与 JSON 读写（settings.store，总是运行）；输入替换绑定与键位名称（input.system）；相机按键改绑（view.camera）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
@@ -279,6 +280,19 @@ if(TERRA_BUILD_RENDER)
     terra_configure_target(test_render_core)
     add_test(NAME graphics.render_core COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_core> llvmpipe)
     set_tests_properties(graphics.render_core PROPERTIES LABELS graphics)
+
+    # 网格与 PBR 数学（M1-08a）：纯 CPU，不需要显示。
+    add_executable(test_render_math render/test_render_math.cpp)
+    target_link_libraries(test_render_math PRIVATE terra::render)
+    terra_configure_target(test_render_math)
+    add_test(NAME render.math COMMAND test_render_math)
+
+    # PBR 场景渲染（M1-08a）：与 C++ 参考实现比较像素；阴影、MSAA、网格。
+    add_executable(test_render_pbr render/test_render_pbr.cpp)
+    target_link_libraries(test_render_pbr PRIVATE terra::render terra::view terra::platform_glfw)
+    terra_configure_target(test_render_pbr)
+    add_test(NAME graphics.render_pbr COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_pbr> llvmpipe)
+    set_tests_properties(graphics.render_pbr PROPERTIES LABELS graphics)
 
     # 相机与相机控制器（M1-07）。自动化部分只用虚拟设备与数学检查，不需要显示；--show 模式供桌面交互展示。
     add_executable(test_view view/test_view.cpp)

@@ -12,6 +12,8 @@
 
 #include "terra/input/action_map.hpp"
 #include "terra/platform/platform.hpp"
+#include "terra/render/pbr.hpp"
+#include "terra/render/scene_renderer.hpp"
 #include "terra/settings/settings.hpp"
 #include "terra/view/camera_controller.hpp"
 
@@ -23,6 +25,11 @@ terra::view::CameraKeys toCameraKeys(const terra::settings::KeyMap& keys);
 terra::view::CameraControlSettings toCameraControl(const terra::settings::CameraSettings& camera);
 terra::platform::DisplayMode toDisplayMode(terra::settings::WindowMode mode) noexcept;
 terra::settings::WindowMode toWindowMode(terra::platform::DisplayMode mode) noexcept;
+// 渲染（M1-08）：太阳方向由方位角与高度角换算（指向光源）；天空色与地面色固定，强度来自设置。
+terra::render::ToneMapper toToneMapper(terra::settings::ToneMapperSetting mapper) noexcept;
+terra::render::SunLight toSunLight(const terra::settings::RenderSettings& render);
+terra::render::HemisphereLight toEnvironment(const terra::settings::RenderSettings& render);
+terra::render::RenderSettings toRenderSettings(const terra::settings::RenderSettings& render);
 // 一个按钮动作的绑定：每个非空槽位一个单键绑定。
 std::vector<terra::input::Binding> buttonBindings(const terra::settings::KeySlots& slots);
 

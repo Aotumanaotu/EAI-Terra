@@ -125,7 +125,8 @@ import sys
 path, name = sys.argv[1], sys.argv[2]
 mutations = {
     "深度测试未开启": ("        glEnable(GL_DEPTH_TEST);\n", "        glDisable(GL_DEPTH_TEST);\n"),
-    "帧缓冲没有深度附件": ("    if (withDepth) {", "    if (false && withDepth) {"),
+    # M1-08 起帧缓冲按 FramebufferDesc 创建：让“渲染缓冲深度”分支失效即等价于没有深度附件
+    "帧缓冲没有深度附件": ("    if (desc.depth == DepthFormat::Renderbuffer) {", "    if (false && desc.depth == DepthFormat::Renderbuffer) {"),
     "清屏不清深度": ("        mask |= GL_DEPTH_BUFFER_BIT;\n", "        (void)mask;\n"),
     "着色器行号解析失效": ("            return std::stoi(m[1].str());", "            (void)m;\n            return std::nullopt;"),
     "调试回调未安装": ("glDebugMessageCallback(&onDebugMessage, &impl->debug);", "(void)&onDebugMessage;"),

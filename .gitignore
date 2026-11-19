@@ -16,3 +16,8 @@ compile_commands.json
 /third_party/render/src/
 /third_party/render/build/
 /third_party/render/install/
+
+# HDRI：运行时贴图由 scripts/assets/fetch_hdri.sh 下载（记录见 assets/hdri/hdri.lock）；HDRI/ 是用户保存的 4K EXR 原件
+/assets/hdri/*.hdr
+/assets/hdri/*.part
+/HDRI/

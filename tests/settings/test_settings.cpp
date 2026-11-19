@@ -78,6 +78,15 @@ st::Settings everythingChanged() {
     s.camera.wheelStep = 1.25;
     s.camera.panMetersPerPixel = 0.02;
     s.camera.fovDegrees = 75.0;
+    s.render.sunAzimuthDegrees = 200.0;
+    s.render.sunElevationDegrees = 30.0;
+    s.render.sunIntensity = 5.0;
+    s.render.ambientIntensity = 1.2;
+    s.render.exposureEv = -1.5;
+    s.render.toneMapper = st::ToneMapperSetting::Aces;
+    s.render.msaaSamples = 8;
+    s.render.shadows = false;
+    s.render.grid = false;
     s.keys[Command::CameraForward] = {in::Key::I, in::Key::Unknown};
     s.keys[Command::CameraBack] = {in::Key::K, in::Key::Down};
     s.keys[Command::CameraBoost] = {in::Key::LeftAlt, in::Key::Unknown};
@@ -94,6 +103,11 @@ void testDefaults() {
     check(s.camera.lookDegreesPerPixel == 0.15 && s.camera.speed == 3.0 && s.camera.boost == 3.0 && s.camera.wheelStep == 0.5 &&
               s.camera.panMetersPerPixel == 0.01 && s.camera.fovDegrees == 60.0,
           "相机默认值与 M1-07 相同");
+    check(s.render.sunAzimuthDegrees == 150.0 && s.render.sunElevationDegrees == 50.0 && s.render.sunIntensity == 3.0 &&
+              s.render.ambientIntensity == 0.6 && s.render.exposureEv == 0.0 &&
+              s.render.toneMapper == st::ToneMapperSetting::AgX && s.render.msaaSamples == 4 && s.render.shadows &&
+              s.render.grid,
+          "渲染默认：太阳 150°/50°、强度 3、环境 0.6、0 EV、AgX、4× MSAA、阴影与网格开启（M1-08 设计稿）");
     const st::KeySlots forward{in::Key::W, in::Key::Up};
     const st::KeySlots down{in::Key::Q, in::Key::Unknown};
     const st::KeySlots full{in::Key::F11, in::Key::Unknown};
@@ -163,6 +177,24 @@ void testPartialAndInvalidFields() {
         check(s.camera.wheelStep == 2.0 && s.camera.lookDegreesPerPixel == 0.3, "合法的相机字段照常读取");
         check(s.camera.fovDegrees == 60.0 && contains(r.warnings, "camera.fovDegrees"), "fov 过小 → 默认 60");
         check(r.warnings.size() == 12, "共 12 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
+    }
+    // 渲染组（M1-08）
+    {
+        const auto r = st::fromJson(R"({"version": 1, "render": {"toneMapper": "filmic", "msaa": 3, "sunElevationDegrees": 0,
+                                         "exposureEv": 2.5, "toneMapper2": 1}})");
+        const auto& rs = r.settings.render;
+        check(rs.toneMapper == st::ToneMapperSetting::AgX && contains(r.warnings, "render.toneMapper"), "未知色调映射 → AgX");
+        check(rs.msaaSamples == 4 && contains(r.warnings, "render.msaa"), "MSAA 3 → 默认 4");
+        check(rs.sunElevationDegrees == 50.0 && contains(r.warnings, "render.sunElevationDegrees = 0 超出范围"), "高度角 0 → 默认 50");
+        check(rs.exposureEv == 2.5, "合法的曝光照常读取");
+        check(contains(r.warnings, "未知字段 render.toneMapper2") && r.warnings.size() == 4,
+              "渲染组共 4 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
+        for (const auto m : {st::ToneMapperSetting::AgX, st::ToneMapperSetting::PbrNeutral, st::ToneMapperSetting::Aces,
+                             st::ToneMapperSetting::None}) {
+            st::Settings one;
+            one.render.toneMapper = m;
+            check(st::fromJson(st::toJson(one)).settings == one, std::string{"色调映射往返："} + st::toneMapperName(m));
+        }
     }
     // 整组类型错误、未知字段、版本
     {

@@ -34,6 +34,7 @@ struct GlInfo {
     int major = 0;
     int minor = 0;
     bool debugContext = false;  // 上下文带调试标志时，驱动消息经 KHR_debug 同步回调收集
+    int maxSamples = 1;         // 多重采样帧缓冲支持的最大采样数（GL_MAX_SAMPLES，M1-08）
 };
 
 enum class DebugSeverity { Notification, Low, Medium, High };
@@ -70,6 +71,15 @@ public:
     void clear(Color color, bool clearDepth = true);  // 清除当前绑定的帧缓冲
     void drawTriangles(int firstVertex, int vertexCount);  // 使用当前绑定的程序与顶点数组
     void drawLines(int firstVertex, int vertexCount);      // 每两个顶点一条线段（M1-07 起，网格与坐标轴）
+    // ---- M1-08：索引绘制与更多状态 ----
+    void drawIndexed(int indexCount);  // 32 位索引三角形，使用当前顶点数组上的索引缓冲
+    void setCullBackFaces(bool enabled);  // 逆时针为正面
+    void setDepthWrite(bool enabled);
+    void setDepthLessEqual(bool enabled);  // 深度比较 LEQUAL（叠加绘制）或 LESS
+    void setAlphaBlend(bool enabled);      // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+    void setPolygonOffset(bool enabled, float factor = 0.0f, float units = 0.0f);
+    void bindTexture(std::uint32_t unit, std::uint32_t texture);  // 纹理名称来自帧缓冲等资源
+
     // 从当前绑定的读帧缓冲（默认帧缓冲时为后缓冲）读回 RGBA8，行序自下而上（M1-13 起，供自检使用）。
     std::vector<std::uint8_t> readPixels(int x, int y, int width, int height) const;
 

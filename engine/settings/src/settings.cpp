@@ -224,6 +224,43 @@ void readCamera(Reader& r, const Json& j, CameraSettings& s) {
     r.real(j, "fovDegrees", path, ranges::kFov, s.fovDegrees);
 }
 
+void readRender(Reader& r, const Json& j, RenderSettings& s) {
+    const std::string path = "render";
+    r.unknownFields(j, path, {"sunAzimuthDegrees", "sunElevationDegrees", "sunIntensity", "ambientIntensity", "exposureEv",
+                              "toneMapper", "msaa", "shadows", "grid"});
+    r.real(j, "sunAzimuthDegrees", path, ranges::kAzimuth, s.sunAzimuthDegrees);
+    r.real(j, "sunElevationDegrees", path, ranges::kElevation, s.sunElevationDegrees);
+    r.real(j, "sunIntensity", path, ranges::kSunIntensity, s.sunIntensity);
+    r.real(j, "ambientIntensity", path, ranges::kAmbient, s.ambientIntensity);
+    r.real(j, "exposureEv", path, ranges::kExposure, s.exposureEv);
+    if (const auto it = j.find("toneMapper"); it != j.end()) {
+        const std::string value = it->is_string() ? it->get<std::string>() : std::string{};
+        bool found = false;
+        for (const ToneMapperSetting m :
+             {ToneMapperSetting::AgX, ToneMapperSetting::PbrNeutral, ToneMapperSetting::Aces, ToneMapperSetting::None}) {
+            if (value == toneMapperName(m)) {
+                s.toneMapper = m;
+                found = true;
+            }
+        }
+        if (!found) {
+            r.warn("render.toneMapper：应为 \"agx\"、\"pbrNeutral\"、\"aces\" 或 \"none\"，已使用默认值 \"" +
+                   std::string{toneMapperName(s.toneMapper)} + "\"");
+        }
+    }
+    if (const auto it = j.find("msaa"); it != j.end()) {
+        const bool valid = it->is_number_integer() && (it->get<std::int64_t>() == 1 || it->get<std::int64_t>() == 2 ||
+                                                       it->get<std::int64_t>() == 4 || it->get<std::int64_t>() == 8);
+        if (valid) {
+            s.msaaSamples = static_cast<int>(it->get<std::int64_t>());
+        } else {
+            r.warn("render.msaa：应为 1、2、4 或 8，已使用默认值 " + std::to_string(s.msaaSamples));
+        }
+    }
+    r.boolean(j, "shadows", path, s.shadows);
+    r.boolean(j, "grid", path, s.grid);
+}
+
 void readKeys(Reader& r, const Json& j, KeyMap& keys) {
     for (auto it = j.begin(); it != j.end(); ++it) {
         const std::string where = "keys." + it.key();
@@ -290,6 +327,16 @@ const char* windowModeName(WindowMode mode) noexcept {
         case WindowMode::Windowed: return "windowed";
         case WindowMode::BorderlessFullscreen: return "borderless";
         case WindowMode::ExclusiveFullscreen: return "exclusive";
+    }
+    return "";
+}
+
+const char* toneMapperName(ToneMapperSetting mapper) noexcept {
+    switch (mapper) {
+        case ToneMapperSetting::AgX: return "agx";
+        case ToneMapperSetting::PbrNeutral: return "pbrNeutral";
+        case ToneMapperSetting::Aces: return "aces";
+        case ToneMapperSetting::None: return "none";
     }
     return "";
 }
@@ -393,8 +440,14 @@ bool operator==(const CameraSettings& a, const CameraSettings& b) noexcept {
            a.wheelStep == b.wheelStep && a.panMetersPerPixel == b.panMetersPerPixel && a.fovDegrees == b.fovDegrees;
 }
 
+bool operator==(const RenderSettings& a, const RenderSettings& b) noexcept {
+    return a.sunAzimuthDegrees == b.sunAzimuthDegrees && a.sunElevationDegrees == b.sunElevationDegrees &&
+           a.sunIntensity == b.sunIntensity && a.ambientIntensity == b.ambientIntensity && a.exposureEv == b.exposureEv &&
+           a.toneMapper == b.toneMapper && a.msaaSamples == b.msaaSamples && a.shadows == b.shadows && a.grid == b.grid;
+}
+
 bool operator==(const Settings& a, const Settings& b) noexcept {
-    return a.ui == b.ui && a.display == b.display && a.camera == b.camera && a.keys == b.keys;
+    return a.ui == b.ui && a.display == b.display && a.camera == b.camera && a.render == b.render && a.keys == b.keys;
 }
 
 // ---- 序列化 ----
@@ -447,6 +500,18 @@ std::string toJson(const Settings& s) {
     camera["fovDegrees"] = s.camera.fovDegrees;
     root["camera"] = camera;
 
+    Json render;
+    render["sunAzimuthDegrees"] = s.render.sunAzimuthDegrees;
+    render["sunElevationDegrees"] = s.render.sunElevationDegrees;
+    render["sunIntensity"] = s.render.sunIntensity;
+    render["ambientIntensity"] = s.render.ambientIntensity;
+    render["exposureEv"] = s.render.exposureEv;
+    render["toneMapper"] = toneMapperName(s.render.toneMapper);
+    render["msaa"] = s.render.msaaSamples;
+    render["shadows"] = s.render.shadows;
+    render["grid"] = s.render.grid;
+    root["render"] = render;
+
     Json keys = Json::object();
     for (std::size_t c = 0; c < kCommandCount; ++c) {
         const KeySlots& slots = s.keys[static_cast<Command>(c)];
@@ -473,7 +538,7 @@ ParseResult fromJson(std::string_view text) {
 
     Settings s;
     Reader r(result.warnings);
-    r.unknownFields(root, "", {"version", "interface", "display", "camera", "keys"});
+    r.unknownFields(root, "", {"version", "interface", "display", "camera", "render", "keys"});
     if (const auto it = root.find("version"); it == root.end()) {
         r.warn("缺少 version 字段，按版本 " + std::to_string(kVersion) + " 读取");
     } else if (!it->is_number_integer()) {
@@ -486,6 +551,7 @@ ParseResult fromJson(std::string_view text) {
     if (const Json* j = r.object(root, "interface", "")) readInterface(r, *j, s.ui);
     if (const Json* j = r.object(root, "display", "")) readDisplay(r, *j, s.display);
     if (const Json* j = r.object(root, "camera", "")) readCamera(r, *j, s.camera);
+    if (const Json* j = r.object(root, "render", "")) readRender(r, *j, s.render);
     if (const Json* j = r.object(root, "keys", "")) readKeys(r, *j, s.keys);
     result.settings = std::move(s);
     return result;

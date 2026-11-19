@@ -9,3 +9,10 @@ compile_commands.json
 /third_party/mujoco/deps/
 /third_party/mujoco/build/
 /third_party/mujoco/install/
+
+# 渲染依赖源码与构建产物，由 scripts/render/*.sh 生成；版本记录见 third_party/render/render.lock。
+# third_party/glad/ 是已提交的生成代码，不在此列。
+/third_party/render/downloads/
+/third_party/render/src/
+/third_party/render/build/
+/third_party/render/install/

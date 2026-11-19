@@ -18,6 +18,8 @@ include(TerraCompilerOptions)
 
 option(TERRA_BUILD_TESTS "构建并注册 CTest 测试" ON)
 option(TERRA_WARNINGS_AS_ERRORS "将编译警告视为错误" OFF)
+# 渲染相关目标（M1 起）。默认关闭：关闭时 Headless 与物理目标的构建、测试完全不受影响（开发计划 8.1 节）。
+option(TERRA_BUILD_RENDER "构建渲染相关目标（需要 scripts/render/fetch.sh 与 build.sh 准备的依赖）" OFF)
 
 # 单配置生成器默认 Debug，避免无优化、无调试信息的空构建类型。
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
@@ -25,6 +27,9 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
 endif()
 
 include(TerraMuJoCo)
+if(TERRA_BUILD_RENDER)
+    include(TerraRender)
+endif()
 
 # 目标边界（M0-01 评审结果，详见 docs/validation/M0-01-environment.md）：
 #   terra_core            engine/core                     最小公共类型与构建信息，不依赖任何物理或图形库

@@ -8,6 +8,7 @@
 # M0-07：后端无关接口、执行器描述与控制输入、错误语义、只依赖 Terra 类型的调用方。
 # M0-08：主场景正式判定与冻结容差、无重力、reset 再运行、生命周期、连续运行、后端致命错误。
 # M0-09：性能基线程序冒烟测试。
+# M1-02：渲染依赖探针（仅 TERRA_BUILD_RENDER=ON，graphics 标签，Xvfb + llvmpipe）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -209,3 +210,25 @@ add_test(NAME bench.smoke
             --steps 100 --repeat 1 --warmup 1 --sample-every 10)
 set_tests_properties(bench.smoke PROPERTIES
     PASS_REGULAR_EXPRESSION "BENCH mode=step .*BENCH mode=snapshot .*BENCH mode=jsonl ")
+
+# ---- 渲染（M1 起，仅 TERRA_BUILD_RENDER=ON）----
+# 图形测试带 graphics 标签，可用 ctest -L graphics / -LE graphics 单独运行或排除（NFR-06）。
+# 自动化图形测试固定在 Xvfb + Mesa llvmpipe 上运行（D-022）：清除 DISPLAY，强制 GLVND 选择 Mesa，
+# 测试再断言渲染器为 llvmpipe，防止环境变化（例如选中 NVIDIA 的 GLX 库）导致结果不可比。
+if(TERRA_BUILD_RENDER)
+    find_program(TERRA_XVFB_RUN xvfb-run)
+    if(NOT TERRA_XVFB_RUN)
+        message(FATAL_ERROR "TERRA_BUILD_RENDER=ON 需要 xvfb-run 运行图形测试（sudo apt install xvfb）")
+    endif()
+    set(TERRA_GRAPHICS_TEST_ENV
+        "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
+        __GLX_VENDOR_LIBRARY_NAME=mesa LIBGL_ALWAYS_SOFTWARE=1
+        "${TERRA_XVFB_RUN}" -a -s "-screen 0 1280x720x24")
+
+    # 渲染依赖探针（M1-02）：GLFW + glad + GLM，OpenGL 4.5 core 上下文、DSA 离屏清屏与回读。
+    add_executable(test_render_deps render/test_render_deps.cpp)
+    target_link_libraries(test_render_deps PRIVATE terra::glfw terra::glad terra::glm)
+    terra_configure_target(test_render_deps)
+    add_test(NAME graphics.render_deps COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_deps> llvmpipe)
+    set_tests_properties(graphics.render_deps PROPERTIES LABELS graphics)
+endif()

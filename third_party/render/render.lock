@@ -1,0 +1,18 @@
+# 渲染依赖源码锁定记录（M1-02，D-019）。由 scripts/render/*.sh 读取，修改后须重新执行验证。
+# 状态：已锁定（2026-11-19，M1-02）。许可核查见 docs/validation/M1-02-render-deps.md。
+#
+# GLFW：窗口、OpenGL 上下文与首个输入设备适配器（D-017），静态库，安装到 third_party/render/install。
+GLFW_VERSION=3.5.1
+GLFW_URL=https://github.com/glfw/glfw/archive/refs/tags/3.5.1.tar.gz
+GLFW_SHA256=5234f4f29473e9a06bc7847d8371858dd135d38466eeeaa652fdc9f8f9ff0c20
+# GLM：渲染数学库，仅头文件，只在 Render 内部使用（D-020）。
+GLM_VERSION=1.0.3
+GLM_URL=https://github.com/g-truc/glm/archive/refs/tags/1.0.3.tar.gz
+GLM_SHA256=6775e47231a446fd086d660ecc18bcd076531cfedd912fbd66e576b118607001
+# glad：OpenGL 函数加载代码生成器。生成结果已提交在 third_party/glad/（OpenGL 4.5 core，无扩展，D-021）；
+# 生成器只用于复核与重新生成（scripts/render/gen_glad.sh），构建不需要它。
+GLAD_VERSION=2.0.8
+GLAD_URL=https://github.com/Dav1dde/glad/archive/refs/tags/v2.0.8.tar.gz
+GLAD_SHA256=44f06f9195427c7017f5028d0894f57eb216b0a8f7c4eda7ce883732aeb2d0fc
+GLAD_API=gl:core=4.5
+GLAD_EXTENSIONS=

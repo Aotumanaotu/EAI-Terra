@@ -84,8 +84,8 @@ ctest --preset release
 | 工具 | 版本 | 来源 |
 | --- | --- | --- |
 | GCC / G++ | 11.4.0（`11.4.0-1ubuntu1~22.04.3`） | Ubuntu 22.04 系统包 |
-| CMake / CTest | 3.22.1 | 与 Ubuntu 22.04 apt 版本一致，推断为 apt，未核实 |
-| Ninja | 1.10.1 | 与 Ubuntu 22.04 apt 版本一致，推断为 apt，未核实 |
+| CMake / CTest | 3.22.1 | apt 包 `cmake` 3.22.1-1ubuntu1.22.04.2（M0-09 以 dpkg 归属核实） |
+| Ninja | 1.10.1 | apt 包 `ninja-build` 1.10.1-1（M0-09 以 dpkg 归属核实） |
 | GNU ld | 2.38 | Ubuntu 22.04 系统包 |
 | Git | 2.34.1 | Ubuntu 22.04 系统包 |
 
@@ -117,6 +117,6 @@ cmake --preset release -DTERRA_WARNINGS_AS_ERRORS=ON && cmake --build --preset r
 | C++17 配置生效 | 满足 | `core.build_info`；开发机检查 `compile_commands.json` 为 `-std=c++17` |
 | 物理目标不要求窗口系统和图形开发包 | 满足（当前目标范围） | `headless.no_graphics_libs`、`headless.no_display`；`terra_physics` 尚未创建，M0-02 起由同一测试继续约束 |
 | 明确哪些目标尚待后续任务接入 | 满足 | 第 1 节 |
-| 工具精确版本可追溯 | 满足 | 4.2 工具链表；CMake/Ninja 来源由 M0-09 验收脚本的环境清单（dpkg 归属）核实，见 [M0-09 报告](M0-09-acceptance.md) |
+| 工具精确版本可追溯 | 满足 | 4.2 工具链表；CMake/Ninja 来源已核实为 Ubuntu 官方 apt 软件包（`cmake` 3.22.1-1ubuntu1.22.04.2、`ninja-build` 1.10.1-1），见 [M0-09 报告](M0-09-acceptance.md) 9.2 节 |
 
 **验收结论：** 2026-11-19 用户评审通过；本报告随 M0-06～M0-09 交付提交归档，可通过 Git 日志关联提交。

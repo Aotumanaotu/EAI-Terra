@@ -6,7 +6,7 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0 收尾中（Pre-Alpha）。Headless 物理闭环、状态快照、统一物理接口与场景验证已完成，M0-01 至 M0-08 已验收；M0-09 待基线统一验收运行。渲染、机器人、传感器和 ROS2 尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+> 项目状态：M0 已完成，M1 进行中（Pre-Alpha）。OpenGL 4.5 core 图形环境与 GLFW/GLM/glad 渲染依赖已完成基线验证、待验收；实际窗口、输入和渲染器尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 </div>
 
@@ -116,7 +116,7 @@ EAI Terra **不依赖 Unity 或 Unreal Engine 作为运行时引擎**。项目�
 
 ## 7. 开发路线图
 
-- [ ] **M0 · 基础工程与物理集成**：验证并锁定 MuJoCo 官方库，加载 MJCF，完成 Headless 固定步进、状态输出、Terra Physics 适配及自动化验收。
+- [x] **M0 · 基础工程与物理集成**（2026-11-19 验收）：验证并锁定 MuJoCo 官方库，加载 MJCF，完成 Headless 固定步进、状态输出、Terra Physics 适配及自动化验收。
 - [ ] **M1 · 自研基础渲染器**：使用 OpenGL 建立窗口、相机、基础网格、材质与光照，保持渲染可独立运行。
 - [ ] **M2 · 状态同步与场景系统**：通过 Terra 快照驱动渲染，建立稳定实体 ID、场景实例与物理/视觉资源映射。
 - [ ] **M3 · 机器人模型及运动仿真**：加载参考机器人，验证连杆、关节、执行器控制和可重复运动。
@@ -174,6 +174,16 @@ ctest --preset debug
 build/debug/apps/headless/terra_headless --model assets/tests/falling_cube.xml --duration 5 --sample-every 500
 ```
 
+渲染（M1 起，可选；默认关闭，不影响上面的物理构建）：
+
+```bash
+scripts/render/fetch.sh          # 下载并校验 GLFW、GLM（版本见 third_party/render/render.lock）
+scripts/render/build.sh          # 构建 GLFW 静态库到 third_party/render/install
+cmake --preset render-debug && cmake --build --preset render-debug && ctest --preset render-debug
+```
+
+图形测试带 `graphics` 标签，固定在 Xvfb + Mesa llvmpipe 上运行（需要 `xvfb`）。
+
 完整复现 M0 验收（三种构建配置的全量测试、变异测试、场景判定、重复运行、依赖检查与性能基线，约数分钟）：
 
 ```bash
@@ -184,16 +194,16 @@ bash scripts/verify/m0_acceptance.sh
 
 ## 10. 当前状态
 
-项目目前处于 **M0：基础工程与 MuJoCo Headless 物理集成阶段**，M0-01 至 M0-08 待验收，M0-09（阶段验收）进行中。已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；立方体主场景与辅助用例在基线机器上通过，数值容差已冻结。无图形界面，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+**M0（基础工程与 MuJoCo Headless 物理集成）已于 2026-11-19 完成验收**，下一阶段为 M1。已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；立方体主场景与辅助用例在基线机器上通过，数值容差已冻结。无图形界面，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
-近期第一优先级：**完成 M0 阶段验收**，之后进入 M1（自研基础渲染器）。M0 验收通过前不开发渲染或图形编辑器。
+近期第一优先级：评审 M1-01 图形环境、M1-02 渲染依赖及 M1-03/04 平台窗口与输入抽象设计；评审通过后开始实现。
 
 ### 规划文档入口
 
 项目主 README 保留在根目录，详细规划及开发记录集中在 `docs/planning/`：
 
 - [文档导航与维护说明](docs/planning/README.md)
-- [验证报告](docs/validation/)（M0-01 至 M0-09）
+- [验证报告](docs/validation/)（M0-01 至 M0-09、M1-01 至 M1-02）
 - [产品需求 PRD](docs/planning/PRD.md)
 - [开发计划与阶段验收](docs/planning/DEVELOPMENT_PLAN.md)
 - [技术架构与设计](docs/planning/TECHNICAL_DESIGN.md)

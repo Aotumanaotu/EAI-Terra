@@ -51,6 +51,9 @@ public:
     // 注册动作表。校验失败时返回错误说明，不做任何修改：表名重复、动作名重复、绑定种类与动作类型不符、
     // 同一绑定的控件种类不一致、死区参数不满足 0 ≤ inner < outer ≤ 1、裁剪 lo > hi、阈值不在 (0, 1]。
     std::optional<std::string> addActionMap(ActionMapDefinition definition);
+    // 替换一个已注册动作的全部绑定（M1-14：按键设置）。校验规则与 addActionMap 相同，失败时不做修改；
+    // 动作句柄保持有效。动作表或动作不存在时返回错误。
+    std::optional<std::string> setBindings(std::string_view map, std::string_view action, std::vector<Binding> bindings);
     // 启用/停用动作表；停用时其动作在下一次 update 归零（按下中的按钮产生“抬起”）。返回表是否存在。
     bool setActionMapEnabled(std::string_view map, bool enabled);
     // 查找动作；不存在时返回无效句柄。

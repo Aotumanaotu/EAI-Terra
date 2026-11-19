@@ -14,6 +14,7 @@
 # M1-07：相机与视口相机控制器（仅渲染开启；自动化部分不需要显示）。
 # M1-12：显示模式（graphics.platform_display，仅渲染开启，Xvfb）。
 # M1-13：界面输入与文本（ui.input_bridge、ui.text，不需要显示）；查看器自检（graphics.viewer_selftest，Xvfb）。
+# M1-14：设置模型与 JSON 读写（settings.store，总是运行）；输入替换绑定与键位名称（input.system）；相机按键改绑（view.camera）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -222,6 +223,12 @@ target_link_libraries(test_input_system PRIVATE terra::input)
 terra_configure_target(test_input_system)
 add_test(NAME input.system COMMAND test_input_system)
 
+# ---- 设置（M1-14，总是构建，无图形依赖）----
+add_executable(test_settings settings/test_settings.cpp)
+target_link_libraries(test_settings PRIVATE terra::settings)
+terra_configure_target(test_settings)
+add_test(NAME settings.store COMMAND test_settings "${CMAKE_CURRENT_BINARY_DIR}/settings_tmp")
+
 # 渲染隔离（M1-03/04）：GLFW、OpenGL 等头文件只出现在允许的位置；控制器与输入模块不得直接使用窗口库。
 add_test(NAME boundary.render_isolation
     COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
@@ -292,7 +299,10 @@ if(TERRA_BUILD_RENDER)
     add_test(NAME ui.text COMMAND test_ui_text)
 
     # 查看器自检（M1-13）：在 Xvfb + llvmpipe 中运行 40 帧完整外壳，中途切换为英文，检查字体、GL 错误与像素。
+    # M1-14：自检从默认设置开始（不读取文件），中途打开设置窗口；结束时检查设置换算与生效，并把设置保存到构建目录再读回比较
+    # （不触碰用户的 ~/.config）。
     add_test(NAME graphics.viewer_selftest
-        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe)
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe
+                --settings "${CMAKE_CURRENT_BINARY_DIR}/viewer_selftest/settings.json")
     set_tests_properties(graphics.viewer_selftest PROPERTIES LABELS graphics)
 endif()

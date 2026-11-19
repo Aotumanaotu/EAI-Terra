@@ -131,19 +131,19 @@ void testCapture() {
     terra::view::Camera camera;
     terra::view::CameraController::reset(camera);
 
-    const auto dragRight = [&](bool uiMouse) {
+    const auto dragLook = [&](bool uiMouse) {
         capture.update(uiMouse, false);
-        system.setControl(ms, in::mouse(in::MouseControl::ButtonRight), 1.0f, 0.0);
+        system.setControl(ms, in::mouse(in::MouseControl::ButtonMiddle), 1.0f, 0.0);
         system.addDelta(ms, in::mouse(in::MouseControl::DeltaX), 20.0f, 0.0);
         const double before = camera.yaw();
         system.update();
         controller.update(camera, 0.016);
-        system.setControl(ms, in::mouse(in::MouseControl::ButtonRight), 0.0f, 0.0);
+        system.setControl(ms, in::mouse(in::MouseControl::ButtonMiddle), 0.0f, 0.0);
         system.update();
         return camera.yaw() - before;
     };
-    check(dragRight(true) == 0.0, "鼠标在面板上（界面占用鼠标）：右键拖动不转相机");
-    check(dragRight(false) != 0.0, "鼠标在视口里（界面不占用）：右键拖动转相机");
+    check(dragLook(true) == 0.0, "鼠标在面板上（界面占用鼠标）：中键拖动不转相机");
+    check(dragLook(false) != 0.0, "鼠标在视口里（界面不占用）：中键拖动转相机");
 
     const auto holdW = [&](bool uiKeyboard) {
         capture.update(false, uiKeyboard);

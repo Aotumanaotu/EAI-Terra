@@ -4,6 +4,7 @@
 #   glad/、GL/、KHR/  只允许在 engine/render/、engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
 #   X11/、wayland-、SDL、vulkan/  engine/ 与 apps/ 中一律不允许（将来的适配器另行登记）
 #   imgui   只允许在 engine/ui/、apps/viewer/ 与 tests/（M1-13，D-024：ImGui 是应用层界面 API）
+#   nlohmann/  只允许在 engine/settings/src/ 与 tests/（M1-14，D-026：JSON 库不进入任何公共头文件）
 # 另外，engine/input/ 与 engine/platform/include/（接口层）不得包含任何上述头文件。
 if(NOT DEFINED SOURCE_DIR)
     message(FATAL_ERROR "需要 -DSOURCE_DIR")
@@ -15,6 +16,7 @@ file(GLOB_RECURSE files
 set(glfw_allowed "/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(gl_allowed "/engine/render/|/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(imgui_allowed "/engine/ui/|/apps/viewer/|/tests/")
+set(json_allowed "/engine/settings/src/|/tests/")
 
 set(violations "")
 set(checked 0)
@@ -36,6 +38,9 @@ foreach(f IN LISTS files)
         if(line MATCHES "[<\"](imgui|imstb_)" AND NOT rel MATCHES "${imgui_allowed}")
             list(APPEND violations "${rel}: ${line}（ImGui 只能在界面模块与应用中使用）")
         endif()
+        if(line MATCHES "[<\"]nlohmann/" AND NOT rel MATCHES "${json_allowed}")
+            list(APPEND violations "${rel}: ${line}（JSON 库只能在设置模块的实现中使用）")
+        endif()
         if(line MATCHES "[<\"](X11/|wayland-|SDL|vulkan/)" AND rel MATCHES "^/(engine|apps)/")
             list(APPEND violations "${rel}: ${line}（窗口系统或其他图形 API 头文件不允许直接使用）")
         endif()
@@ -49,4 +54,4 @@ if(violations)
     string(REPLACE ";" "\n" violations "${violations}")
     message(FATAL_ERROR "渲染隔离检查失败：\n${violations}")
 endif()
-message(STATUS "已检查 ${checked} 个文件，窗口库与图形 API 头文件只出现在允许的位置")
+message(STATUS "已检查 ${checked} 个文件，窗口库、图形 API、界面库与 JSON 库头文件只出现在允许的位置")

@@ -125,8 +125,8 @@ if [ $skip_mutation = 0 ]; then
 import sys
 path, name = sys.argv[1], sys.argv[2]
 mutations = {
-    "转视角不需要按右键": (
-        "{in::Binding::pair(dx, dy).withModifier(in::mouse(in::MouseControl::ButtonRight))}",
+    "转视角不需要按中键": (
+        "{in::Binding::pair(dx, dy).withModifier(in::mouse(in::MouseControl::ButtonMiddle))}",
         "{in::Binding::pair(dx, dy)}"),
     "前进不含俯仰": (
         "add(scale(forward, static_cast<double>(m.y) * v),",
@@ -138,8 +138,9 @@ mutations = {
         "const double factor = input_.state(boost_).down ? settings_.boost : 1.0;",
         "const double factor = 1.0;"),
     "方向键未绑定": (
-        ",\n                 in::Binding::composite2D(in::key(in::Key::Up), in::key(in::Key::Down), in::key(in::Key::Left), in::key(in::Key::Right))}",
-        "}"),
+        # M1-14 起按键由 CameraKeys 的两个槽位生成：只生成第一个槽位 = 方向键（备用槽位）未绑定
+        "    for (std::size_t i = 0; i < 2; ++i) {\n        if (k.forward[i] == in::Key::Unknown",
+        "    for (std::size_t i = 0; i < 1; ++i) {\n        if (k.forward[i] == in::Key::Unknown"),
 }
 old, new = mutations[name]
 text = open(path, encoding="utf-8").read()
@@ -165,7 +166,7 @@ PY
             summary+=("  变异 $name：已发现（$(sed -n "/^---- 变异：$name\$/,\$p" "$log" | grep -c '^FAILED') 项检查失败）")
         fi
     done <<'LIST'
-转视角不需要按右键|engine/view/src/camera_controller.cpp
+转视角不需要按中键|engine/view/src/camera_controller.cpp
 前进不含俯仰|engine/view/src/camera_controller.cpp
 滚轮方向反了|engine/view/src/camera_controller.cpp
 加速无效|engine/view/src/camera_controller.cpp

@@ -1,5 +1,6 @@
 #include "terra/view/camera_controller.hpp"
 
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -25,10 +26,55 @@ in::ActionDefinition action(const char* name, in::ActionType type, std::vector<i
     return a;
 }
 
+// 由按键槽位生成绑定：每个槽位一组；整组为空的槽位不生成绑定。
+std::vector<in::Binding> moveBindings(const CameraKeys& k) {
+    std::vector<in::Binding> out;
+    for (std::size_t i = 0; i < 2; ++i) {
+        if (k.forward[i] == in::Key::Unknown && k.back[i] == in::Key::Unknown && k.left[i] == in::Key::Unknown &&
+            k.right[i] == in::Key::Unknown) {
+            continue;
+        }
+        out.push_back(in::Binding::composite2D(in::key(k.forward[i]), in::key(k.back[i]), in::key(k.left[i]),
+                                               in::key(k.right[i])));
+    }
+    return out;
+}
+
+std::vector<in::Binding> liftBindings(const CameraKeys& k) {
+    std::vector<in::Binding> out;
+    for (std::size_t i = 0; i < 2; ++i) {
+        if (k.down[i] == in::Key::Unknown && k.up[i] == in::Key::Unknown) continue;
+        out.push_back(in::Binding::composite1D(in::key(k.down[i]), in::key(k.up[i])));
+    }
+    return out;
+}
+
+std::vector<in::Binding> buttonBindings(const CameraKeys::Slots& slots) {
+    std::vector<in::Binding> out;
+    for (const in::Key slot : slots) {
+        if (slot != in::Key::Unknown) out.push_back(in::Binding::single(in::key(slot)));
+    }
+    return out;
+}
+
+// Shift + 中键 = 平移：修饰键与加速键相同。
+std::vector<in::Binding> panBindings(const CameraKeys& k) {
+    const in::Control dx = in::mouse(in::MouseControl::DeltaX);
+    const in::Control dy = in::mouse(in::MouseControl::DeltaY);
+    std::vector<in::Binding> out;
+    for (const in::Key modifier : k.boost) {
+        if (modifier == in::Key::Unknown) continue;
+        out.push_back(in::Binding::pair(dx, dy)
+                          .withModifier(in::mouse(in::MouseControl::ButtonMiddle))
+                          .withModifier(in::key(modifier)));
+    }
+    return out;
+}
+
 }  // namespace
 
-CameraController::CameraController(in::InputSystem& input, CameraControlSettings config)
-    : input_(input), settings_(config) {
+CameraController::CameraController(in::InputSystem& input, CameraControlSettings config, const CameraKeys& keys)
+    : input_(input), settings_(config), keys_(keys) {
     const in::Control dx = in::mouse(in::MouseControl::DeltaX);
     const in::Control dy = in::mouse(in::MouseControl::DeltaY);
     in::ActionMapDefinition map{
@@ -36,33 +82,51 @@ CameraController::CameraController(in::InputSystem& input, CameraControlSettings
         0,
         true,
         {action("look", in::ActionType::Delta2D,
-                {in::Binding::pair(dx, dy).withModifier(in::mouse(in::MouseControl::ButtonRight))}),
-         action("move", in::ActionType::Axis2D,
-                {in::Binding::composite2D(in::key(in::Key::W), in::key(in::Key::S), in::key(in::Key::A), in::key(in::Key::D)),
-                 in::Binding::composite2D(in::key(in::Key::Up), in::key(in::Key::Down), in::key(in::Key::Left), in::key(in::Key::Right))}),
-         action("lift", in::ActionType::Axis1D,
-                {in::Binding::composite1D(in::key(in::Key::Q), in::key(in::Key::E)),
-                 in::Binding::composite1D(in::key(in::Key::LeftControl), in::key(in::Key::Space))}),
-         action("dolly", in::ActionType::Axis1D, {in::Binding::single(in::mouse(in::MouseControl::ScrollY))}),
-         action("pan", in::ActionType::Delta2D,
                 {in::Binding::pair(dx, dy).withModifier(in::mouse(in::MouseControl::ButtonMiddle))}),
-         action("boost", in::ActionType::Button,
-                {in::Binding::single(in::key(in::Key::LeftShift)), in::Binding::single(in::key(in::Key::RightShift))}),
-         action("reset", in::ActionType::Button, {in::Binding::single(in::key(in::Key::F))})}};
-    if (auto error = input_.addActionMap(std::move(map))) {
-        // 只可能是编程错误（例如同一个 InputSystem 上创建了两个控制器）
-        throw std::logic_error(std::string{"注册相机动作表失败："} + *error);
+         action("move", in::ActionType::Axis2D, moveBindings(keys_)),
+         action("lift", in::ActionType::Axis1D, liftBindings(keys_)),
+         action("dolly", in::ActionType::Axis1D, {in::Binding::single(in::mouse(in::MouseControl::ScrollY))}),
+         action("boost", in::ActionType::Button, buttonBindings(keys_.boost)),
+         action("reset", in::ActionType::Button, buttonBindings(keys_.reset))}};
+    // 平移放在更高优先级的表中，生效时消费鼠标增量，低优先级的“中键转视角”拿不到。
+    in::ActionMapDefinition panMap{kPanMapName, 1, true, {action("pan", in::ActionType::Delta2D, panBindings(keys_))}};
+    for (auto* m : {&map, &panMap}) {
+        if (auto error = input_.addActionMap(std::move(*m))) {
+            // 只可能是编程错误（例如同一个 InputSystem 上创建了两个控制器）
+            throw std::logic_error(std::string{"注册相机动作表失败："} + *error);
+        }
     }
     look_ = input_.findAction(kMapName, "look");
     move_ = input_.findAction(kMapName, "move");
     lift_ = input_.findAction(kMapName, "lift");
     dolly_ = input_.findAction(kMapName, "dolly");
-    pan_ = input_.findAction(kMapName, "pan");
+    pan_ = input_.findAction(kPanMapName, "pan");
     boost_ = input_.findAction(kMapName, "boost");
     reset_ = input_.findAction(kMapName, "reset");
 }
 
-void CameraController::setEnabled(bool enabled) { input_.setActionMapEnabled(kMapName, enabled); }
+void CameraController::setKeys(const CameraKeys& keys) {
+    keys_ = keys;
+    const std::pair<const char*, std::vector<in::Binding>> updates[] = {
+        {"move", moveBindings(keys_)},
+        {"lift", liftBindings(keys_)},
+        {"boost", buttonBindings(keys_.boost)},
+        {"reset", buttonBindings(keys_.reset)},
+    };
+    for (const auto& u : updates) {
+        if (auto error = input_.setBindings(kMapName, u.first, u.second)) {
+            throw std::logic_error(std::string{"更新相机按键失败："} + *error);
+        }
+    }
+    if (auto error = input_.setBindings(kPanMapName, "pan", panBindings(keys_))) {
+        throw std::logic_error(std::string{"更新相机按键失败："} + *error);
+    }
+}
+
+void CameraController::setEnabled(bool enabled) {
+    input_.setActionMapEnabled(kMapName, enabled);
+    input_.setActionMapEnabled(kPanMapName, enabled);
+}
 
 void CameraController::reset(Camera& camera) {
     camera.position = {-5.0, 0.0, 2.0};
@@ -99,10 +163,10 @@ void CameraController::update(Camera& camera, double dt) {
         camera.position = add(camera.position, scale(forward, static_cast<double>(wheel) * settings_.wheelStep * factor));
     }
 
-    // 中键平移：场景跟随鼠标（向右拖 → 相机向左移；向下拖 → 相机向上移）。
+    // Shift+中键平移：场景跟随鼠标（向右拖 → 相机向左移；向下拖 → 相机向上移）。平移时不加速（Shift 已用作修饰键）。
     const in::ActionState& pan = input_.state(pan_);
     if (pan.down) {
-        const double k = settings_.panMetersPerPixel * factor;
+        const double k = settings_.panMetersPerPixel;
         camera.position = add(camera.position, add(scale(right, -static_cast<double>(pan.x) * k),
                                                    scale(camera.up(), static_cast<double>(pan.y) * k)));
     }

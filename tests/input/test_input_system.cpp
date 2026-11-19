@@ -1,9 +1,11 @@
 // 输入系统单元测试（M1-04，D-018）。用虚拟设备注入事件，不需要窗口或图形环境。
 // 覆盖：按钮边沿与帧内快速点按、组合与修饰键、增量累加、轴向/径向死区数值、热插拔与断开释放、
-// 焦点丢失释放、动作表优先级与消费、三种多来源仲裁、配置校验、DeviceId 不复用、非有限值。
+// 焦点丢失释放、动作表优先级与消费、三种多来源仲裁、配置校验、DeviceId 不复用、非有限值；
+// M1-14：替换绑定（setBindings）、键位名称表。
 
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <string>
 
 #include "terra/input/input_system.hpp"
@@ -396,6 +398,70 @@ void testNonFinite() {
 
 }  // namespace
 
+void testSetBindings() {
+    InputSystem sys;
+    const DeviceId kb = sys.connectDevice(virtualDevice(DeviceKind::Keyboard, "kb"));
+    addMap(sys, {"m", 0, true,
+                 {action("fire", ActionType::Button, {Binding::single(key(Key::W))}),
+                  action("move", ActionType::Axis2D,
+                         {Binding::composite2D(key(Key::W), key(Key::S), key(Key::A), key(Key::D))})}});
+    const ActionHandle fire = sys.findAction("m", "fire");
+
+    // 按住 W 时把 fire 改绑到 I：句柄不变；下一帧 W 不再触发，产生“抬起”；I 生效。
+    sys.setControl(kb, key(Key::W), 1.0f, 1.0);
+    sys.update();
+    check(sys.state(fire).down, "改绑前 W 触发 fire");
+    const auto error = sys.setBindings("m", "fire", {Binding::single(key(Key::I))});
+    check(!error, "setBindings 成功" + (error ? "：" + *error : std::string{}));
+    check(sys.findAction("m", "fire").index == fire.index, "改绑后句柄不变");
+    sys.update();
+    check(!sys.state(fire).down && sys.state(fire).released, "改绑后 W 不再触发 fire，并产生抬起");
+    sys.setControl(kb, key(Key::I), 1.0f, 2.0);
+    sys.update();
+    check(sys.state(fire).down && sys.state(fire).pressed, "改绑后 I 触发 fire");
+
+    // 清空绑定：动作不再有来源
+    check(!sys.setBindings("m", "fire", {}), "允许清空绑定");
+    sys.update();
+    check(!sys.state(fire).down, "清空绑定后 fire 不再按下");
+
+    // 校验失败时不做修改
+    check(!sys.setBindings("m", "fire", {Binding::single(key(Key::I))}), "恢复绑定到 I");
+    sys.update();
+    check(sys.state(fire).down, "恢复后 I 触发 fire");
+    check(sys.setBindings("m", "fire", {Binding::pair(key(Key::A), key(Key::B))}).has_value(),
+          "按钮动作不接受 Pair 绑定");
+    check(sys.setBindings("m", "move", {Binding::composite2D(key(Key::W), key(Key::S), key(Key::A),
+                                                             mouse(MouseControl::ButtonLeft))})
+              .has_value(),
+          "组合绑定的控件须来自同一种类设备");
+    sys.update();
+    check(sys.state(fire).down, "校验失败后原绑定仍然有效");
+    check(sys.setBindings("nope", "fire", {}).has_value(), "动作表不存在时报错");
+    check(sys.setBindings("m", "nope", {}).has_value(), "动作不存在时报错");
+}
+
+void testKeyNames() {
+    std::set<std::string> seen;
+    bool allRoundTrip = true;
+    for (int i = 1; i < static_cast<int>(Key::Count); ++i) {
+        const auto k = static_cast<Key>(i);
+        const std::string name = keyName(k);
+        if (name.empty() || keyFromName(name) != k) {
+            allRoundTrip = false;
+            check(false, "键位 " + std::to_string(i) + " 的名称 '" + name + "' 无法往返");
+        }
+        if (!seen.insert(name).second) check(false, "键位名称重复：" + name);
+    }
+    check(allRoundTrip, "全部键位名称可往返");
+    check(std::string{keyName(Key::W)} == "W" && std::string{keyName(Key::LeftShift)} == "LeftShift" &&
+              std::string{keyName(Key::F11)} == "F11" && std::string{keyName(Key::Digit1)} == "Digit1",
+          "键位名称与枚举名一致");
+    check(std::string{keyName(Key::Unknown)}.empty() && std::string{keyName(Key::Count)}.empty(), "无效键位名称为空");
+    check(keyFromName("") == Key::Unknown && keyFromName("w") == Key::Unknown && keyFromName("Nope") == Key::Unknown,
+          "未知名称（含大小写不符）返回 Unknown");
+}
+
 int main() {
     testButtonEdges();
     testCompositeModifiersAndDeltas();
@@ -407,6 +473,8 @@ int main() {
     testArbitration();
     testValidation();
     testNonFinite();
+    testSetBindings();
+    testKeyNames();
     if (failures == 0) {
         std::printf("all passed\n");
     }

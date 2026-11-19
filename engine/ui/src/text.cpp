@@ -60,29 +60,93 @@ constexpr Entry kEntries[] = {
     {TextId::ControlsTitle, "操作说明", "Controls"},
     {TextId::ControlsBody,
      "鼠标在视口中时：\n"
-     "  按住右键拖动    转视角\n"
+     "  按住中键拖动    转视角\n"
      "  W/↑  S/↓        沿视线前进 / 后退\n"
      "  A/←  D/→        左右平移\n"
-     "  E/空格  Q/Ctrl  上升 / 下降\n"
+     "  E/空格  Q       上升 / 下降\n"
      "  滚轮            拉近 / 拉远\n"
-     "  按住中键拖动    平移\n"
+     "  Shift+中键拖动  平移\n"
      "  Shift           加速\n"
      "  F               复位视角\n"
-     "  F11             全屏 / 窗口",
+     "  F11             全屏 / 窗口\n"
+     "  Ctrl + / -      界面放大 / 缩小（Ctrl+0 恢复自动）\n"
+     "按键可在“设置 → 偏好设置…”中修改（以上为默认按键）",
      "With the mouse over the viewport:\n"
-     "  Hold right button + drag   Look around\n"
+     "  Hold middle button + drag  Look around\n"
      "  W/Up  S/Down               Move forward / back along view\n"
      "  A/Left  D/Right            Strafe left / right\n"
-     "  E/Space  Q/Ctrl            Up / down\n"
+     "  E/Space  Q                 Up / down\n"
      "  Mouse wheel                Dolly in / out\n"
-     "  Hold middle button + drag  Pan\n"
+     "  Shift + middle drag        Pan\n"
      "  Shift                      Faster\n"
      "  F                          Reset view\n"
-     "  F11                        Fullscreen / windowed"},
+     "  F11                        Fullscreen / windowed\n"
+     "  Ctrl + / -                 UI zoom in / out (Ctrl+0: auto)\n"
+     "Keys can be changed in Settings > Preferences… (defaults shown above)"},
     {TextId::AboutTitle, "关于 EAI Terra", "About EAI Terra"},
     {TextId::AboutBody,
      "EAI Terra —— 开源机器人仿真引擎\n物理：MuJoCo 4.0.1\n渲染：OpenGL 4.5（自研 Terra Render）\n界面：Dear ImGui 1.93（docking）\n字体：Noto Sans SC（SIL OFL 1.1）",
      "EAI Terra - An Open Robotics Simulation Engine\nPhysics: MuJoCo 4.0.1\nRendering: OpenGL 4.5 (Terra Render)\nUI: Dear ImGui 1.93 (docking)\nFont: Noto Sans SC (SIL OFL 1.1)"},
+    {TextId::MenuViewUiScale, "界面缩放", "UI Scale"},
+    {TextId::MenuViewZoomIn, "放大", "Zoom In"},
+    {TextId::MenuViewZoomOut, "缩小", "Zoom Out"},
+    {TextId::MenuViewZoomReset, "恢复自动", "Reset to Auto"},
+    {TextId::StatsUiScale, "界面缩放", "UI scale"},
+    {TextId::LogUiScale, "界面缩放：", "UI scale: "},
+    {TextId::MenuSettingsPreferences, "偏好设置…", "Preferences…"},
+    {TextId::MenuWindowResetLayout, "恢复默认布局", "Reset Layout"},
+    {TextId::SettingsTitle, "偏好设置", "Preferences"},
+    {TextId::SettingsInterface, "界面", "Interface"},
+    {TextId::SettingsDisplay, "显示", "Display"},
+    {TextId::SettingsCamera, "相机", "Camera"},
+    {TextId::SettingsKeys, "按键", "Keys"},
+    {TextId::SettingsLanguage, "语言", "Language"},
+    {TextId::SettingsUiScale, "界面缩放", "UI scale"},
+    {TextId::SettingsUiScaleAuto, "自动（按显示器推算）", "Automatic (from monitor)"},
+    {TextId::SettingsDisplayMode, "显示模式", "Display mode"},
+    {TextId::SettingsMonitor, "显示器", "Monitor"},
+    {TextId::SettingsPrimary, "（主）", " (primary)"},
+    {TextId::SettingsVideoMode, "分辨率与刷新率", "Resolution and refresh rate"},
+    {TextId::SettingsDesktopMode, "桌面当前模式", "Current desktop mode"},
+    {TextId::SettingsVsync, "垂直同步", "Vertical sync"},
+    {TextId::SettingsExclusiveHint, "独占全屏会切换显示器的分辨率，失去焦点时自动最小化；按 F11 回到窗口。", "Exclusive fullscreen changes the monitor resolution and minimizes when focus is lost; press F11 to return to a window."},
+    {TextId::SettingsLook, "转视角灵敏度（°/像素）", "Look sensitivity (°/px)"},
+    {TextId::SettingsSpeed, "移动速度（m/s）", "Move speed (m/s)"},
+    {TextId::SettingsBoost, "加速倍率", "Boost multiplier"},
+    {TextId::SettingsWheel, "滚轮步长（m/格）", "Wheel step (m/notch)"},
+    {TextId::SettingsPan, "平移速度（m/像素）", "Pan speed (m/px)"},
+    {TextId::SettingsFov, "视场角（°）", "Field of view (°)"},
+    {TextId::SettingsSliderHint, "按住 Ctrl 点击滑块可直接输入数值。", "Ctrl+click a slider to type a value."},
+    {TextId::SettingsAction, "操作", "Action"},
+    {TextId::SettingsKey, "按键", "Key"},
+    {TextId::SettingsAltKey, "备用", "Alternate"},
+    {TextId::SettingsNoKey, "（无）", "(none)"},
+    {TextId::SettingsKeysHint, "点击后按下新键，右键点击清除。同一个键只能用于一个操作。", "Click, then press a new key; right-click to clear. Each key can be used by only one action."},
+    {TextId::SettingsMouseHint, "鼠标（暂不可改）：中键拖动转视角，加速键 + 中键拖动平移，滚轮拉近 / 拉远。", "Mouse (fixed for now): middle-drag to look, boost key + middle-drag to pan, wheel to dolly."},
+    {TextId::SettingsPressKey, "请按下新键…", "Press a new key…"},
+    {TextId::SettingsPressKeyHint, "Esc 取消；Ctrl 保留给界面快捷键", "Esc to cancel; Ctrl is reserved for UI shortcuts"},
+    {TextId::SettingsRestorePage, "恢复本页默认值", "Restore Page Defaults"},
+    {TextId::SettingsRestoreAll, "全部恢复默认", "Restore All Defaults"},
+    {TextId::SettingsFile, "设置文件：", "Settings file: "},
+    {TextId::SettingsNotSaved, "（本次运行不保存）", "(not saved in this run)"},
+    {TextId::SettingsAutoSave, "修改立即生效并自动保存。", "Changes take effect immediately and are saved automatically."},
+    {TextId::CmdCameraForward, "前进", "Forward"},
+    {TextId::CmdCameraBack, "后退", "Backward"},
+    {TextId::CmdCameraLeft, "向左", "Left"},
+    {TextId::CmdCameraRight, "向右", "Right"},
+    {TextId::CmdCameraUp, "上升", "Up"},
+    {TextId::CmdCameraDown, "下降", "Down"},
+    {TextId::CmdCameraBoost, "加速（也是平移修饰键）", "Boost (also the pan modifier)"},
+    {TextId::CmdCameraReset, "复位视角", "Reset view"},
+    {TextId::CmdAppFullscreen, "全屏 / 窗口", "Fullscreen / windowed"},
+    {TextId::LogSettingsLoaded, "已读取设置：", "Settings loaded: "},
+    {TextId::LogSettingsMissing, "未找到设置文件，使用默认设置：", "No settings file yet, using defaults: "},
+    {TextId::LogSettingsCorrupt, "设置文件无法解析，已备份为 ", "Settings file could not be parsed; backed up to "},
+    {TextId::LogSettingsUnreadable, "无法读取设置文件，使用默认设置：", "Cannot read the settings file, using defaults: "},
+    {TextId::LogSettingsWarning, "设置：", "Settings: "},
+    {TextId::LogSettingsSaveFailed, "保存设置失败：", "Failed to save settings: "},
+    {TextId::LogKeyMoved, " 已从以下操作移走：", " removed from: "},
+    {TextId::LogDisplayModeFailed, "切换显示模式失败：", "Display mode change failed: "},
     {TextId::Close, "关闭", "Close"},
 };
 

@@ -44,12 +44,24 @@ public:
     bool usingFallbackFont() const noexcept { return fallback_; }
     float contentScale() const noexcept { return scale_; }
 
+    // ---- 界面缩放（字号与控件尺寸同时缩放）----
+    static constexpr float kMinScale = 0.5f;
+    static constexpr float kMaxScale = 4.0f;
+    // 请求新的缩放，在下一次 beginFrame 时生效（不能在一帧中途改变字号）；超出范围时裁剪。
+    void requestScale(float value);
+    float scale() const noexcept { return pendingScale_ > 0.0f ? pendingScale_ : scale_; }
+    // 按显示器推算默认缩放：系统内容缩放 × max(1, 0.7 × 显示器高度 / 1080)，取 0.05 的整数倍。
+    // 例：1080p → 内容缩放本身；4K（2160）且内容缩放 1.25 → 1.75。
+    static float autoScale(float systemScale, int monitorHeight);
+
 private:
     UiContext() = default;
     ImFont* regular_ = nullptr;
     ImFont* bold_ = nullptr;
     bool fallback_ = false;
     float scale_ = 1.0f;
+    float pendingScale_ = 0.0f;
+    float baseFontSize_ = 16.0f;
     bool initialized_ = false;
 };
 

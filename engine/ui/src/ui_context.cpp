@@ -1,5 +1,7 @@
 #include "terra/ui/ui_context.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 
@@ -111,16 +113,18 @@ UiResult UiContext::create(const UiOptions& options) {
         return result;
     }
     std::unique_ptr<UiContext> self{new UiContext()};
-    self->scale_ = options.contentScale > 0.0f ? options.contentScale : 1.0f;
+    self->scale_ = std::clamp(options.contentScale > 0.0f ? options.contentScale : 1.0f, kMinScale, kMaxScale);
+    self->baseFontSize_ = options.baseFontSize;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr;  // 布局持久化随设置一起做（M1-14）；目前每次启动使用默认布局
+    io.IniFilename = nullptr;  // 不写 imgui.ini：停靠布局由应用通过 SaveIniSettingsToMemory 存进设置文件（M1-14，D-026）
     io.LogFilename = nullptr;
     io.BackendPlatformName = "terra_platform（Terra 输入桥）";
     if (options.docking) io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigWindowsMoveFromTitleBarOnly = true;  // 只能拖动标题栏移动窗口，在视口等内容区域点击不会拖走面板
 
     // 字体：正文与标题。按缩放后的像素大小加载，ImGui 1.92+ 按需光栅化字形（中文无需预先指定字符范围）。
     const std::filesystem::path dir{options.fontDirectory};
@@ -165,6 +169,14 @@ UiContext::~UiContext() {
 void UiContext::beginFrame(UiInputBridge& input, double dt, terra::platform::Extent windowSize,
                            terra::platform::Extent framebufferSize) {
     ImGuiIO& io = ImGui::GetIO();
+    if (pendingScale_ > 0.0f) {
+        ImGuiStyle& style = ImGui::GetStyle();
+        applyTerraTheme(style, pendingScale_);
+        style.FontSizeBase = baseFontSize_;
+        style.FontScaleDpi = pendingScale_;
+        scale_ = pendingScale_;
+        pendingScale_ = 0.0f;
+    }
     io.DisplaySize = ImVec2(static_cast<float>(windowSize.width), static_cast<float>(windowSize.height));
     if (windowSize.width > 0 && windowSize.height > 0) {
         io.DisplayFramebufferScale = ImVec2(static_cast<float>(framebufferSize.width) / static_cast<float>(windowSize.width),
@@ -179,6 +191,18 @@ void UiContext::beginFrame(UiInputBridge& input, double dt, terra::platform::Ext
 void UiContext::render() {
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+void UiContext::requestScale(float value) {
+    if (!std::isfinite(value)) return;
+    pendingScale_ = std::clamp(value, kMinScale, kMaxScale);
+}
+
+float UiContext::autoScale(float systemScale, int monitorHeight) {
+    const float base = systemScale > 0.0f ? systemScale : 1.0f;
+    const float boost = std::max(1.0f, 0.7f * static_cast<float>(monitorHeight) / 1080.0f);
+    const float s = std::round(base * boost * 20.0f) / 20.0f;
+    return std::clamp(s, kMinScale, kMaxScale);
 }
 
 bool UiContext::wantsMouse() const { return ImGui::GetIO().WantCaptureMouse; }

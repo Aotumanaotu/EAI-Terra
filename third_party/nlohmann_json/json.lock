@@ -1,0 +1,11 @@
+# nlohmann/json 源码锁定记录（M1-14，D-026）。由 scripts/settings/check_json.sh 读取并复核。
+# 状态：已锁定（2026-11-19，M1-14）。仅头文件，MIT 许可（LICENSE.MIT）。
+# 与 glad 生成代码一样直接提交在仓库中（约 0.95 MB），构建不联网，渲染关闭时也可使用。
+# 文件取自官方发布页的单头文件发布物（与 single_include/ 相同），未做任何修改。
+JSON_VERSION=3.12.0
+JSON_HPP_URL=https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp
+JSON_HPP_SHA256=aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63
+JSON_FWD_HPP_URL=https://github.com/nlohmann/json/releases/download/v3.12.0/json_fwd.hpp
+JSON_FWD_HPP_SHA256=fb6aa70cbece087f37ab4685c182b287c53be54f785f981b9db9d30d2d028b37
+JSON_LICENSE_URL=https://raw.githubusercontent.com/nlohmann/json/v3.12.0/LICENSE.MIT
+JSON_LICENSE_SHA256=46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603

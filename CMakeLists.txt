@@ -27,6 +27,7 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
 endif()
 
 include(TerraMuJoCo)
+include(TerraJson)
 if(TERRA_BUILD_RENDER)
     include(TerraRender)
 endif()
@@ -37,6 +38,7 @@ endif()
 #   terra_physics         engine/physics                  后端无关接口 PhysicsWorld（M0-07），仅头文件
 #   terra_physics_mujoco  engine/physics/backends/mujoco  MuJoCo 私有适配层（M0-02 起），实现 PhysicsWorld，PRIVATE 链接 mujoco::mujoco
 #   terra_input           engine/input                    输入抽象（M1-04），只依赖标准库，总是构建
+#   terra_settings        engine/settings                 用户设置模型与 JSON 读写（M1-14），PRIVATE 使用 nlohmann/json，总是构建
 #   terra_platform        engine/platform                 窗口与上下文接口（M1-03），仅 TERRA_BUILD_RENDER=ON
 #   terra_platform_glfw   engine/platform/backends/glfw   GLFW 实现与键鼠适配器，PRIVATE 链接 GLFW
 #   terra_render          engine/render                   渲染核心（M1-06），PRIVATE 链接 glad，不依赖平台与物理
@@ -48,6 +50,7 @@ endif()
 add_subdirectory(engine/core)
 add_subdirectory(engine/physics)
 add_subdirectory(engine/input)
+add_subdirectory(engine/settings)
 if(TERRA_BUILD_RENDER)
     add_subdirectory(engine/platform)
     add_subdirectory(engine/render)

@@ -2,7 +2,7 @@
 //
 // 模式：
 //   test_view               自动化（不需要窗口）：相机基向量、矩阵、俯仰限制；视口相机控制器的每种操作；
-//                           重复注册被拒绝
+//                           重复注册被拒绝；按键改绑（M1-14）
 //   test_view --show <秒>   展示：桌面会话中打开可交互窗口（地面网格、坐标轴、彩色立方体），Esc 退出；到时自动关闭
 // 控制器只通过虚拟设备注入的输入动作驱动，本文件的自动化部分不涉及窗口库或 OpenGL。
 
@@ -169,7 +169,7 @@ void testController() {
     const double yaw0 = cam.yaw(), pitch0 = cam.pitch();
     drag(input, d, 40, 30);
     frame(input, controller, cam, 0.016);
-    check(near(cam.yaw(), yaw0, 1e-12) && near(cam.pitch(), pitch0, 1e-12), "未按右键：拖动不改变视角");
+    check(near(cam.yaw(), yaw0, 1e-12) && near(cam.pitch(), pitch0, 1e-12), "未按中键：拖动不改变视角");
 
     // 左键拖动也不转视角（左键留给以后的选择/拖动物体）
     setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonLeft), true);
@@ -178,14 +178,21 @@ void testController() {
     setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonLeft), false);
     check(near(cam.yaw(), yaw0, 1e-12), "左键拖动：不改变视角");
 
-    // 右键拖动转视角：向右 20 像素 → 偏航 -3°；向下 20 像素 → 俯仰 -3°；位置不变
-    const Vec3 p0 = cam.position;
+    // 右键拖动也不转视角（2026-11-19 起转视角改用中键，右键留给界面）
     setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonRight), true);
-    drag(input, d, 20, 20);
+    drag(input, d, 40, 30);
     frame(input, controller, cam, 0.016);
     setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonRight), false);
+    check(near(cam.yaw(), yaw0, 1e-12), "右键拖动：不改变视角");
+
+    // 中键拖动转视角：向右 20 像素 → 偏航 -3°；向下 20 像素 → 俯仰 -3°；位置不变
+    const Vec3 p0 = cam.position;
+    setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), true);
+    drag(input, d, 20, 20);
+    frame(input, controller, cam, 0.016);
+    setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), false);
     check(near(cam.yaw(), yaw0 - 3 * kDeg, 1e-9) && near(cam.pitch(), pitch0 - 3 * kDeg, 1e-9),
-          "右键向右下拖 20 像素：偏航 -3°、俯仰 -3°");
+          "中键向右下拖 20 像素：偏航 -3°、俯仰 -3°");
     check(near(cam.position, p0, 1e-12), "转视角不改变位置");
 
     // 前进：W 与 ↑ 都沿视线方向（含俯仰）前进 速度 × 时间
@@ -198,7 +205,7 @@ void testController() {
     check(near(hold(input, controller, cam, d.keyboard, in::Key::Left, 1.0), mul(r, -3.0), 1e-9), "← 1 秒：水平左移 3 m");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::E, 1.0), {0, 0, 3.0}, 1e-9), "E 1 秒：沿世界 Z 上升 3 m");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::Space, 1.0), {0, 0, 3.0}, 1e-9), "空格 1 秒：上升 3 m");
-    check(near(hold(input, controller, cam, d.keyboard, in::Key::LeftControl, 1.0), {0, 0, -3.0}, 1e-9), "Ctrl 1 秒：下降 3 m");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::LeftControl, 1.0), {0, 0, 0}, 1e-12), "Ctrl 不再移动相机（留给界面快捷键）");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::Q, 0.5), {0, 0, -1.5}, 1e-9), "Q 0.5 秒：下降 1.5 m");
 
     // W + D 同时按：两方向叠加
@@ -226,17 +233,21 @@ void testController() {
     frame(input, controller, cam, 0.016);
     check(near(sub(cam.position, before), mul(f, -1.0), 1e-9), "滚轮向下 2 格：拉远 1 m");
 
-    // 中键平移：向右拖 → 相机向左；向下拖 → 相机向上
+    // Shift + 中键平移：向右拖 → 相机向左；向下拖 → 相机向上；平移期间不转视角（高优先级动作表消费鼠标增量）
     before = cam.position;
+    const double yawBeforePan = cam.yaw();
+    setButton(input, d.keyboard, in::key(in::Key::LeftShift), true);
     setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), true);
     drag(input, d, 100, 0);
     frame(input, controller, cam, 0.016);
-    check(near(sub(cam.position, before), mul(r, -1.0), 1e-9), "中键向右拖 100 像素：相机向左 1 m");
+    check(near(sub(cam.position, before), mul(r, -1.0), 1e-9), "Shift + 中键向右拖 100 像素：相机向左 1 m");
+    check(near(cam.yaw(), yawBeforePan, 1e-12), "Shift + 中键平移时不转视角");
     before = cam.position;
     drag(input, d, 0, 100);
     frame(input, controller, cam, 0.016);
     setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), false);
-    check(near(sub(cam.position, before), cam.up(), 1e-9), "中键向下拖 100 像素：相机沿视平面向上 1 m");
+    setButton(input, d.keyboard, in::key(in::Key::LeftShift), false);
+    check(near(sub(cam.position, before), cam.up(), 1e-9), "Shift + 中键向下拖 100 像素：相机沿视平面向上 1 m");
 
     // F 复位
     setButton(input, d.keyboard, in::key(in::Key::F), true);
@@ -258,6 +269,89 @@ void testController() {
         std::printf("INFO 重复注册：%s\n", e.what());
     }
     check(threw, "同一个输入系统上创建第二个相机控制器被拒绝");
+}
+
+// 按键设置（M1-14）：改绑后新键生效、旧键失效；平移修饰键跟随加速键；清空槽位；按下中改绑产生抬起。
+void testControllerKeys() {
+    in::InputSystem input;
+    const Devices d = connect(input);
+    v::CameraController controller(input);
+    v::Camera cam;
+    v::CameraController::reset(cam);
+    check(controller.keys() == v::CameraKeys{}, "默认按键与 CameraKeys{} 相同");
+
+    v::CameraKeys keys;
+    keys.forward = {in::Key::I, in::Key::Unknown};
+    keys.boost = {in::Key::LeftAlt, in::Key::Unknown};
+    keys.reset = {in::Key::Home, in::Key::Unknown};
+    keys.up = {in::Key::PageUp, in::Key::Unknown};
+    controller.setKeys(keys);
+    check(controller.keys() == keys, "setKeys 后 keys() 返回新按键");
+
+    const Vec3 f = cam.forward();
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::I, 1.0), mul(f, 3.0), 1e-9), "改绑后 I 前进 3 m");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::W, 1.0), {0, 0, 0}, 1e-12), "改绑后 W 不再前进");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::Up, 1.0), {0, 0, 0}, 1e-12), "清空的备用槽位（↑）不再前进");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::S, 1.0), mul(f, -3.0), 1e-9), "未改的后退键 S 仍有效");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::Space, 1.0), {0, 0, 0}, 1e-12), "上升备用键清空后空格无效");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::PageUp, 1.0), {0, 0, 3.0}, 1e-9), "改绑后 PageUp 上升");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::Q, 1.0), {0, 0, -3.0}, 1e-9), "下降键 Q 仍有效");
+
+    // 加速键改为 Alt：Alt + I 加速；Shift 不再加速
+    setButton(input, d.keyboard, in::key(in::Key::LeftAlt), true);
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::I, 1.0), mul(f, 9.0), 1e-9), "Alt + I：加速 3 倍");
+    setButton(input, d.keyboard, in::key(in::Key::LeftAlt), false);
+    setButton(input, d.keyboard, in::key(in::Key::LeftShift), true);
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::I, 1.0), mul(f, 3.0), 1e-9), "Shift 不再加速");
+
+    // 平移修饰键跟随加速键：Shift + 中键 现在是转视角；Alt + 中键 平移
+    const Vec3 r = cam.right();
+    Vec3 before = cam.position;
+    const double yaw0 = cam.yaw();
+    setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), true);
+    drag(input, d, 100, 0);
+    frame(input, controller, cam, 0.016);
+    check(near(cam.position, before, 1e-12) && !near(cam.yaw(), yaw0, 1e-6), "Shift + 中键：改绑后为转视角而非平移");
+    setButton(input, d.keyboard, in::key(in::Key::LeftShift), false);
+    cam.setOrientation(yaw0, cam.pitch());
+    setButton(input, d.keyboard, in::key(in::Key::LeftAlt), true);
+    drag(input, d, 100, 0);
+    frame(input, controller, cam, 0.016);
+    setButton(input, d.keyboard, in::key(in::Key::LeftAlt), false);
+    setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), false);
+    frame(input, controller, cam, 0.0);
+    check(near(sub(cam.position, before), mul(r, -1.0), 1e-9) && near(cam.yaw(), yaw0, 1e-12), "Alt + 中键：平移 1 m，不转视角");
+
+    // 复位键改为 Home
+    cam.position = {1, 2, 3};
+    (void)hold(input, controller, cam, d.keyboard, in::Key::F, 0.016);
+    check(near(cam.position, {1, 2, 3}, 1e-12), "F 不再复位");
+    (void)hold(input, controller, cam, d.keyboard, in::Key::Home, 0.016);
+    check(near(cam.position, {-5, 0, 2}, 1e-12), "Home 复位");
+
+    // 按住 I 时改回默认：下一帧 I 不再前进
+    setButton(input, d.keyboard, in::key(in::Key::I), true);
+    frame(input, controller, cam, 0.0);
+    controller.setKeys(v::CameraKeys{});
+    before = cam.position;
+    frame(input, controller, cam, 1.0);
+    setButton(input, d.keyboard, in::key(in::Key::I), false);
+    check(near(cam.position, before, 1e-12), "按住中改绑：旧键立即失效");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::W, 1.0), mul(cam.forward(), 3.0), 1e-9), "恢复默认后 W 前进");
+
+    // 全部清空：键盘不再驱动相机，鼠标转视角仍可用
+    v::CameraKeys none;
+    for (auto* slots : {&none.forward, &none.back, &none.left, &none.right, &none.up, &none.down, &none.boost, &none.reset}) {
+        *slots = {in::Key::Unknown, in::Key::Unknown};
+    }
+    controller.setKeys(none);
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::W, 1.0), {0, 0, 0}, 1e-12), "清空全部按键后 W 无效");
+    const double yaw1 = cam.yaw();
+    setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), true);
+    drag(input, d, 20, 0);
+    frame(input, controller, cam, 0.016);
+    setButton(input, d.mouse, in::mouse(in::MouseControl::ButtonMiddle), false);
+    check(near(cam.yaw(), yaw1 - 3 * kDeg, 1e-9), "清空按键后中键转视角仍有效");
 }
 
 // ---- 展示 ----
@@ -389,14 +483,14 @@ void main() { fragColor = vec4(vColor, 1.0); }
     vao.setFloatAttribute(1, 0, 3, offsetof(Vertex, color));
     const int location = shader.program->uniformLocation("uViewProjection");
 
-    window.window->setTitle("EAI Terra · 视口（右键拖动转视角，WASD/方向键移动，滚轮拉近，F11 全屏，Esc 退出）");
+    window.window->setTitle("EAI Terra · 视口（中键拖动转视角，WASD/方向键移动，滚轮拉近，F11 全屏，Esc 退出）");
     for (const auto& m : platform.platform->monitors()) {
         std::printf("INFO 显示器 %d：%s%s，%dx%d@%dHz，支持 %zu 种模式\n", m.index, m.name.c_str(), m.primary ? "（主）" : "",
                     m.current.width, m.current.height, m.current.refreshRate, m.modes.size());
     }
     std::printf("INFO 展示：%s\n", ctx.info().renderer.c_str());
-    std::printf("INFO 右键拖动转视角；W/↑ S/↓ 沿视线前后，A/← D/→ 左右；E/空格 上升，Q/Ctrl 下降；\n");
-    std::printf("INFO 滚轮拉近/拉远；中键拖动平移；Shift 加速；F 复位；F11 全屏/窗口；Esc 退出\n");
+    std::printf("INFO 中键拖动转视角；W/↑ S/↓ 沿视线前后，A/← D/→ 左右；E/空格 上升，Q 下降；\n");
+    std::printf("INFO 滚轮拉近/拉远；Shift+中键拖动平移；Shift 加速；F 复位；F11 全屏/窗口；Esc 退出\n");
 
     const double start = platform.platform->time();
     double last = start;
@@ -443,6 +537,7 @@ int main(int argc, char** argv) {
     }
     testCameraMath();
     testController();
+    testControllerKeys();
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;
 }

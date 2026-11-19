@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace terra::input {
 
@@ -83,6 +84,11 @@ enum class GamepadControl : std::uint16_t {
     LeftTrigger, RightTrigger,     // 0..1
     Count,
 };
+
+// 键位的稳定名称（与枚举名相同，如 "W"、"Up"、"LeftShift"、"Digit1"、"F11"），用于配置文件与界面显示（M1-14，D-026）。
+// Key::Unknown 与越界值返回空字符串；keyFromName 区分大小写，未知名称返回 Key::Unknown。
+const char* keyName(Key key) noexcept;
+Key keyFromName(std::string_view name) noexcept;
 
 constexpr Control key(Key k) noexcept { return Control{DeviceKind::Keyboard, static_cast<std::uint16_t>(k)}; }
 constexpr Control mouse(MouseControl m) noexcept { return Control{DeviceKind::Mouse, static_cast<std::uint16_t>(m)}; }

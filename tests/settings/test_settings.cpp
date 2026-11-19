@@ -1,0 +1,333 @@
+// 设置模块测试（M1-14，D-026）。不需要窗口或图形环境，渲染关闭时也运行。
+// 覆盖：默认值；JSON 往返（全部字段）；文件缺失、语法错误、顶层非对象、无法读取；逐字段类型与范围校验（坏字段用默认值，
+// 其他字段照常读取）；未知字段与较新版本的警告；按键名称、保留键、重复按键；按键分配（抢占其他操作的键）；
+// 原子保存、自动建目录、保存失败不破坏原文件；坏文件备份；XDG 默认路径。
+//
+// 用法：test_settings <临时目录>（测试开始时清空该目录）
+
+#include <cstddef>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "terra/settings/settings.hpp"
+
+namespace {
+
+namespace fs = std::filesystem;
+namespace in = terra::input;
+namespace st = terra::settings;
+using st::Command;
+
+int failures = 0;
+
+void check(bool condition, const std::string& what) {
+    if (!condition) {
+        std::fprintf(stderr, "FAILED: %s\n", what.c_str());
+        ++failures;
+    }
+}
+
+std::string joined(const std::vector<std::string>& lines) {
+    std::string out;
+    for (const auto& l : lines) out += "  " + l + "\n";
+    return out;
+}
+
+bool contains(const std::vector<std::string>& lines, const std::string& part) {
+    for (const auto& l : lines) {
+        if (l.find(part) != std::string::npos) return true;
+    }
+    return false;
+}
+
+void writeFile(const fs::path& p, const std::string& text) {
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    out << text;
+}
+
+std::string readFile(const fs::path& p) {
+    std::ifstream file(p, std::ios::binary);
+    std::ostringstream s;
+    s << file.rdbuf();
+    return s.str();
+}
+
+// 全部字段都不等于默认值的设置。
+st::Settings everythingChanged() {
+    st::Settings s;
+    s.ui.language = "en";
+    s.ui.uiScale = 1.75;
+    s.ui.showOutliner = false;
+    s.ui.showDetails = false;
+    s.ui.showLog = false;
+    s.ui.showStats = false;
+    s.ui.layout = "[Window][大纲###Outliner]\nPos=0,19\nSize=272,700\n\n[Docking][Data]\nDockSpace ID=0x1 Window=0x2 Pos=0,19\n";
+    s.display.mode = st::WindowMode::ExclusiveFullscreen;
+    s.display.monitor = 1;
+    s.display.videoMode = st::VideoModeSetting{2560, 1440, 144};
+    s.display.vsync = false;
+    s.display.windowWidth = 1280;
+    s.display.windowHeight = 720;
+    s.camera.lookDegreesPerPixel = 0.2;
+    s.camera.speed = 7.5;
+    s.camera.boost = 4.0;
+    s.camera.wheelStep = 1.25;
+    s.camera.panMetersPerPixel = 0.02;
+    s.camera.fovDegrees = 75.0;
+    s.keys[Command::CameraForward] = {in::Key::I, in::Key::Unknown};
+    s.keys[Command::CameraBack] = {in::Key::K, in::Key::Down};
+    s.keys[Command::CameraBoost] = {in::Key::LeftAlt, in::Key::Unknown};
+    s.keys[Command::AppFullscreen] = {in::Key::F10, in::Key::F11};
+    return s;
+}
+
+void testDefaults() {
+    const st::Settings s;
+    check(s.ui.language == "zh" && !s.ui.uiScale && s.ui.showOutliner && s.ui.layout.empty(), "界面默认：中文、自动缩放、默认布局");
+    check(s.display.mode == st::WindowMode::Windowed && s.display.monitor == 0 && !s.display.videoMode && s.display.vsync &&
+              s.display.windowWidth == 1600 && s.display.windowHeight == 900,
+          "显示默认：窗口 1600×900、垂直同步");
+    check(s.camera.lookDegreesPerPixel == 0.15 && s.camera.speed == 3.0 && s.camera.boost == 3.0 && s.camera.wheelStep == 0.5 &&
+              s.camera.panMetersPerPixel == 0.01 && s.camera.fovDegrees == 60.0,
+          "相机默认值与 M1-07 相同");
+    const st::KeySlots forward{in::Key::W, in::Key::Up};
+    const st::KeySlots down{in::Key::Q, in::Key::Unknown};
+    const st::KeySlots full{in::Key::F11, in::Key::Unknown};
+    check(s.keys[Command::CameraForward] == forward && s.keys[Command::CameraDown] == down &&
+              s.keys[Command::AppFullscreen] == full,
+          "默认按键：前进 W/↑、下降 Q、全屏 F11");
+    for (std::size_t c = 0; c < st::kCommandCount; ++c) {
+        const auto command = static_cast<Command>(c);
+        const auto parsed = st::commandFromName(st::commandName(command));
+        check(parsed && *parsed == command, std::string{"操作名称往返："} + st::commandName(command));
+    }
+    check(!st::commandFromName("camera.nope"), "未知操作名称");
+}
+
+void testRoundTrip() {
+    const st::Settings s = everythingChanged();
+    check(s != st::Settings{}, "测试数据与默认值不同");
+    const std::string text = st::toJson(s);
+    const st::ParseResult back = st::fromJson(text);
+    check(!back.error, "往返：解析成功");
+    check(back.warnings.empty(), "往返：没有警告\n" + joined(back.warnings));
+    check(back.settings == s, "往返：全部字段相同\n" + text);
+    check(st::toJson(back.settings) == text, "往返：再次序列化逐字节相同");
+
+    const st::ParseResult defaults = st::fromJson(st::toJson(st::Settings{}));
+    check(!defaults.error && defaults.warnings.empty() && defaults.settings == st::Settings{}, "默认设置往返");
+    check(text.find("\"uiScale\": 1.75") != std::string::npos && st::toJson(st::Settings{}).find("\"uiScale\": \"auto\"") != std::string::npos,
+          "界面缩放：数字或 \"auto\"");
+    check(text.find("\"camera.forward\": [\n      \"I\",\n      \"\"\n    ]") != std::string::npos,
+          "按键写成键名数组，空槽位为空字符串");
+    check(text.rfind("{\n  \"version\": 1,", 0) == 0 && text.back() == '\n', "以 version 开头、以换行结尾");
+}
+
+void testPartialAndInvalidFields() {
+    // 只给出部分字段：其余保持默认，没有警告
+    {
+        const auto r = st::fromJson(R"({"version": 1, "camera": {"speed": 10}})");
+        st::Settings expected;
+        expected.camera.speed = 10;
+        check(!r.error && r.warnings.empty() && r.settings == expected, "部分字段：其余为默认值\n" + joined(r.warnings));
+    }
+    // 坏字段用默认值，同组的好字段照常读取
+    {
+        const auto r = st::fromJson(R"({
+          "version": 1,
+          "interface": {"language": "fr", "uiScale": 9, "panels": {"log": "yes", "stats": false}, "layout": 5},
+          "display": {"mode": "fullscreen", "monitor": -1, "videoMode": {"width": 1920, "height": 0, "refreshRate": 60},
+                      "vsync": 1, "windowSize": {"width": 100, "height": 800}},
+          "camera": {"speed": 1000, "boost": "fast", "wheelStep": 2, "fovDegrees": 10, "lookDegreesPerPixel": 0.3}
+        })");
+        check(!r.error, "坏字段不影响整体解析");
+        const auto& s = r.settings;
+        check(s.ui.language == "zh" && contains(r.warnings, "interface.language"), "language 非法 → 默认 zh");
+        check(!s.ui.uiScale && contains(r.warnings, "interface.uiScale = 9 超出范围"), "uiScale 超出范围 → 自动");
+        check(s.ui.showLog && contains(r.warnings, "interface.panels.log"), "panels.log 类型错误 → 默认 true");
+        check(!s.ui.showStats, "panels.stats 正常读取");
+        check(s.ui.layout.empty() && contains(r.warnings, "interface.layout"), "layout 类型错误 → 默认布局");
+        check(s.display.mode == st::WindowMode::Windowed && contains(r.warnings, "display.mode"), "mode 非法 → 窗口");
+        check(s.display.monitor == 0 && contains(r.warnings, "display.monitor = -1 超出范围"), "monitor 越界 → 0");
+        check(!s.display.videoMode && contains(r.warnings, "display.videoMode"), "videoMode 高度为 0 → 显示器当前模式");
+        check(s.display.vsync && contains(r.warnings, "display.vsync"), "vsync 不是布尔值 → 默认 true");
+        check(s.display.windowWidth == 1600 && s.display.windowHeight == 800 && contains(r.warnings, "display.windowSize.width"),
+              "窗口宽度过小 → 默认 1600；高度 800 照常读取");
+        check(s.camera.speed == 3.0 && contains(r.warnings, "camera.speed = 1000 超出范围 [0.1, 100]，已使用默认值 3"),
+              "speed 超出范围 → 默认 3，警告含范围与默认值");
+        check(s.camera.boost == 3.0 && contains(r.warnings, "camera.boost：应为数字"), "boost 类型错误 → 默认 3");
+        check(s.camera.wheelStep == 2.0 && s.camera.lookDegreesPerPixel == 0.3, "合法的相机字段照常读取");
+        check(s.camera.fovDegrees == 60.0 && contains(r.warnings, "camera.fovDegrees"), "fov 过小 → 默认 60");
+        check(r.warnings.size() == 12, "共 12 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
+    }
+    // 整组类型错误、未知字段、版本
+    {
+        const auto r = st::fromJson(R"({"camera": [1, 2], "display": {"colour": "blue"}, "extra": true})");
+        check(!r.error && r.settings == st::Settings{}, "整组类型错误与未知字段：其余为默认");
+        check(contains(r.warnings, "camera：应为对象") && contains(r.warnings, "未知字段 display.colour") &&
+                  contains(r.warnings, "未知字段 extra") && contains(r.warnings, "缺少 version"),
+              "警告：整组类型、未知字段、缺少版本\n" + joined(r.warnings));
+        const auto newer = st::fromJson(R"({"version": 7, "camera": {"speed": 5}})");
+        check(!newer.error && newer.settings.camera.speed == 5.0 && contains(newer.warnings, "文件版本 7"),
+              "较新的版本：警告并读取认识的字段");
+    }
+    // 整体无法使用
+    {
+        const auto syntax = st::fromJson("{\n  \"camera\": {\"speed\": 5,}\n}");
+        check(syntax.error && syntax.error->find("JSON 语法错误") != std::string::npos && syntax.settings == st::Settings{},
+              "语法错误：整体失败，默认设置");
+        check(syntax.error && syntax.error->find("line 2") != std::string::npos, "语法错误信息含行号：" + syntax.error.value_or(""));
+        check(st::fromJson("[1, 2]").error.has_value(), "顶层是数组：失败");
+        check(st::fromJson("").error.has_value(), "空文本：失败");
+        check(st::fromJson(R"({"camera": {"speed": 1e999}})").error.has_value(), "数值溢出：失败而不是崩溃");
+    }
+}
+
+void testKeys() {
+    // 文件中的按键
+    {
+        const auto r = st::fromJson(R"({"version": 1, "keys": {
+            "camera.forward": ["I"],
+            "camera.back": ["K", null],
+            "camera.reset": ["Nope"],
+            "camera.left": ["Escape", "A"],
+            "camera.up": "E",
+            "camera.dance": ["Z"],
+            "app.fullscreen": ["F10", ""]}})");
+        const auto& k = r.settings.keys;
+        check(k[Command::CameraForward] == st::KeySlots{in::Key::I, in::Key::Unknown}, "只给一个键：备用槽位为空");
+        check(k[Command::CameraBack] == st::KeySlots{in::Key::K, in::Key::Unknown}, "null 表示空槽位");
+        check(k[Command::AppFullscreen] == st::KeySlots{in::Key::F10, in::Key::Unknown}, "空字符串表示空槽位");
+        check(k[Command::CameraReset] == st::KeySlots{in::Key::F, in::Key::Unknown} && contains(r.warnings, "未知键名 \"Nope\""),
+              "未知键名 → 该操作用默认按键");
+        check(k[Command::CameraLeft] == st::KeySlots{in::Key::A, in::Key::Left} && contains(r.warnings, "保留键"),
+              "保留键 Esc → 该操作用默认按键");
+        check(k[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Space} && contains(r.warnings, "keys.camera.up：应为"),
+              "不是数组 → 默认按键");
+        check(contains(r.warnings, "未知字段 keys.camera.dance"), "未知操作：警告");
+        check(r.warnings.size() == 4, "共 4 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
+    }
+    // 重复按键：按操作顺序保留第一次出现
+    {
+        const auto r = st::fromJson(R"({"keys": {"camera.reset": ["W"], "camera.right": ["D", "D"]}})");
+        const auto& k = r.settings.keys;
+        check(k[Command::CameraForward][0] == in::Key::W && k[Command::CameraReset][0] == in::Key::Unknown,
+              "W 同时用于前进（默认）与复位：保留前进，复位清空");
+        check(k[Command::CameraRight] == st::KeySlots{in::Key::D, in::Key::Unknown}, "同一操作两个槽位相同：清空第二个");
+        check(contains(r.warnings, "按键 W 同时用于 camera.forward 与 camera.reset"), "重复按键的警告\n" + joined(r.warnings));
+    }
+    // 保留键
+    check(st::isReservedKey(in::Key::Escape) && st::isReservedKey(in::Key::LeftControl) &&
+              st::isReservedKey(in::Key::RightControl) && st::isReservedKey(in::Key::Unknown),
+          "保留键：Esc、左右 Ctrl、Unknown");
+    check(!st::isReservedKey(in::Key::LeftShift) && !st::isReservedKey(in::Key::F11), "Shift、F11 不是保留键");
+
+    // 分配：抢占其他操作的键
+    st::KeyMap keys;
+    auto from = keys.assign(Command::CameraReset, 0, in::Key::W);
+    check(from && *from == Command::CameraForward, "把 W 分配给复位：从前进移走");
+    check(keys[Command::CameraReset][0] == in::Key::W && keys[Command::CameraForward] == st::KeySlots{in::Key::Unknown, in::Key::Up},
+          "分配后：复位 = W，前进只剩 ↑");
+    from = keys.assign(Command::CameraReset, 1, in::Key::W);
+    check(from && *from == Command::CameraReset && keys[Command::CameraReset] == st::KeySlots{in::Key::Unknown, in::Key::W},
+          "同一操作换槽位：从原槽位移走");
+    from = keys.assign(Command::CameraUp, 0, in::Key::Home);
+    check(!from && keys[Command::CameraUp][0] == in::Key::Home, "未被占用的键：直接分配");
+    const st::KeyMap before = keys;
+    check(!keys.assign(Command::CameraUp, 0, in::Key::Escape) && keys == before, "保留键：不做修改");
+    check(!keys.assign(Command::CameraUp, 2, in::Key::Z) && keys == before, "非法槽位：不做修改");
+    (void)keys.assign(Command::CameraUp, 0, in::Key::Unknown);
+    check(keys[Command::CameraUp][0] == in::Key::Unknown, "分配 Unknown 等同于清除");
+    check(keys.find(in::Key::W) && *keys.find(in::Key::W) == Command::CameraReset && !keys.find(in::Key::Z), "find 查找使用者");
+}
+
+void testFiles(const fs::path& dir) {
+    const fs::path file = dir / "nested" / "eai-terra" / "settings.json";
+    // 缺失
+    const auto missing = st::load(file.string());
+    check(missing.status == st::LoadStatus::Missing && missing.settings == st::Settings{} && missing.warnings.empty() &&
+              missing.error.empty(),
+          "文件不存在：Missing、默认设置、无错误");
+    // 保存（自动建目录）并读回
+    const st::Settings s = everythingChanged();
+    const auto saved = st::save(s, file.string());
+    check(!saved, "保存成功（自动创建目录）" + (saved ? "：" + *saved : std::string{}));
+    check(!fs::exists(file.string() + ".tmp"), "保存后不留临时文件");
+    const auto loaded = st::load(file.string());
+    check(loaded.status == st::LoadStatus::Loaded && loaded.settings == s && loaded.warnings.empty(), "读回与保存的设置相同");
+    check(readFile(file) == st::toJson(s), "文件内容即 toJson 的结果");
+
+    // 覆盖保存
+    st::Settings changed = s;
+    changed.camera.speed = 12.0;
+    check(!st::save(changed, file.string()) && st::load(file.string()).settings == changed, "覆盖保存");
+
+    // 保存失败不破坏原文件：目标位置是目录 → 改名失败
+    const fs::path dirTarget = dir / "is_a_directory";
+    fs::create_directories(dirTarget / "child");
+    const auto failed = st::save(s, dirTarget.string());
+    check(failed.has_value() && fs::is_directory(dirTarget) && !fs::exists(dirTarget.string() + ".tmp"),
+          "目标是目录：保存失败、不留临时文件" + (failed ? "（" + *failed + "）" : std::string{}));
+    // 父路径是普通文件 → 无法建目录
+    const auto noDir = st::save(s, (file / "x.json").string());
+    check(noDir.has_value() && st::load(file.string()).settings == changed, "无法创建目录：保存失败，原文件不变");
+
+    // 无法读取：是目录
+    const auto unreadable = st::load(dirTarget.string());
+    check(unreadable.status == st::LoadStatus::Unreadable && unreadable.settings == st::Settings{} && !unreadable.error.empty(),
+          "路径是目录：Unreadable、默认设置");
+
+    // 损坏 → 备份
+    writeFile(file, "{ \"camera\": ");
+    const auto corrupt = st::load(file.string());
+    check(corrupt.status == st::LoadStatus::Corrupt && corrupt.settings == st::Settings{} &&
+              corrupt.error.find("JSON 语法错误") != std::string::npos,
+          "损坏的文件：Corrupt、默认设置、给出原因");
+    std::string error;
+    const auto backup = st::backupCorrupt(file.string(), &error);
+    check(backup && *backup == file.string() + ".bak" && !fs::exists(file) && readFile(*backup) == "{ \"camera\": ",
+          "坏文件改名为 .bak，内容不变" + (error.empty() ? std::string{} : "：" + error));
+    check(st::load(file.string()).status == st::LoadStatus::Missing, "备份后原路径不存在");
+    check(!st::backupCorrupt((dir / "no_such.json").string(), &error) && !error.empty(), "备份不存在的文件：失败并给出原因");
+
+    // 字段级警告随 load 返回
+    writeFile(file, R"({"version": 1, "camera": {"speed": -1}})");
+    const auto warned = st::load(file.string());
+    check(warned.status == st::LoadStatus::Loaded && warned.warnings.size() == 1 && warned.settings.camera.speed == 3.0,
+          "load 返回字段级警告");
+}
+
+void testDefaultPath() {
+    check(st::defaultPath("/xdg", "/home/u") == "/xdg/eai-terra/settings.json", "XDG_CONFIG_HOME 优先");
+    check(st::defaultPath("/xdg/", "/home/u") == "/xdg/eai-terra/settings.json", "XDG_CONFIG_HOME 末尾斜杠");
+    check(st::defaultPath(nullptr, "/home/u") == "/home/u/.config/eai-terra/settings.json", "无 XDG：~/.config");
+    check(st::defaultPath("", "/home/u") == "/home/u/.config/eai-terra/settings.json", "XDG 为空：~/.config");
+    check(st::defaultPath("relative/dir", "/home/u") == "/home/u/.config/eai-terra/settings.json", "XDG 为相对路径：忽略");
+    check(st::defaultPath(nullptr, nullptr).empty() && st::defaultPath("x", "y").empty(), "都不可用：空路径");
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "用法：test_settings <临时目录>\n");
+        return 2;
+    }
+    const fs::path dir{argv[1]};
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir);
+
+    testDefaults();
+    testRoundTrip();
+    testPartialAndInvalidFields();
+    testKeys();
+    testFiles(dir);
+    testDefaultPath();
+    if (failures == 0) std::printf("all passed\n");
+    return failures == 0 ? 0 : 1;
+}

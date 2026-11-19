@@ -137,6 +137,24 @@ bool bindingKindAllowed(ActionType type, Binding::Kind kind) noexcept {
     return false;
 }
 
+std::optional<std::string> validateBindings(const std::string& where, ActionType type,
+                                            const std::vector<Binding>& bindings) {
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        const Binding& b = bindings[i];
+        const std::string bwhere = where + " 的第 " + std::to_string(i) + " 个绑定";
+        if (!bindingKindAllowed(type, b.kind)) return bwhere + "的种类与动作类型不符";
+        for (int k = 1; k < b.controlCount(); ++k) {
+            if (b.controls[static_cast<std::size_t>(k)].kind != b.controls[0].kind) {
+                return bwhere + "的控件来自不同种类的设备";
+            }
+        }
+        for (const Processor& p : b.processors) {
+            if (auto error = validateProcessor(p)) return bwhere + "：" + *error;
+        }
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 struct InputSystem::Impl {
@@ -355,19 +373,7 @@ std::optional<std::string> InputSystem::addActionMap(ActionMapDefinition definit
         if (a.name.empty()) return "动作表 '" + definition.name + "' 中有空的动作名称";
         if (!names.insert(a.name).second) return where + " 重复";
         if (!(a.pressThreshold > 0.0f && a.pressThreshold <= 1.0f)) return where + " 的按下阈值须在 (0, 1] 内";
-        for (std::size_t i = 0; i < a.bindings.size(); ++i) {
-            const Binding& b = a.bindings[i];
-            const std::string bwhere = where + " 的第 " + std::to_string(i) + " 个绑定";
-            if (!bindingKindAllowed(a.type, b.kind)) return bwhere + "的种类与动作类型不符";
-            for (int k = 1; k < b.controlCount(); ++k) {
-                if (b.controls[static_cast<std::size_t>(k)].kind != b.controls[0].kind) {
-                    return bwhere + "的控件来自不同种类的设备";
-                }
-            }
-            for (const Processor& p : b.processors) {
-                if (auto error = validateProcessor(p)) return bwhere + "：" + *error;
-            }
-        }
+        if (auto error = validateBindings(where, a.type, a.bindings)) return error;
     }
 
     MapRuntime map;
@@ -380,6 +386,25 @@ std::optional<std::string> InputSystem::addActionMap(ActionMapDefinition definit
     }
     s.maps.push_back(std::move(map));
     return std::nullopt;
+}
+
+std::optional<std::string> InputSystem::setBindings(std::string_view map, std::string_view action,
+                                                    std::vector<Binding> bindings) {
+    Impl& s = *impl_;
+    for (const MapRuntime& m : s.maps) {
+        if (m.name != map) continue;
+        for (const std::size_t index : m.actions) {
+            ActionDefinition& definition = s.actions[index].definition;
+            if (definition.name != action) continue;
+            const std::string where = "动作 '" + m.name + "." + definition.name + "'";
+            if (auto error = validateBindings(where, definition.type, bindings)) return error;
+            // 状态保留：下一次 update 按新绑定计算，按下中的按钮若不再被绑定，产生“抬起”。
+            definition.bindings = std::move(bindings);
+            return std::nullopt;
+        }
+        return "动作表 '" + m.name + "' 中没有动作 '" + std::string{action} + "'";
+    }
+    return "动作表 '" + std::string{map} + "' 不存在";
 }
 
 bool InputSystem::setActionMapEnabled(std::string_view map, bool enabled) {

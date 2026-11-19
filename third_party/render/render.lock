@@ -16,3 +16,7 @@ GLAD_URL=https://github.com/Dav1dde/glad/archive/refs/tags/v2.0.8.tar.gz
 GLAD_SHA256=44f06f9195427c7017f5028d0894f57eb216b0a8f7c4eda7ce883732aeb2d0fc
 GLAD_API=gl:core=4.5
 GLAD_EXTENSIONS=
+# Dear ImGui docking 分支：编辑器式界面（M1-13，D-024），源码直接编入 Terra 的 UI 目标，不单独安装。
+IMGUI_VERSION=1.93.0-docking
+IMGUI_URL=https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0-docking.tar.gz
+IMGUI_SHA256=746c265540bd3aa109570f29492ef4d8f5b421dd9fd0049c35ca35f21496f1a5

@@ -4,14 +4,15 @@
 # 输出目标：
 #   terra::glfw  GLFW 静态库（窗口、OpenGL 上下文、首个输入适配器）
 #   terra::glad  glad 生成的 OpenGL 4.5 core 加载代码（third_party/glad，已提交）
-#   terra::glm   GLM 头文件（只在 Render 内部使用）
+#   terra::glm   GLM 头文件（只在 Render 与视图层内部使用）
+#   terra::imgui Dear ImGui docking 源码编译的静态库（M1-13，D-024），含官方 OpenGL3 渲染后端（自带最小 GL 加载器）
 # 三者的头文件均以 SYSTEM 方式引入，避免第三方头文件触发 Terra 的 -Werror 警告。
 
 set(TERRA_RENDER_ROOT "${PROJECT_SOURCE_DIR}/third_party/render"
     CACHE PATH "渲染依赖目录（包含 render.lock、src/、install/）")
 
 set(_terra_render_lock "${PROJECT_SOURCE_DIR}/third_party/render/render.lock")
-foreach(_name GLFW_VERSION GLM_VERSION GLAD_VERSION GLAD_API)
+foreach(_name GLFW_VERSION GLM_VERSION GLAD_VERSION GLAD_API IMGUI_VERSION)
     file(STRINGS "${_terra_render_lock}" _line REGEX "^${_name}=")
     string(REPLACE "${_name}=" "" TERRA_${_name} "${_line}")
     if(TERRA_${_name} STREQUAL "")
@@ -58,4 +59,24 @@ target_include_directories(terra_glm SYSTEM INTERFACE "${_terra_glm_dir}")
 # 不启用 GLM 的实验性扩展与自动 SIMD；深度范围等约定在 M1-06/07 的渲染实现中统一决定。
 target_compile_definitions(terra_glm INTERFACE GLM_FORCE_SILENT_WARNINGS)
 
-message(STATUS "Render: GLFW ${TERRA_GLFW_VERSION}、GLM ${TERRA_GLM_VERSION}、glad ${TERRA_GLAD_VERSION}（${TERRA_GLAD_API}）")
+# ---- Dear ImGui（M1-13）----
+# 第三方源码：不套用 Terra 的警告选项；头文件以 SYSTEM 方式引入。只编译核心与 OpenGL3 渲染后端，
+# 不编译 ImGui 的 GLFW 平台后端（D-024：事件由 Terra 平台层与输入系统提供）。
+set(_terra_imgui_dir "${TERRA_RENDER_ROOT}/src/imgui-${TERRA_IMGUI_VERSION}")
+if(NOT EXISTS "${_terra_imgui_dir}/imgui.h")
+    message(FATAL_ERROR "找不到 Dear ImGui ${TERRA_IMGUI_VERSION}：${_terra_imgui_dir}/imgui.h\n" ${_terra_render_hint})
+endif()
+add_library(terra_imgui STATIC
+    "${_terra_imgui_dir}/imgui.cpp"
+    "${_terra_imgui_dir}/imgui_draw.cpp"
+    "${_terra_imgui_dir}/imgui_tables.cpp"
+    "${_terra_imgui_dir}/imgui_widgets.cpp"
+    "${_terra_imgui_dir}/backends/imgui_impl_opengl3.cpp")
+add_library(terra::imgui ALIAS terra_imgui)
+target_include_directories(terra_imgui SYSTEM PUBLIC "${_terra_imgui_dir}" "${_terra_imgui_dir}/backends")
+target_compile_definitions(terra_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS IMGUI_USE_WCHAR32)
+target_compile_features(terra_imgui PUBLIC cxx_std_17)
+set_target_properties(terra_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
+target_link_libraries(terra_imgui PRIVATE ${CMAKE_DL_LIBS})
+
+message(STATUS "Render: GLFW ${TERRA_GLFW_VERSION}、GLM ${TERRA_GLM_VERSION}、glad ${TERRA_GLAD_VERSION}（${TERRA_GLAD_API}）、Dear ImGui ${TERRA_IMGUI_VERSION}")

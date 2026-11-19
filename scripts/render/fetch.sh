@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 下载渲染依赖（GLFW、GLM，以及用于复核的 glad 生成器）源码包，校验 sha256 后解压到 third_party/render/src/。
+# 下载渲染依赖（GLFW、GLM、Dear ImGui，以及用于复核的 glad 生成器）源码包，校验 sha256 后解压到 third_party/render/src/。
 # 版本与 sha256 见 third_party/render/render.lock。这是显式联网步骤；Terra 的 CMake 构建本身不联网。
 # 用法：scripts/render/fetch.sh
 set -euo pipefail
@@ -41,3 +41,4 @@ fetch() {  # fetch <名称> <版本> <URL> <sha256> <解压后的目录名>
 fetch glfw "$GLFW_VERSION" "$GLFW_URL" "$GLFW_SHA256" "glfw-$GLFW_VERSION"
 fetch glm "$GLM_VERSION" "$GLM_URL" "$GLM_SHA256" "glm-$GLM_VERSION"
 fetch glad "$GLAD_VERSION" "$GLAD_URL" "$GLAD_SHA256" "glad-$GLAD_VERSION"
+fetch imgui "$IMGUI_VERSION" "$IMGUI_URL" "$IMGUI_SHA256" "imgui-$IMGUI_VERSION"

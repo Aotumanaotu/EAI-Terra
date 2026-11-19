@@ -333,7 +333,7 @@ int runShow(double seconds) {
     }
     in::ActionMapDefinition app{"demo", 100, true, {}};
     using KeyAction = std::pair<const char*, in::Key>;
-    for (const auto& [name, k] : {KeyAction{"quit", in::Key::Escape}}) {
+    for (const auto& [name, k] : {KeyAction{"quit", in::Key::Escape}, KeyAction{"fullscreen", in::Key::F11}}) {
         in::ActionDefinition a;
         a.name = name;
         a.type = in::ActionType::Button;
@@ -342,6 +342,7 @@ int runShow(double seconds) {
     }
     (void)input.addActionMap(app);
     const in::ActionHandle quit = input.findAction("demo", "quit");
+    const in::ActionHandle fullscreen = input.findAction("demo", "fullscreen");
     v::CameraController controller(input);
     v::Camera camera;
     v::CameraController::reset(camera);
@@ -388,10 +389,14 @@ void main() { fragColor = vec4(vColor, 1.0); }
     vao.setFloatAttribute(1, 0, 3, offsetof(Vertex, color));
     const int location = shader.program->uniformLocation("uViewProjection");
 
-    window.window->setTitle("EAI Terra · M1-07 视口相机（右键拖动转视角，WASD/方向键移动，滚轮拉近，Esc 退出）");
+    window.window->setTitle("EAI Terra · 视口（右键拖动转视角，WASD/方向键移动，滚轮拉近，F11 全屏，Esc 退出）");
+    for (const auto& m : platform.platform->monitors()) {
+        std::printf("INFO 显示器 %d：%s%s，%dx%d@%dHz，支持 %zu 种模式\n", m.index, m.name.c_str(), m.primary ? "（主）" : "",
+                    m.current.width, m.current.height, m.current.refreshRate, m.modes.size());
+    }
     std::printf("INFO 展示：%s\n", ctx.info().renderer.c_str());
     std::printf("INFO 右键拖动转视角；W/↑ S/↓ 沿视线前后，A/← D/→ 左右；E/空格 上升，Q/Ctrl 下降；\n");
-    std::printf("INFO 滚轮拉近/拉远；中键拖动平移；Shift 加速；F 复位；Esc 退出\n");
+    std::printf("INFO 滚轮拉近/拉远；中键拖动平移；Shift 加速；F 复位；F11 全屏/窗口；Esc 退出\n");
 
     const double start = platform.platform->time();
     double last = start;
@@ -399,6 +404,13 @@ void main() { fragColor = vec4(vColor, 1.0); }
         platform.platform->pollEvents();
         input.update();
         if (input.state(quit).pressed) break;
+        if (input.state(fullscreen).pressed) {
+            if (const auto error = window.window->toggleBorderlessFullscreen()) {
+                std::printf("INFO 切换全屏失败：%s\n", error->message.c_str());
+            } else {
+                std::printf("INFO 显示模式：%s\n", terra::platform::displayModeName(window.window->displayMode()));
+            }
+        }
         const double now = platform.platform->time();
         if (now - start >= seconds) break;
         controller.update(camera, now - last);

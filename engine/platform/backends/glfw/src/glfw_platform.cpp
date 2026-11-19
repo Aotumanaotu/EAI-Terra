@@ -2,12 +2,14 @@
 
 #include "terra/platform/glfw/glfw_platform.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <GLFW/glfw3.h>
 
@@ -52,6 +54,34 @@ struct Runtime {
     }
 };
 
+VideoMode toVideoMode(const GLFWvidmode& m) { return VideoMode{m.width, m.height, m.refreshRate}; }
+
+std::vector<MonitorInfo> listMonitors() {
+    std::vector<MonitorInfo> out;
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    GLFWmonitor* primary = glfwGetPrimaryMonitor();
+    for (int i = 0; monitors != nullptr && i < count; ++i) {
+        GLFWmonitor* m = monitors[i];
+        MonitorInfo info;
+        info.index = i;
+        const char* name = glfwGetMonitorName(m);
+        info.name = name != nullptr ? name : "";
+        info.primary = m == primary;
+        glfwGetMonitorPos(m, &info.x, &info.y);
+        float sy = 1.0f;
+        glfwGetMonitorContentScale(m, &info.contentScale, &sy);
+        if (const GLFWvidmode* current = glfwGetVideoMode(m)) info.current = toVideoMode(*current);
+        int modeCount = 0;
+        const GLFWvidmode* modes = glfwGetVideoModes(m, &modeCount);
+        for (int k = 0; modes != nullptr && k < modeCount; ++k) info.modes.push_back(toVideoMode(modes[k]));
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+PlatformError invalid(std::string message) { return PlatformError{PlatformErrorKind::InvalidRequest, std::move(message)}; }
+
 // 窗口回调与输入系统之间的桥：只通过 InputSink 写入（D-018）。
 struct InputBridge {
     in::InputSink* sink = nullptr;
@@ -80,6 +110,7 @@ public:
         glfwSetCursorEnterCallback(handle_, &GlfwWindow::onCursorEnter);
         glfwSetScrollCallback(handle_, &GlfwWindow::onScroll);
         glfwSetWindowFocusCallback(handle_, &GlfwWindow::onFocus);
+        glfwSetCharCallback(handle_, &GlfwWindow::onChar);
     }
 
     ~GlfwWindow() override {
@@ -113,10 +144,86 @@ public:
     void makeContextCurrent() override { glfwMakeContextCurrent(handle_); }
     void swapBuffers() override { glfwSwapBuffers(handle_); }
     GlProcLoader glProcLoader() const override { return &glfwGetProcAddress; }
+
+    DisplayMode displayMode() const override { return mode_; }
+
+    std::optional<PlatformError> setDisplayMode(DisplayMode mode, int monitorIndex,
+                                                std::optional<VideoMode> videoMode) override {
+        if (mode == DisplayMode::Windowed) {
+            if (mode_ != DisplayMode::Windowed) {
+                glfwSetWindowMonitor(handle_, nullptr, savedX_, savedY_, savedWidth_, savedHeight_, GLFW_DONT_CARE);
+                mode_ = DisplayMode::Windowed;
+            }
+            return std::nullopt;
+        }
+        int count = 0;
+        GLFWmonitor** monitors = glfwGetMonitors(&count);
+        if (monitors == nullptr || count == 0) return invalid("没有可用的显示器");
+        if (monitorIndex >= count) {
+            return invalid("显示器序号 " + std::to_string(monitorIndex) + " 不存在（共 " + std::to_string(count) + " 个）");
+        }
+        GLFWmonitor* monitor = monitorIndex >= 0 ? monitors[monitorIndex] : currentMonitor(monitors, count);
+        const GLFWvidmode* desktop = glfwGetVideoMode(monitor);
+        if (desktop == nullptr) return invalid("无法读取显示器的当前模式");
+        VideoMode target = toVideoMode(*desktop);
+        if (mode == DisplayMode::ExclusiveFullscreen && videoMode) {
+            int modeCount = 0;
+            const GLFWvidmode* modes = glfwGetVideoModes(monitor, &modeCount);
+            bool supported = false;
+            for (int k = 0; modes != nullptr && k < modeCount; ++k) supported = supported || toVideoMode(modes[k]) == *videoMode;
+            if (!supported) {
+                return invalid("显示器不支持 " + std::to_string(videoMode->width) + "x" + std::to_string(videoMode->height) +
+                               "@" + std::to_string(videoMode->refreshRate) + "Hz");
+            }
+            target = *videoMode;
+        }
+        if (mode_ == DisplayMode::Windowed) {
+            glfwGetWindowPos(handle_, &savedX_, &savedY_);
+            glfwGetWindowSize(handle_, &savedWidth_, &savedHeight_);
+        }
+        // 只有独占全屏在失去焦点时自动最小化；无边框全屏切到其他窗口时保持原样。
+        glfwSetWindowAttrib(handle_, GLFW_AUTO_ICONIFY, mode == DisplayMode::ExclusiveFullscreen ? GLFW_TRUE : GLFW_FALSE);
+        glfwSetWindowMonitor(handle_, monitor, 0, 0, target.width, target.height, target.refreshRate);
+        mode_ = mode;
+        return std::nullopt;
+    }
+
+    std::optional<PlatformError> toggleBorderlessFullscreen() override {
+        return setDisplayMode(mode_ == DisplayMode::Windowed ? DisplayMode::BorderlessFullscreen : DisplayMode::Windowed,
+                              -1, std::nullopt);
+    }
+
+    void setVsync(bool enabled) override {
+        glfwMakeContextCurrent(handle_);
+        glfwSwapInterval(enabled ? 1 : 0);
+    }
     int glMajor() const override { return major_; }
     int glMinor() const override { return minor_; }
 
 private:
+    // 与窗口矩形重叠面积最大的显示器；都不重叠时取主显示器。
+    GLFWmonitor* currentMonitor(GLFWmonitor** monitors, int count) const {
+        int wx = 0, wy = 0, ww = 0, wh = 0;
+        glfwGetWindowPos(handle_, &wx, &wy);
+        glfwGetWindowSize(handle_, &ww, &wh);
+        GLFWmonitor* best = glfwGetPrimaryMonitor();
+        long bestArea = 0;
+        for (int i = 0; i < count; ++i) {
+            const GLFWvidmode* vm = glfwGetVideoMode(monitors[i]);
+            if (vm == nullptr) continue;
+            int mx = 0, my = 0;
+            glfwGetMonitorPos(monitors[i], &mx, &my);
+            const int w = std::min(wx + ww, mx + vm->width) - std::max(wx, mx);
+            const int h = std::min(wy + wh, my + vm->height) - std::max(wy, my);
+            const long area = w > 0 && h > 0 ? static_cast<long>(w) * h : 0;
+            if (area > bestArea) {
+                bestArea = area;
+                best = monitors[i];
+            }
+        }
+        return best != nullptr ? best : monitors[0];
+    }
+
     static InputBridge* bridgeOf(GLFWwindow* handle) {
         auto* self = static_cast<GlfwWindow*>(glfwGetWindowUserPointer(handle));
         return self != nullptr ? self->bridge_.get() : nullptr;
@@ -166,6 +273,10 @@ private:
         b->sink->addDelta(b->mouse, in::mouse(in::MouseControl::ScrollY), static_cast<float>(dy), t);
     }
 
+    static void onChar(GLFWwindow* handle, unsigned int codepoint) {
+        if (InputBridge* b = bridgeOf(handle)) b->sink->addText(static_cast<char32_t>(codepoint));
+    }
+
     static void onFocus(GLFWwindow* handle, int focused) {
         // 失去焦点时释放所有按键，避免切换窗口后按键“卡住”（与设备断开同一套释放语义）。
         if (focused == GLFW_FALSE) {
@@ -178,6 +289,11 @@ private:
     GLFWwindow* handle_;
     int major_;
     int minor_;
+    DisplayMode mode_ = DisplayMode::Windowed;
+    int savedX_ = 0;
+    int savedY_ = 0;
+    int savedWidth_ = 0;
+    int savedHeight_ = 0;
 };
 
 class GlfwPlatform final : public Platform {
@@ -243,6 +359,7 @@ public:
 
     void pollEvents() override { glfwPollEvents(); }
     double time() const override { return glfwGetTime(); }
+    std::vector<MonitorInfo> monitors() const override { return listMonitors(); }
 
 private:
     std::shared_ptr<Runtime> runtime_;

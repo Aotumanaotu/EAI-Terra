@@ -11,7 +11,8 @@
 #   5. 变异测试：紧急保存、崩溃目录、致命错误处理、几何体颜色/位姿/归属/尺寸，逐个注入 8 个已知错误（预期 8/8）
 #   6. 输出：几何体描述的 INFO 行；一份真实的崩溃报告（由 physics.backend_fatal 子进程生成）
 # 最后打印汇总；任一步失败时退出码非 0。
-# 用法：bash scripts/verify/m2_02_03.sh [--jobs N] [--skip-asan] [--skip-mutation]
+# 用法：bash scripts/verify/m2_02_03.sh [--jobs N] [--skip-asan] [--skip-mutation] [--mutation-only]
+# --mutation-only：只做变异测试（阶段验收调用；不删除、不重建 build/ 下的预设构建目录，跳过 ASan、参考图生成与真实 GPU 步骤）
 #   （--skip-show 为兼容旧习惯而接受，本脚本没有可见窗口）
 set -uo pipefail
 
@@ -21,14 +22,16 @@ cd "$root"
 jobs=$(nproc)
 skip_asan=0
 skip_mutation=0
+mutation_only=0
 skip_show=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --jobs) jobs=$2; shift 2 ;;
         --skip-asan) skip_asan=1; shift ;;
         --skip-mutation) skip_mutation=1; shift ;;
+        --mutation-only) mutation_only=1; skip_asan=1; skip_show=1; shift ;;
         --skip-show) skip_show=1; shift ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
 done
@@ -80,6 +83,7 @@ if [ ! -f third_party/render/install/lib/cmake/glfw3/glfw3Config.cmake ]; then
 fi
 
 run_preset() {  # run_preset <preset> <名称> [额外配置参数...]
+    [ $mutation_only = 1 ] && return 0
     local preset=$1 label=$2; shift 2
     local log="$logs/$preset.txt"
     rm -rf "build/$preset"

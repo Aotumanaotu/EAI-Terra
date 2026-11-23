@@ -1,6 +1,6 @@
 # EAI Terra 开发计划书
 
-> 当前执行阶段：**M2**。M0 于 2026-11-19 验收；**M1 于 2026-11-23 验收**（第 8.4 节，[M1-11 报告](../validation/M1-11-acceptance.md)）；M1-05（手柄，P1）后置。M2 任务分解已于 2026-11-23 评审通过（第 9 节）；M2-01 场景与映射设计已评审通过（[M2-01](../validation/M2-01-scene-design.md)）；M2-02、M2-03（[报告](../validation/M2-02-03-fatal-geometry.md)）、M2-04（[报告](../validation/M2-04-composition.md)）、M2-05（[报告](../validation/M2-05-scene.md)）、M2-06（[报告](../validation/M2-06-simulation.md)）、M2-07（[报告](../validation/M2-07-scene-render.md)）已通过基线验证；M2-08（[报告](../validation/M2-08-viewer-simulation.md)）已通过基线验证；M2-09 阶段验收脚本与报告已准备（[M2-09](../validation/M2-09-acceptance.md)），等待基线机器统一运行。本文定义开发任务和完成条件，不作为完成证明，实际进度与证据统一记录在[开发记录](DEVELOPMENT_LOG.md)。
+> 当前执行阶段：**M2**。M0 于 2026-11-19 验收；**M1 于 2026-11-23 验收**（第 8.4 节，[M1-11 报告](../validation/M1-11-acceptance.md)）；M1-05（手柄，P1）后置。M2 任务分解已于 2026-11-23 评审通过（第 9 节）；M2-01 场景与映射设计已评审通过（[M2-01](../validation/M2-01-scene-design.md)）；M2-02、M2-03（[报告](../validation/M2-02-03-fatal-geometry.md)）、M2-04（[报告](../validation/M2-04-composition.md)）、M2-05（[报告](../validation/M2-05-scene.md)）、M2-06（[报告](../validation/M2-06-simulation.md)）、M2-07（[报告](../validation/M2-07-scene-render.md)）已通过基线验证；M2-08（[报告](../validation/M2-08-viewer-simulation.md)）已通过基线验证；M2-09 统一验收运行全部通过（2026-11-23，提交 `8fb4c03`，[M2-09](../validation/M2-09-acceptance.md)），等待用户评审。本文定义开发任务和完成条件，不作为完成证明，实际进度与证据统一记录在[开发记录](DEVELOPMENT_LOG.md)。
 
 ## 1. 开发策略与环境
 

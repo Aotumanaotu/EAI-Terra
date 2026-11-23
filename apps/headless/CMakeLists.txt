@@ -11,5 +11,5 @@ terra_configure_target(terra_headless_cli)
 add_executable(terra_headless
     main.cpp)
 target_link_libraries(terra_headless PRIVATE
-    terra_headless_cli terra::core terra::physics terra::physics_mujoco)
+    terra_headless_cli terra::core terra::physics terra::physics_mujoco terra::scene)
 terra_configure_target(terra_headless)

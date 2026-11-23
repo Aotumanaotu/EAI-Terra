@@ -212,9 +212,14 @@ std::size_t SceneView::liveBindings() const noexcept {
 std::vector<r::RenderItem> SceneView::items(const sc::SceneInstance& scene, const std::vector<sc::VisualPose>& poses,
                                             const SceneViewOptions& options) const {
     std::vector<r::RenderItem> out;
+    const auto highlight = [&](r::RenderItem& item) {
+        item.material.emissive = {item.material.emissive.x + kHighlightEmissive.x, item.material.emissive.y + kHighlightEmissive.y,
+                                  item.material.emissive.z + kHighlightEmissive.z};
+    };
     for (const sc::VisualPart& part : scene.visuals) {
         if (part.id.value == 0 || part.id.value > poses.size()) continue;
         const sc::VisualPose& pose = poses[part.id.value - 1];
+        const bool selected = options.highlight.valid() && part.entity == options.highlight;
         if (part.kind == sc::VisualPart::Kind::Geom) {
             if (!part.geom.valid() || part.geom.value > geoms_.size()) continue;
             const GeomDraw& g = geoms_[part.geom.value - 1];
@@ -229,12 +234,16 @@ std::vector<r::RenderItem> SceneView::items(const sc::SceneInstance& scene, cons
             item.model = as::multiply(poseMatrix(pose.pose), g.shape);
             item.material = g.material;
             item.castsShadow = g.castsShadow;
+            if (selected) highlight(item);
             out.push_back(item);
         } else {
             if (part.binding < 0 || static_cast<std::size_t>(part.binding) >= bindings_.size()) continue;
             const BindingDraw& b = bindings_[static_cast<std::size_t>(part.binding)];
             if (b.asset == nullptr) continue;
-            const auto parts = b.asset->subtreeItems(poseMatrix(pose.pose, pose.scale), b.node, b.frame, options.armOcclusion);
+            auto parts = b.asset->subtreeItems(poseMatrix(pose.pose, pose.scale), b.node, b.frame, options.armOcclusion);
+            if (selected) {
+                for (auto& item : parts) highlight(item);
+            }
             out.insert(out.end(), parts.begin(), parts.end());
         }
     }

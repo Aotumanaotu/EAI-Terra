@@ -1,5 +1,6 @@
 #include "terra/settings/settings.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -27,7 +28,8 @@ constexpr std::size_t kMaxLayoutBytes = 1024u * 1024u;
 
 constexpr const char* kCommandNames[] = {
     "camera.forward", "camera.back", "camera.left", "camera.right", "camera.up",
-    "camera.down",    "camera.boost", "camera.reset", "app.fullscreen",
+    "camera.down",    "camera.boost", "camera.reset", "app.fullscreen", "sim.playPause",
+    "sim.step",       "sim.reset",
 };
 static_assert(sizeof(kCommandNames) / sizeof(kCommandNames[0]) == kCommandCount, "kCommandNames 必须与 Command 一一对应");
 
@@ -120,7 +122,20 @@ private:
 
 void readInterface(Reader& r, const Json& j, InterfaceSettings& s) {
     const std::string path = "interface";
-    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout"});
+    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes"});
+    if (const auto it = j.find("recentScenes"); it != j.end()) {
+        if (!it->is_array()) {
+            r.warn("interface.recentScenes：应为字符串数组，已忽略");
+        } else {
+            for (const Json& item : *it) {
+                if (!item.is_string() || item.get<std::string>().empty()) {
+                    r.warn("interface.recentScenes：忽略不是路径的项");
+                    continue;
+                }
+                if (s.recentScenes.size() < InterfaceSettings::kMaxRecentScenes) s.recentScenes.push_back(item.get<std::string>());
+            }
+        }
+    }
     if (const auto it = j.find("language"); it != j.end()) {
         const std::string value = it->is_string() ? it->get<std::string>() : std::string{};
         if (value == "zh" || value == "en") {
@@ -283,7 +298,7 @@ void readRender(Reader& r, const Json& j, RenderSettings& s) {
     r.boolean(j, "assetArmOcclusion", path, s.assetArmOcclusion);
 }
 
-void readKeys(Reader& r, const Json& j, KeyMap& keys) {
+void readKeys(Reader& r, const Json& j, KeyMap& keys, int fileVersion) {
     for (auto it = j.begin(); it != j.end(); ++it) {
         const std::string where = "keys." + it.key();
         const auto command = commandFromName(it.key());
@@ -321,6 +336,12 @@ void readKeys(Reader& r, const Json& j, KeyMap& keys) {
         }
         if (ok) keys[*command] = slots;
     }
+    // 版本 1 → 2 的迁移（M2-08）：版本 1 的默认按键中空格是 camera.up 的备用键；版本 2 起空格默认用于 sim.playPause。
+    // 只在 camera.up 仍是版本 1 的默认值（E、空格）时迁移，用户自己改过的保持不变（之后按下面的规则处理重复）。
+    if (fileVersion < 2 && keys[Command::CameraUp] == KeySlots{in::Key::E, in::Key::Space}) {
+        keys[Command::CameraUp] = KeySlots{in::Key::E, in::Key::Unknown};
+        r.warn("设置文件版本 1：空格键改为仿真播放 / 暂停（sim.playPause），camera.up 只保留 E");
+    }
     // 同一个键只能属于一个操作：按操作顺序保留第一次出现，后面的清空。
     std::array<std::optional<Command>, static_cast<std::size_t>(in::Key::Count)> owner{};
     for (std::size_t c = 0; c < kCommandCount; ++c) {
@@ -341,6 +362,14 @@ void readKeys(Reader& r, const Json& j, KeyMap& keys) {
 }
 
 }  // namespace
+
+void rememberScene(InterfaceSettings& ui, const std::string& path) {
+    if (path.empty()) return;
+    auto& list = ui.recentScenes;
+    list.erase(std::remove(list.begin(), list.end(), path), list.end());
+    list.insert(list.begin(), path);
+    if (list.size() > InterfaceSettings::kMaxRecentScenes) list.resize(InterfaceSettings::kMaxRecentScenes);
+}
 
 // ---- 名称 ----
 
@@ -407,11 +436,14 @@ KeyMap::KeyMap() {
     slots_[ci(Command::CameraBack)] = {K::S, K::Down};
     slots_[ci(Command::CameraLeft)] = {K::A, K::Left};
     slots_[ci(Command::CameraRight)] = {K::D, K::Right};
-    slots_[ci(Command::CameraUp)] = {K::E, K::Space};
+    slots_[ci(Command::CameraUp)] = {K::E, K::Unknown};  // 版本 2 起空格给仿真播放 / 暂停
     slots_[ci(Command::CameraDown)] = {K::Q, K::Unknown};
     slots_[ci(Command::CameraBoost)] = {K::LeftShift, K::RightShift};
     slots_[ci(Command::CameraReset)] = {K::F, K::Unknown};
     slots_[ci(Command::AppFullscreen)] = {K::F11, K::Unknown};
+    slots_[ci(Command::SimPlayPause)] = {K::Space, K::Unknown};
+    slots_[ci(Command::SimStep)] = {K::Period, K::Unknown};
+    slots_[ci(Command::SimReset)] = {K::Unknown, K::Unknown};
 }
 
 const KeySlots& KeyMap::operator[](Command command) const noexcept { return slots_[ci(command) % kCommandCount]; }
@@ -458,7 +490,8 @@ bool operator==(const VideoModeSetting& a, const VideoModeSetting& b) noexcept {
 
 bool operator==(const InterfaceSettings& a, const InterfaceSettings& b) noexcept {
     return a.language == b.language && a.uiScale == b.uiScale && a.showOutliner == b.showOutliner &&
-           a.showDetails == b.showDetails && a.showLog == b.showLog && a.showStats == b.showStats && a.layout == b.layout;
+           a.showDetails == b.showDetails && a.showLog == b.showLog && a.showStats == b.showStats && a.layout == b.layout &&
+           a.recentScenes == b.recentScenes;
 }
 
 bool operator==(const DisplaySettings& a, const DisplaySettings& b) noexcept {
@@ -505,6 +538,8 @@ std::string toJson(const Settings& s) {
     panels["stats"] = s.ui.showStats;
     ui["panels"] = panels;
     ui["layout"] = s.ui.layout;
+    ui["recentScenes"] = Json::array();
+    for (const auto& path : s.ui.recentScenes) ui["recentScenes"].push_back(path);
     root["interface"] = ui;
 
     Json display;
@@ -581,6 +616,7 @@ ParseResult fromJson(std::string_view text) {
     Settings s;
     Reader r(result.warnings);
     r.unknownFields(root, "", {"version", "interface", "display", "camera", "render", "keys"});
+    int fileVersion = kVersion;  // 缺失或无效时按当前版本读取（不做迁移）
     if (const auto it = root.find("version"); it == root.end()) {
         r.warn("缺少 version 字段，按版本 " + std::to_string(kVersion) + " 读取");
     } else if (!it->is_number_integer()) {
@@ -589,12 +625,14 @@ ParseResult fromJson(std::string_view text) {
         r.warn("文件版本 " + std::to_string(v) + " 比本程序支持的 " + std::to_string(kVersion) + " 新，只读取认识的字段");
     } else if (v < 1) {
         r.warn("version = " + std::to_string(v) + " 无效，按版本 " + std::to_string(kVersion) + " 读取");
+    } else {
+        fileVersion = static_cast<int>(v);
     }
     if (const Json* j = r.object(root, "interface", "")) readInterface(r, *j, s.ui);
     if (const Json* j = r.object(root, "display", "")) readDisplay(r, *j, s.display);
     if (const Json* j = r.object(root, "camera", "")) readCamera(r, *j, s.camera);
     if (const Json* j = r.object(root, "render", "")) readRender(r, *j, s.render);
-    if (const Json* j = r.object(root, "keys", "")) readKeys(r, *j, s.keys);
+    if (const Json* j = r.object(root, "keys", "")) readKeys(r, *j, s.keys, fileVersion);
     result.settings = std::move(s);
     return result;
 }

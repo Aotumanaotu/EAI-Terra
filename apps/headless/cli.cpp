@@ -85,6 +85,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     }
 
     bool seenModel = false;
+    bool seenScene = false;
     bool seenSampleEvery = false;
     RunOptions& options = result.options;
 
@@ -108,7 +109,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             value = arg.substr(eq + 1);
         }
 
-        const bool takesValue = name == "--model" || name == "--steps" || name == "--duration" ||
+        const bool takesValue = name == "--model" || name == "--scene" || name == "--steps" || name == "--duration" ||
                                 name == "--sample-every";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
@@ -128,7 +129,18 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             ++i;
         }
 
-        if (name == "--model") {
+        if (name == "--scene") {
+            if (seenScene) {
+                result.error = "重复的参数 --scene";
+                return result;
+            }
+            if (value->empty()) {
+                result.error = "--scene 的值不能为空";
+                return result;
+            }
+            seenScene = true;
+            options.scenePath = std::string{*value};
+        } else if (name == "--model") {
             if (seenModel) {
                 result.error = "重复的参数 --model";
                 return result;
@@ -174,8 +186,10 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         }
     }
 
-    if (!seenModel) {
-        result.error = "缺少 --model";
+    if (seenModel && seenScene) {
+        result.error = "--model 与 --scene 只能二选一";
+    } else if (!seenModel && !seenScene) {
+        result.error = "缺少 --model（或 --scene）";
     } else if (options.steps && options.durationSeconds) {
         result.error = "--steps 与 --duration 不能同时使用";
     } else if (!options.steps && !options.durationSeconds) {
@@ -186,11 +200,13 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 
 std::string usageText() {
     return "用法:\n"
-           "  terra_headless --model <MJCF> (--steps N | --duration 秒) [--sample-every N] [--dry-run]\n"
+           "  terra_headless (--model <MJCF> | --scene <场景文件>) (--steps N | --duration 秒) [--sample-every N] [--dry-run]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
            "  --model <路径>       MJCF 模型文件\n"
+           "  --scene <路径>       Terra 场景文件（M2-08，*.terra-scene.json）：组合其中的模型实例后运行，只跑物理，\n"
+           "                       不读取视觉资源；实体名带实例前缀（如 cart_a/chassis）\n"
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
@@ -384,6 +400,7 @@ std::string errorToJson(std::string_view kind, std::uint64_t runEpoch, std::uint
 std::string configToJson(const RunOptions& options, const ResolvedRun& resolved) {
     std::string json = "{\"type\":\"config\",\"model\":\"" + jsonEscape(options.modelPath) +
                        "\",\"model_resolved\":\"" + jsonEscape(resolved.modelPath) + "\"";
+    if (!options.scenePath.empty()) json += ",\"scene\":\"" + jsonEscape(options.scenePath) + "\"";
     if (options.steps) {
         json += ",\"steps\":" + std::to_string(*options.steps);
     }

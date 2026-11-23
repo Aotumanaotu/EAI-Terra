@@ -19,7 +19,7 @@
 
 namespace terra::settings {
 
-constexpr int kVersion = 1;  // 文件格式版本
+constexpr int kVersion = 2;  // 文件格式版本。2（M2-08）：新增仿真操作与最近打开的场景；空格键默认改为仿真播放/暂停
 
 // ---- 界面 ----
 struct InterfaceSettings {
@@ -33,7 +33,13 @@ struct InterfaceSettings {
     bool showLog = true;
     bool showStats = true;
     std::string layout;             // 停靠布局（界面库的布局文本，原样保存）；空 = 默认布局
+    // M2-08：最近打开的场景文件（绝对路径），最新的在前，最多 kMaxRecentScenes 个
+    static constexpr std::size_t kMaxRecentScenes = 8;
+    std::vector<std::string> recentScenes;
 };
+
+// 把 path 放到最近打开列表的最前面（去重，超出上限的丢弃）
+void rememberScene(InterfaceSettings& ui, const std::string& path);
 
 // ---- 显示 ----
 enum class WindowMode { Windowed, BorderlessFullscreen, ExclusiveFullscreen };
@@ -133,6 +139,9 @@ enum class Command : int {
     CameraBoost,  // 也是 Shift+中键平移的修饰键
     CameraReset,
     AppFullscreen,
+    SimPlayPause,  // M2-08：仿真播放 / 暂停（默认空格）
+    SimStep,       // M2-08：单步（默认句号键）
+    SimReset,      // M2-08：重置（默认不绑定单键；界面另有固定的 Ctrl+R）
     Count,
 };
 constexpr std::size_t kCommandCount = static_cast<std::size_t>(Command::Count);

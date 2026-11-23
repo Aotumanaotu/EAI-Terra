@@ -30,6 +30,7 @@ enum class Command { Help, Version, Run };
 
 struct RunOptions {
     std::string modelPath;
+    std::string scenePath;                  // M2-08：场景文件（与 modelPath 二选一）
     std::optional<std::uint64_t> steps;     // 与 duration 二选一
     std::optional<double> durationSeconds;  // 仿真时长（秒）；换算为步数需要模型步长，在 M0-04 后完成
     std::uint64_t sampleEvery = 1;          // 每 N 步输出一次状态

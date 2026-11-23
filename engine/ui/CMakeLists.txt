@@ -2,6 +2,7 @@
 # 约束：ImGui 是应用层界面 API，只允许在 engine/ui/、apps/viewer/ 与测试中使用（boundary.render_isolation 检查）；
 # 不使用 ImGui 的 GLFW 平台后端，事件由 UiInputBridge 从 Terra 平台层与输入系统获得。
 add_library(terra_ui STATIC
+    src/file_browser.cpp
     src/text.cpp
     src/ui_input.cpp
     src/ui_context.cpp

@@ -28,7 +28,11 @@ struct SceneViewOptions {
     std::array<bool, 6> groups{true, true, true, false, false, false};  // MJCF group 0–5 是否显示
     bool collision = false;     // 叠加显示所有参与碰撞的几何体
     bool armOcclusion = true;   // glTF 资产的 ARM 遮蔽约定（M1-10）
+    terra::data::EntityId highlight;  // M2-08：大纲中选中的实体，其视觉部件加一层暖色自发光以示区别；无效 = 不高亮
 };
+
+// 高亮时叠加的自发光（线性辐射）
+constexpr terra::render::Vec3f kHighlightEmissive{0.30f, 0.17f, 0.02f};
 
 // 位姿与缩放 → 模型矩阵（列主序，单精度）
 terra::render::Matrix4 poseMatrix(const terra::data::Pose& pose, double scale = 1.0);

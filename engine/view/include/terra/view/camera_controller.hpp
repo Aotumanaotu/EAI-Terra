@@ -39,7 +39,7 @@ struct CameraKeys {
     Slots back{terra::input::Key::S, terra::input::Key::Down};
     Slots left{terra::input::Key::A, terra::input::Key::Left};
     Slots right{terra::input::Key::D, terra::input::Key::Right};
-    Slots up{terra::input::Key::E, terra::input::Key::Space};
+    Slots up{terra::input::Key::E, terra::input::Key::Unknown};  // M2-08 起空格留给仿真播放 / 暂停
     Slots down{terra::input::Key::Q, terra::input::Key::Unknown};
     Slots boost{terra::input::Key::LeftShift, terra::input::Key::RightShift};
     Slots reset{terra::input::Key::F, terra::input::Key::Unknown};

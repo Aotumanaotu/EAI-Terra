@@ -204,7 +204,8 @@ void testController() {
     check(near(hold(input, controller, cam, d.keyboard, in::Key::D, 1.0), mul(r, 3.0), 1e-9) && r.z == 0.0, "D 1 秒：水平右移 3 m");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::Left, 1.0), mul(r, -3.0), 1e-9), "← 1 秒：水平左移 3 m");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::E, 1.0), {0, 0, 3.0}, 1e-9), "E 1 秒：沿世界 Z 上升 3 m");
-    check(near(hold(input, controller, cam, d.keyboard, in::Key::Space, 1.0), {0, 0, 3.0}, 1e-9), "空格 1 秒：上升 3 m");
+    check(near(hold(input, controller, cam, d.keyboard, in::Key::Space, 1.0), {0, 0, 0}, 1e-12),
+          "空格不再上升（M2-08 起默认留给仿真播放 / 暂停）");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::LeftControl, 1.0), {0, 0, 0}, 1e-12), "Ctrl 不再移动相机（留给界面快捷键）");
     check(near(hold(input, controller, cam, d.keyboard, in::Key::Q, 0.5), {0, 0, -1.5}, 1e-9), "Q 0.5 秒：下降 1.5 m");
 

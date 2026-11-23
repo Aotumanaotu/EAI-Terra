@@ -1,0 +1,5 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "models": [{"name": "cart_a", "mjcf": "cart.xml", "positon": [0, 0, 0]}]
+}

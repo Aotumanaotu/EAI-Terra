@@ -78,6 +78,17 @@ void testValidRuns() {
     }
 }
 
+// M2-08：--scene（与 --model 二选一）
+void testScene() {
+    const ParseResult r = parse({"--scene", "scenes/two.terra-scene.json", "--steps", "100"});
+    check(r.ok() && r.options.scenePath == "scenes/two.terra-scene.json" && r.options.modelPath.empty(), "--scene: " + r.error);
+    expectError({"--scene", "a.json", "--model", "a.xml", "--steps", "1"}, "只能二选一");
+    expectError({"--scene", "a.json", "--scene", "b.json", "--steps", "1"}, "重复的参数 --scene");
+    expectError({"--scene=", "--steps", "1"}, "不能为空");
+    expectError({"--steps", "10"}, "或 --scene");
+    check(usageText().find("--scene") != std::string::npos, "帮助中有 --scene");
+}
+
 void testUsageErrors() {
     expectError({}, "缺少参数");
     expectError({"--bogus"}, "未知参数");
@@ -254,6 +265,7 @@ int main() {
     testHelpAndVersion();
     testValidRuns();
     testUsageErrors();
+    testScene();
     testJson();
     testStepsForDuration();
     testRecords();

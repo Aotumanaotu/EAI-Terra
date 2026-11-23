@@ -25,6 +25,7 @@
 # M2-05：场景文件（scene.file）；场景实例与视觉部件（scene.instance）。
 # M2-06：仿真时钟与插值（simulation.logic）；仿真推进与帧率无关性（simulation.runner）。
 # M2-07：场景渲染参考图（graphics.render_reference.carts）；glTF 节点表与子树变换（asset.gltf）。
+# M2-08：查看器场景模式自检（graphics.viewer_scene_selftest）；Headless 场景（headless.run_scene 等）；文件浏览（ui.text 扩充）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -99,6 +100,14 @@ terra_add_cli_test(dry_run_duration EXPECT 0
 terra_add_cli_test(run_cube EXPECT 0
     STDOUT "^[{].type.:.config.[^\n]*\n[{].type.:.model.[^\n]*\n[{].type.:.state.,.run_epoch.:0,.step.:0,.time.:0,[^\n]*\n[{].type.:.state.,.run_epoch.:0,.step.:50,[^\n]*\n[{].type.:.state.,.run_epoch.:0,.step.:100,[^\n]*\n[{].type.:.summary.,.run_epoch.:0,.steps.:100,.time.:0.1[0-9]*,.status.:.ok.}\n$"
     ARGS --model ${_terra_cube_model} --steps 100 --sample-every 50)
+# 场景文件（M2-08）：组合模型实例后只跑物理；实体名带实例前缀；场景文件错误报告位置并以退出码 4 结束
+terra_add_cli_test(run_scene EXPECT 0
+    STDOUT "[{].type.:.config.[^\n]*.scene.:[^\n]*\n[{].type.:.model.[^\n]*cart_a/chassis[^\n]*cart_b/chassis.*[{].type.:.summary.,.run_epoch.:0,.steps.:200,"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json --steps 200 --sample-every 100)
+terra_add_cli_test(scene_invalid EXPECT 4 STDERR "场景错误 /models/0/positon"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/invalid.terra-scene.json --steps 10)
+terra_add_cli_test(scene_and_model EXPECT 2 STDERR "只能二选一"
+    ARGS --scene a.json --model ${_terra_cube_model} --steps 10)
 terra_add_cli_test(run_duration EXPECT 0
     STDOUT "[{].type.:.summary.,.run_epoch.:0,.steps.:10,"
     ARGS --model ${_terra_cube_model} --duration 0.01 --sample-every 1000)
@@ -419,6 +428,12 @@ if(TERRA_BUILD_RENDER)
     # 查看器自检（M1-13）：在 Xvfb + llvmpipe 中运行 40 帧完整外壳，中途切换为英文，检查字体、GL 错误与像素。
     # M1-14：自检从默认设置开始（不读取文件），中途打开设置窗口；结束时检查设置换算与生效，并把设置保存到构建目录再读回比较
     # （不触碰用户的 ~/.config）。
+    # 查看器场景模式自检（M2-08）：打开场景后暂停、播放、选中与高亮、暂停与单步、与纯物理逐位一致、重置
+    add_test(NAME graphics.viewer_scene_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 60 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json")
+    set_tests_properties(graphics.viewer_scene_selftest PROPERTIES LABELS graphics)
+
     add_test(NAME graphics.viewer_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe
                 --settings "${CMAKE_CURRENT_BINARY_DIR}/viewer_selftest/settings.json")

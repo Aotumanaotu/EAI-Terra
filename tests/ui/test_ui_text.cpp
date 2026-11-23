@@ -5,15 +5,19 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <vector>
 
+#include <unistd.h>
+
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
 #include "imstb_truetype.h"
 
+#include "terra/ui/file_browser.hpp"
 #include "terra/ui/text.hpp"
 #include "terra/ui/widgets.hpp"
 
@@ -114,7 +118,38 @@ void testNiceCeiling() {
           "图表上限取 1、2、2.5、5 × 10ⁿ 中不小于数值的最小者");
 }
 
+// 文件浏览窗口的目录读取（M2-08，纯函数，不需要界面）
+void testFileBrowserListing() {
+    namespace fs = std::filesystem;
+    namespace ui = terra::ui;
+    const fs::path root = fs::temp_directory_path() / ("terra_file_browser_" + std::to_string(::getpid()));
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "b_dir");
+    fs::create_directories(root / "a_dir");
+    fs::create_directories(root / ".hidden_dir");
+    for (const char* name : {"z.terra-scene.json", "m.terra-scene.json", "other.json", "notes.txt", ".hidden.terra-scene.json"}) {
+        std::ofstream(root / name) << "{}";
+    }
+    const auto scenes = ui::listDirectory(root.string(), ".terra-scene.json");
+    std::vector<std::string> names;
+    for (const auto& e : scenes.entries) names.push_back(e.name);
+    check(scenes.error.empty() && names == std::vector<std::string>{"a_dir", "b_dir", "m.terra-scene.json", "z.terra-scene.json"},
+          "只列出目录与场景文件，目录在前、按名称排序、不含隐藏项");
+    check(scenes.entries.size() == 4 && scenes.entries[0].directory && !scenes.entries[2].directory && scenes.entries[2].size == 2,
+          "目录标记与文件大小");
+    const auto json = ui::listDirectory(root.string(), ".json");
+    check(json.entries.size() == 5, "过滤 .json：两个目录与三个 JSON 文件");
+    check(ui::listDirectory(root.string(), "").entries.size() == 6, "不过滤：全部非隐藏项");
+    check(!ui::listDirectory((root / "no_such").string(), "").error.empty(), "目录不存在时给出错误");
+    check(ui::normalizeDirectory((root / "m.terra-scene.json").string()) == root.string(), "文件路径 → 所在目录");
+    check(ui::normalizeDirectory((root / "a_dir" / "x" / "y").string()) == (root / "a_dir").string(), "不存在的路径 → 最近的存在的上级");
+    check(ui::normalizeDirectory((root / "b_dir").string() + "/").back() != '/', "去掉末尾斜杠");
+    fs::remove_all(root, ec);
+}
+
 int main() {
+    testFileBrowserListing();
     testNiceCeiling();
     testCatalog();
     testFont("NotoSansSC-Regular-Subset.otf", 1956920);

@@ -1,0 +1,83 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "下落的方块（M2-08 演示）",
+  "models": [
+    {
+      "name": "ground",
+      "mjcf": "ground.xml"
+    },
+    {
+      "name": "cube_1",
+      "mjcf": "cube.xml",
+      "position": [
+        0,
+        0,
+        0.6
+      ]
+    },
+    {
+      "name": "cube_2",
+      "mjcf": "cube.xml",
+      "position": [
+        0.05,
+        0.02,
+        1.0
+      ],
+      "rotation": {
+        "rpyDeg": [
+          30,
+          20,
+          10
+        ]
+      }
+    },
+    {
+      "name": "cube_3",
+      "mjcf": "cube.xml",
+      "position": [
+        -0.04,
+        0.03,
+        1.4
+      ],
+      "rotation": {
+        "rpyDeg": [
+          -15,
+          40,
+          60
+        ]
+      }
+    },
+    {
+      "name": "cart",
+      "mjcf": "cart.xml",
+      "position": [
+        0,
+        -0.8,
+        0
+      ]
+    }
+  ],
+  "visuals": [
+    {
+      "entity": "cart/chassis",
+      "gltf": "cart.gltf",
+      "node": "Chassis"
+    }
+  ],
+  "view": {
+    "environment": "studio",
+    "camera": {
+      "position": [
+        -2.6,
+        -1.6,
+        1.4
+      ],
+      "target": [
+        0,
+        -0.2,
+        0.4
+      ]
+    }
+  }
+}

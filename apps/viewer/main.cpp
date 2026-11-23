@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +50,7 @@
 #include "terra/render/resources.hpp"
 #include "terra/render/scene_renderer.hpp"
 #include "terra/settings/settings.hpp"
+#include "terra/ui/file_browser.hpp"
 #include "terra/ui/text.hpp"
 #include "terra/ui/ui_context.hpp"
 #include "terra/ui/ui_input.hpp"
@@ -257,6 +259,15 @@ struct AppState {
     std::vector<std::string> log;
     double fps = 0.0;
     double frameMs = 0.0;
+    // M2-08：场景文件与仿真界面
+    ui::FileBrowser fileBrowser;
+    terra::data::EntityId selectedEntity;    // 大纲中选中的实体（属于当前场景）
+    std::vector<std::string> sceneErrors;    // 最近一次打开失败的诊断（弹窗显示）
+    bool showSceneErrors = false;
+    std::optional<std::string> openRequest;  // 菜单或文件窗口请求打开的场景（在帧末处理，避免在绘制界面时替换 GPU 资源）
+    bool closeRequest = false;
+    bool demoAssetsLoaded = false;
+    std::optional<st::EnvironmentSetting> sceneEnvironment;  // 场景文件 view.environment：只影响本次会话，不写入设置
 };
 
 const char* displayModeText(terra::platform::DisplayMode mode) {
@@ -304,6 +315,20 @@ struct SimulatedScene {
     std::unique_ptr<terra::simulation::SimulationRunner> runner;
     std::unique_ptr<vw::SceneView> view;
     bool demoDrive = false;
+    std::string path;               // 场景文件（绝对路径）
+    double realtimeFactor = 0.0;    // 仿真时间 / 墙钟时间（平滑）
+    int speedIndex = 2;             // kSimSpeeds 下标
+
+    static constexpr double kSimSpeeds[] = {0.25, 0.5, 1.0, 2.0, 4.0};
+
+    void setSpeed(int index) {
+        speedIndex = std::clamp(index, 0, static_cast<int>(sizeof(kSimSpeeds) / sizeof(kSimSpeeds[0])) - 1);
+        runner->setSpeed(kSimSpeeds[speedIndex]);
+    }
+    void togglePlay() {
+        if (runner->paused()) runner->resume();
+        else runner->pause();
+    }
 
     // 演示控制：所有执行器正弦驱动，相位错开；在下一步之前生效
     void drive() {
@@ -323,9 +348,10 @@ struct SimulatedScene {
         if (!commands.empty()) runner->scheduleNext(std::move(commands));
     }
 
-    std::vector<r::RenderItem> items(const st::RenderSettings& rs) const {
+    std::vector<r::RenderItem> items(const st::RenderSettings& rs, terra::data::EntityId highlight) const {
         vw::SceneViewOptions options;
         options.armOcclusion = rs.assetArmOcclusion;
+        options.highlight = highlight;
         return view->items(instance, terra::scene::visualPoses(instance, runner->displayPoses()), options);
     }
 };
@@ -343,8 +369,165 @@ struct Frame {
     EnvironmentLibrary& environments;
     AppState& state;
     SettingsRuntime& settings;
-    SimulatedScene* sim;  // 未打开场景文件时为空，视口显示演示场景
+    std::optional<SimulatedScene>& simulated;  // 未打开场景时为空，视口显示演示场景
 };
+
+void appendMessages(AppState& state, const std::vector<vw::SceneMessage>& messages);
+
+// ---- 场景文件与仿真（M2-08）----
+
+constexpr const char* kSceneSuffix = ".terra-scene.json";
+
+std::optional<st::EnvironmentSetting> environmentFromName(const std::string& name) {
+    if (name == "outdoor") return st::EnvironmentSetting::Outdoor;
+    if (name == "studio") return st::EnvironmentSetting::Studio;
+    if (name == "hemisphere") return st::EnvironmentSetting::Hemisphere;
+    return std::nullopt;
+}
+
+std::string issueText(const terra::scene::SceneIssue& issue) {
+    std::string text = std::string{tr(issue.severity == terra::scene::SceneIssue::Severity::Error ? TextId::IssueError
+                                                                                                  : TextId::IssueWarning)} + " ";
+    if (!issue.where.empty()) text += issue.where + "：";
+    if (!issue.instance.empty()) text += "[" + issue.instance + "] ";
+    return text + issue.message;
+}
+
+// 演示场景的 glTF 资产只在需要显示演示场景时加载（打开场景文件时不加载，节省时间与显存）
+void ensureDemoAssets(Frame& f) {
+    if (f.state.demoAssetsLoaded) return;
+    std::vector<vw::SceneMessage> messages;
+    f.scene.loadAssets(TERRA_ASSETS_DIR, messages);
+    appendMessages(f.state, messages);
+    f.state.demoAssetsLoaded = true;
+}
+
+void closeScene(Frame& f) {
+    if (!f.simulated) return;
+    f.simulated.reset();
+    f.state.selectedEntity = {};
+    f.state.sceneEnvironment.reset();
+    terra::core::setFatalContext("场景文件", "");
+    f.state.log.push_back(tr(TextId::LogSceneClosed));
+    ensureDemoAssets(f);
+}
+
+// 打开场景：成功时替换当前场景（打开后暂停，按播放开始）；失败时保留当前场景，弹窗列出诊断。
+bool openScene(Frame& f, const std::string& requested) {
+    std::error_code ec;
+    const std::string path = std::filesystem::absolute(requested, ec).lexically_normal().string();
+    auto result = terra::scene::loadScene(path, terra::physics::mujoco::composeWorld);
+    std::vector<std::string> lines;
+    for (const auto& issue : result.issues) lines.push_back(issueText(issue));
+    for (const auto& line : lines) {
+        std::printf("INFO 场景诊断：%s\n", line.c_str());
+        f.state.log.push_back(line);
+    }
+    if (!result.ok()) {
+        f.state.log.push_back(std::string{tr(TextId::LogSceneFailed)} + path);
+        f.state.sceneErrors = lines;
+        if (f.state.sceneErrors.empty()) f.state.sceneErrors.push_back(path);
+        f.state.showSceneErrors = true;
+        return false;
+    }
+    f.simulated.reset();  // 先释放旧场景的 GPU 资源
+    f.simulated.emplace();
+    SimulatedScene& sim = *f.simulated;
+    sim.instance = std::move(*result.scene);
+    sim.path = path;
+    sim.runner = std::make_unique<terra::simulation::SimulationRunner>(*sim.instance.world);
+    sim.runner->pause();
+    std::vector<vw::SceneMessage> messages;
+    sim.view = vw::SceneView::create(sim.instance, messages);
+    for (const auto& m : messages) std::printf("INFO 场景：%s\n", m.text.c_str());
+    appendMessages(f.state, messages);
+
+    const auto& view = sim.instance.document.view;
+    if (view.cameraPosition) {
+        f.camera.position = *view.cameraPosition;
+        if (view.cameraTarget) f.camera.lookAt(*view.cameraTarget);
+    }
+    f.state.sceneEnvironment.reset();
+    if (view.environment) {
+        f.state.sceneEnvironment = environmentFromName(*view.environment);
+        if (!f.state.sceneEnvironment) f.state.log.push_back(std::string{tr(TextId::SceneUnknownEnvironment)} + *view.environment);
+    }
+    f.state.selectedEntity = {};
+    st::rememberScene(f.settings.current.ui, path);
+    terra::core::setFatalContext("场景文件", path);
+    f.state.log.push_back(std::string{tr(TextId::LogSceneOpened)} + path);
+    const auto& d = sim.instance.world->description();
+    std::printf("INFO 场景 %s：%zu 个模型实例，%zu 个实体，%zu 个几何体，%zu 个 glTF 绑定（可用 %zu），步长 %.4g 秒\n",
+                sim.instance.document.name.c_str(), d.modelInstances.size(), d.entities.size(), d.geoms.size(),
+                sim.instance.bindings.size(), sim.view->liveBindings(), d.timestep);
+    return true;
+}
+
+void simReset(Frame& f) {
+    if (!f.simulated) return;
+    f.simulated->runner->reset();
+    f.simulated->realtimeFactor = 0.0;
+}
+
+const char* shapeText(terra::data::GeomShape shape) {
+    using S = terra::data::GeomShape;
+    switch (shape) {
+        case S::Plane: return tr(TextId::ShapePlane);
+        case S::Sphere: return tr(TextId::ShapeSphere);
+        case S::Capsule: return tr(TextId::ShapeCapsule);
+        case S::Ellipsoid: return tr(TextId::ShapeEllipsoid);
+        case S::Cylinder: return tr(TextId::ShapeCylinder);
+        case S::Box: return tr(TextId::ShapeBox);
+        case S::Mesh: return tr(TextId::ShapeMesh);
+        case S::Other: return tr(TextId::ShapeOther);
+    }
+    return "";
+}
+
+// 视口上方的仿真工具栏：播放 / 暂停、单步、重置、速度
+void simulationToolbar(Frame& f) {
+    if (!f.simulated) return;
+    SimulatedScene& sim = *f.simulated;
+    const bool paused = sim.runner->paused();
+    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 4.0f, ImGui::GetCursorPosY() + 3.0f));
+    if (ImGui::Button(paused ? tr(TextId::SimPlay) : tr(TextId::SimPause))) sim.togglePlay();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!paused);
+    if (ImGui::Button(tr(TextId::SimStep))) sim.runner->stepOnce();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(tr(TextId::SimReset))) simReset(f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
+    char current[16];
+    std::snprintf(current, sizeof current, "%g×", SimulatedScene::kSimSpeeds[sim.speedIndex]);
+    if (ImGui::BeginCombo((std::string{"##"} + tr(TextId::SimSpeed)).c_str(), current)) {
+        for (int i = 0; i < static_cast<int>(sizeof(SimulatedScene::kSimSpeeds) / sizeof(SimulatedScene::kSimSpeeds[0])); ++i) {
+            char option[16];
+            std::snprintf(option, sizeof option, "%g×", SimulatedScene::kSimSpeeds[i]);
+            if (ImGui::Selectable(option, i == sim.speedIndex)) sim.setSpeed(i);
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    const char* status = sim.runner->faulted() ? tr(TextId::StatusFaulted) : paused ? tr(TextId::StatusPaused) : tr(TextId::StatusRunning);
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("%s  %.3f s", status, sim.instance.world->simulationTime());
+}
+
+void sceneErrorWindow(Frame& f) {
+    const std::string title = label(TextId::SceneErrorTitle, "SceneErrors");
+    if (f.state.showSceneErrors) {
+        ImGui::OpenPopup(title.c_str());
+        f.state.showSceneErrors = false;
+    }
+    if (ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        for (const auto& line : f.state.sceneErrors) ImGui::TextUnformatted(line.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button(tr(TextId::Close)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
 
 constexpr const char* kAppMap = "app";
 
@@ -411,6 +594,7 @@ void applySettings(Frame& f) {
         }
     }
     if (nd.vsync != pd.vsync) f.window.setVsync(nd.vsync);
+    if (next.render.environment != prev.render.environment) f.state.sceneEnvironment.reset();  // 手动选择环境后不再沿用场景文件的设置
     if (next.camera != prev.camera) {
         f.controller.settings() = vw::toCameraControl(next.camera);
         f.camera.verticalFov = next.camera.fovDegrees * vw::kRadiansPerDegree;
@@ -419,6 +603,11 @@ void applySettings(Frame& f) {
         f.controller.setKeys(vw::toCameraKeys(next.keys));
         if (auto error = f.input.setBindings(kAppMap, "fullscreen", vw::buttonBindings(next.keys[st::Command::AppFullscreen]))) {
             f.state.log.push_back(*error);
+        }
+        using CommandAction = std::pair<st::Command, const char*>;
+        for (const auto& [command, action] : {CommandAction{st::Command::SimPlayPause, "sim_play"}, CommandAction{st::Command::SimStep, "sim_step"},
+                                              CommandAction{st::Command::SimReset, "sim_reset"}}) {
+            if (auto error = f.input.setBindings(kAppMap, action, vw::buttonBindings(next.keys[command]))) f.state.log.push_back(*error);
         }
     }
     rt.applied = next;
@@ -465,12 +654,47 @@ void shortcuts(Frame& f) {
     if (chord(ImGuiKey_Minus) || chord(ImGuiKey_KeypadSubtract)) setUiScale(f, current - 0.1);
     if (chord(ImGuiKey_0) || chord(ImGuiKey_Keypad0)) f.settings.current.ui.uiScale.reset();
     if (chord(ImGuiKey_Comma)) openSettingsWindow(f, !f.state.settingsWindow.open);
+    if (chord(ImGuiKey_O)) f.state.fileBrowser.open(f.settings.current.ui.recentScenes.empty() ? std::string{}
+                                                                                               : f.settings.current.ui.recentScenes.front(),
+                                                    kSceneSuffix);
+    if (chord(ImGuiKey_R)) simReset(f);  // 固定快捷键；另可在偏好设置中给“仿真：重置”分配单键
 }
 
 void menuBar(Frame& f) {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu(tr(TextId::MenuFile))) {
+        auto& recent = f.settings.current.ui.recentScenes;
+        if (ImGui::MenuItem(tr(TextId::MenuFileOpenScene), "Ctrl+O")) {
+            f.state.fileBrowser.open(f.simulated ? f.simulated->path : recent.empty() ? std::string{} : recent.front(), kSceneSuffix);
+        }
+        if (ImGui::BeginMenu(tr(TextId::MenuFileRecent))) {
+            if (recent.empty()) ImGui::TextDisabled("%s", tr(TextId::MenuFileRecentEmpty));
+            for (const auto& path : recent) {
+                if (ImGui::MenuItem(path.c_str())) f.state.openRequest = path;
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::MenuItem(tr(TextId::MenuFileCloseScene), nullptr, false, f.simulated.has_value())) f.state.closeRequest = true;
+        ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuFileQuit), "Alt+F4")) f.state.quit = true;
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu(tr(TextId::MenuSimulation), f.simulated.has_value())) {
+        SimulatedScene& sim = *f.simulated;
+        const auto key = [&](st::Command c) { return in::keyName(f.settings.current.keys[c][0]); };
+        if (ImGui::MenuItem(sim.runner->paused() ? tr(TextId::SimPlay) : tr(TextId::SimPause), key(st::Command::SimPlayPause))) {
+            sim.togglePlay();
+        }
+        if (ImGui::MenuItem(tr(TextId::SimStep), key(st::Command::SimStep), false, sim.runner->paused())) sim.runner->stepOnce();
+        if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
+        if (ImGui::BeginMenu(tr(TextId::SimSpeed))) {
+            for (int i = 0; i < static_cast<int>(sizeof(SimulatedScene::kSimSpeeds) / sizeof(SimulatedScene::kSimSpeeds[0])); ++i) {
+                char option[16];
+                std::snprintf(option, sizeof option, "%g×", SimulatedScene::kSimSpeeds[i]);
+                if (ImGui::MenuItem(option, nullptr, i == sim.speedIndex)) sim.setSpeed(i);
+            }
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(tr(TextId::MenuView))) {
@@ -533,6 +757,18 @@ void statusBar(Frame& f) {
             const auto& p = f.camera.position;
             ImGui::Text("%.0f FPS  |  %s  |  %s (%.2f, %.2f, %.2f)", f.state.fps, displayModeText(f.window.displayMode()),
                         tr(TextId::StatusCamera), p.x, p.y, p.z);
+            if (f.simulated) {
+                const SimulatedScene& sim = *f.simulated;
+                ImGui::SameLine();
+                ImGui::Text("  |  %s  %s %.3f s  %s %llu  %s %.2f  %s %llu",
+                            sim.runner->faulted() ? tr(TextId::StatusFaulted)
+                            : sim.runner->paused() ? tr(TextId::StatusPaused)
+                                                   : tr(TextId::StatusRunning),
+                            tr(TextId::StatusSimTime), sim.instance.world->simulationTime(), tr(TextId::StatusStep),
+                            static_cast<unsigned long long>(sim.instance.world->stepIndex()), tr(TextId::StatusRealtime),
+                            sim.realtimeFactor, tr(TextId::StatusOverload),
+                            static_cast<unsigned long long>(sim.runner->clock().overloadCount()));
+            }
             ImGui::EndMenuBar();
         }
     }
@@ -562,17 +798,20 @@ void viewportPanel(Frame& f) {
     ImGui::PopStyleVar();
     f.state.viewportHovered = false;
     if (open) {
+        simulationToolbar(f);
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
         const int w = std::max(1, static_cast<int>(avail.x * scale.x));
         const int h = std::max(1, static_cast<int>(avail.y * scale.y));
         if (avail.x >= 1.0f && avail.y >= 1.0f) {
-            const st::RenderSettings& rs = f.settings.current.render;
+            st::RenderSettings rs = f.settings.current.render;
+            if (f.simulated && f.state.sceneEnvironment) rs.environment = *f.state.sceneEnvironment;  // 场景文件的 view.environment
             std::vector<vw::SceneMessage> messages;
             const vw::FrameLighting lit = vw::frameLighting(rs, f.environments, f.ctx, messages);
             appendMessages(f.state, messages);
             f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)),
-                              f.sim != nullptr ? f.sim->items(rs) : f.scene.items(rs.assetArmOcclusion), lit.sun, lit.hemisphere,
+                              f.simulated ? f.simulated->items(rs, f.state.selectedEntity) : f.scene.items(rs.assetArmOcclusion), lit.sun,
+                              lit.hemisphere,
                               lit.settings, lit.image);
             if (f.renderer.lastFrame().imageLighting && f.renderer.lastFrame().backgroundDrawn) f.state.imageLightingSeen = true;
             ImGui::Image(static_cast<ImTextureID>(f.renderer.outputTexture()), avail, ImVec2(0, 1), ImVec2(1, 0));
@@ -587,10 +826,98 @@ void viewportPanel(Frame& f) {
     ImGui::End();
 }
 
+// 场景大纲（M2-08）：模型实例 → 实体（按父子层级）→ 视觉部件；点选实体后属性面板显示其位姿，视口中高亮
+void entityNode(Frame& f, const terra::data::ModelDescription& d, const std::vector<std::vector<std::size_t>>& children,
+                const std::vector<std::vector<const terra::scene::VisualPart*>>& partsOf, std::size_t e) {
+    const terra::scene::SceneInstance& scene = f.simulated->instance;
+    const terra::data::EntityDescription& entity = d.entities[e];
+    const std::string name = entity.name.empty() ? std::string{tr(TextId::OutlinerUnnamed)} + " #" + std::to_string(entity.id.value)
+                                                 : entity.name;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (f.state.selectedEntity == entity.id) flags |= ImGuiTreeNodeFlags_Selected;
+    if (children[e].empty() && partsOf[e].empty()) flags |= ImGuiTreeNodeFlags_Leaf;
+    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<std::uintptr_t>(entity.id.value)), flags, "%s", name.c_str());
+    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) f.state.selectedEntity = entity.id;
+    if (!open) return;
+    for (const terra::scene::VisualPart* part : partsOf[e]) {
+        if (part->kind == terra::scene::VisualPart::Kind::Geom) {
+            const auto* g = d.geom(part->geom);
+            if (g == nullptr) continue;
+            ImGui::BulletText("%s %s%s", shapeText(g->shape), g->name.empty() ? tr(TextId::OutlinerUnnamed) : g->name.c_str(),
+                              part->hiddenByBinding ? "  -" : "");
+        } else {
+            const auto& b = scene.bindings[static_cast<std::size_t>(part->binding)];
+            ImGui::BulletText("%s %s%s%s", tr(TextId::OutlinerGltf), std::filesystem::path{b.spec.gltf}.filename().string().c_str(),
+                              b.spec.node.empty() ? "" : " : ", b.spec.node.c_str());
+        }
+    }
+    for (const std::size_t child : children[e]) entityNode(f, d, children, partsOf, child);
+    ImGui::TreePop();
+}
+
+void sceneOutliner(Frame& f) {
+    const terra::scene::SceneInstance& scene = f.simulated->instance;
+    const terra::data::ModelDescription& d = scene.world->description();
+    // 父子关系与每个实体的视觉部件
+    std::vector<std::vector<std::size_t>> children(d.entities.size());
+    std::vector<std::vector<std::size_t>> roots(d.modelInstances.size() + 1);  // 下标 0：不属于任何实例
+    for (std::size_t e = 0; e < d.entities.size(); ++e) {
+        const auto& entity = d.entities[e];
+        if (entity.parent.valid() && entity.parent.value <= d.entities.size()) children[entity.parent.value - 1].push_back(e);
+        else roots[std::min<std::size_t>(entity.modelInstance.value, d.modelInstances.size())].push_back(e);
+    }
+    std::vector<std::vector<const terra::scene::VisualPart*>> partsOf(d.entities.size());
+    std::vector<std::vector<const terra::scene::VisualPart*>> staticOf(d.modelInstances.size() + 1);
+    for (const auto& part : scene.visuals) {
+        if (part.entity.valid() && part.entity.value <= d.entities.size()) {
+            partsOf[part.entity.value - 1].push_back(&part);
+        } else {
+            staticOf[std::min<std::size_t>(part.modelInstance.value, d.modelInstances.size())].push_back(&part);
+        }
+    }
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    const std::string title = scene.document.name.empty() ? std::filesystem::path{f.simulated->path}.filename().string()
+                                                           : scene.document.name;
+    if (!ImGui::TreeNode("##scene", "%s", title.c_str())) return;
+    for (std::size_t i = 0; i <= d.modelInstances.size(); ++i) {
+        if (i == 0 && roots[0].empty() && staticOf[0].empty()) continue;
+        const std::string name = i == 0 ? std::string{"world"} : d.modelInstances[i - 1].name;
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (!ImGui::TreeNode(reinterpret_cast<void*>(static_cast<std::uintptr_t>(i + 1000000)), "%s  (%zu %s)", name.c_str(), roots[i].size(),
+                             tr(TextId::OutlinerInstanceCount))) {
+            continue;
+        }
+        for (const std::size_t e : roots[i]) entityNode(f, d, children, partsOf, e);
+        if (!staticOf[i].empty()) {
+            if (ImGui::TreeNode(reinterpret_cast<void*>(static_cast<std::uintptr_t>(i + 2000000)), "%s", tr(TextId::OutlinerStatic))) {
+                for (const terra::scene::VisualPart* part : staticOf[i]) {
+                    if (part->kind == terra::scene::VisualPart::Kind::Geom) {
+                        if (const auto* g = d.geom(part->geom)) {
+                            ImGui::BulletText("%s %s", shapeText(g->shape), g->name.empty() ? tr(TextId::OutlinerUnnamed) : g->name.c_str());
+                        }
+                    } else {
+                        const auto& b = scene.bindings[static_cast<std::size_t>(part->binding)];
+                        ImGui::BulletText("%s %s", tr(TextId::OutlinerGltf), std::filesystem::path{b.spec.gltf}.filename().string().c_str());
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+        ImGui::TreePop();
+    }
+    ImGui::TreePop();
+}
+
 void outlinerPanel(Frame& f) {
     bool& visible = f.settings.current.ui.showOutliner;
     if (!visible) return;
     if (ImGui::Begin(label(TextId::PanelOutliner, "Outliner").c_str(), &visible)) {
+        if (f.simulated) {
+            sceneOutliner(f);
+            ImGui::End();
+            return;
+        }
+        ImGui::TextDisabled("%s", tr(TextId::OutlinerNoScene));
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         if (ImGui::TreeNode(tr(TextId::OutlinerScene))) {
             for (const TextId item : {TextId::OutlinerGround, TextId::OutlinerAxes, TextId::OutlinerCube, TextId::OutlinerSpheres,
@@ -693,10 +1020,56 @@ void renderControls(st::RenderSettings& rs, bool environmentHasSun) {
     if (ImGui::Button(tr(TextId::RenderRestore))) rs = st::RenderSettings{};
 }
 
+// 选中实体的位姿与速度（M2-08，只读）。姿态以滚转 / 俯仰 / 偏航（度，R = Rz·Ry·Rx）显示。
+void entityDetails(Frame& f) {
+    const terra::scene::SceneInstance& scene = f.simulated->instance;
+    const terra::data::ModelDescription& d = scene.world->description();
+    ImGui::SeparatorText(tr(TextId::DetailsEntity));
+    const terra::data::EntityDescription* e = d.entity(f.state.selectedEntity);
+    if (e == nullptr) {
+        ImGui::TextDisabled("%s", tr(TextId::DetailsSelectHint));
+        return;
+    }
+    const auto snapshot = f.simulated->runner->latest();
+    if (!snapshot || e->id.value > snapshot->entities.size()) return;
+    const terra::data::EntityState& s = snapshot->entities[e->id.value - 1];
+    const auto& q = s.pose.orientation;
+    const double rad = 180.0 / 3.14159265358979323846;
+    const double roll = std::atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y)) * rad;
+    const double pitch = std::asin(std::clamp(2 * (q.w * q.y - q.z * q.x), -1.0, 1.0)) * rad;
+    const double yaw = std::atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)) * rad;
+    if (ImGui::BeginTable("entity", 2, ImGuiTableFlags_SizingStretchProp)) {
+        const auto row = [](const char* name, const std::string& value) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", name);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(value.c_str());
+        };
+        const auto vec = [](double x, double y, double z, const char* unit) {
+            char buf[128];
+            std::snprintf(buf, sizeof buf, "%.4f, %.4f, %.4f %s", x, y, z, unit);
+            return std::string{buf};
+        };
+        row(tr(TextId::DetailsName), e->name.empty() ? std::string{tr(TextId::OutlinerUnnamed)} : e->name);
+        const auto* inst = d.modelInstance(e->modelInstance);
+        row(tr(TextId::DetailsInstance), inst != nullptr ? inst->name : std::string{tr(TextId::DetailsNone)});
+        const auto* parent = d.entity(e->parent);
+        row(tr(TextId::DetailsParent), parent != nullptr ? (parent->name.empty() ? std::string{tr(TextId::OutlinerUnnamed)} : parent->name)
+                                                         : std::string{tr(TextId::DetailsNone)});
+        row(tr(TextId::DetailsPosition), vec(s.pose.position.x, s.pose.position.y, s.pose.position.z, "m"));
+        row(tr(TextId::DetailsOrientation), vec(roll, pitch, yaw, "°"));
+        row(tr(TextId::DetailsLinearVelocity), vec(s.linearVelocity.x, s.linearVelocity.y, s.linearVelocity.z, "m/s"));
+        row(tr(TextId::DetailsAngularVelocity), vec(s.angularVelocity.x, s.angularVelocity.y, s.angularVelocity.z, "rad/s"));
+        ImGui::EndTable();
+    }
+}
+
 void detailsPanel(Frame& f) {
     bool& visible = f.settings.current.ui.showDetails;
     if (!visible) return;
     if (ImGui::Begin(label(TextId::PanelDetails, "Details").c_str(), &visible)) {
+        if (f.simulated) entityDetails(f);
         ImGui::SeparatorText(tr(TextId::DetailsCamera));
         const auto& p = f.camera.position;
         const double rad = 180.0 / 3.14159265358979323846;
@@ -857,6 +1230,8 @@ void buildUi(Frame& f) {
     helpWindows(f);
     vw::drawSettingsWindow(f.state.settingsWindow, f.settings.current, f.state.monitors, f.uiCtx.scale(), f.settings.path,
                            f.state.log);
+    if (auto chosen = f.state.fileBrowser.draw(label(TextId::FileBrowserTitle, "OpenScene").c_str())) f.state.openRequest = *chosen;
+    sceneErrorWindow(f);
 }
 
 // ImGui 的布局有变化时（它自带约 5 秒的节流）把布局文本记入设置；布局只在启动时读入，因此同时记为已生效。
@@ -1087,6 +1462,100 @@ int selfTest(Frame& f, const ui::UiContext& uiContext, const Options& options) {
     return failures == 0 ? 0 : 1;
 }
 
+// ---- 场景模式的自检（M2-08）：terra_viewer --scene <文件> --self-test --frames N ----
+// 第 2 帧记录步数（打开后应暂停，为 0）；第 3 帧按“播放”；N/2 帧在大纲中选中 cart_a/chassis（夹具中存在时）；
+// 3N/4 帧暂停并记录；3N/4 + 2 帧单步。结束时检查暂停、单步、选中与高亮，并与一个不经过界面、直接按同样步数推进的
+// 同一场景逐位比较全部实体位姿（查看器的仿真与纯物理一致）；最后检查重置。
+struct SceneSelfTestRecord {
+    std::uint64_t stepsAtStart = 1;
+    std::uint64_t stepAtPause = 0;
+    double timeAtPause = -1.0;
+    bool stepRequested = false;
+};
+SceneSelfTestRecord sceneRecord;
+
+void sceneSelfTestScript(Frame& f, int frame, int total) {
+    SimulatedScene& sim = *f.simulated;
+    if (frame == 2) sceneRecord.stepsAtStart = sim.instance.world->stepIndex();
+    if (frame == 3) sim.togglePlay();
+    if (frame == total / 2) {
+        if (const auto* e = sim.instance.world->description().findEntity("cart_a/chassis")) f.state.selectedEntity = e->id;
+    }
+    if (frame == total * 3 / 4) {
+        sim.runner->pause();
+        sceneRecord.stepAtPause = sim.instance.world->stepIndex();
+        sceneRecord.timeAtPause = sim.instance.world->simulationTime();
+    }
+    if (frame == total * 3 / 4 + 2) {
+        sim.runner->stepOnce();
+        sceneRecord.stepRequested = true;
+    }
+}
+
+int sceneSelfTest(Frame& f, const Options& options) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    SimulatedScene& sim = *f.simulated;
+    terra::physics::PhysicsWorld& world = *sim.instance.world;
+    const auto& info = f.ctx.info();
+    std::printf("INFO 渲染器 %s；场景 %s\n", info.renderer.c_str(), sim.path.c_str());
+    if (!options.expectRenderer.empty()) {
+        check(info.renderer.find(options.expectRenderer) != std::string::npos, "渲染器包含 " + options.expectRenderer);
+    }
+    check(sceneRecord.stepsAtStart == 0, "打开场景后处于暂停（第 2 帧仍为第 0 步）");
+    check(sceneRecord.stepAtPause > 0, "按播放后仿真推进（暂停时第 " + std::to_string(sceneRecord.stepAtPause) + " 步）");
+    check(sceneRecord.stepRequested && world.stepIndex() == sceneRecord.stepAtPause + 1,
+          "暂停后物理时间不增长，只有单步推进了 1 步（实际第 " + std::to_string(world.stepIndex()) + " 步）");
+    check(std::fabs(world.simulationTime() - (sceneRecord.timeAtPause + world.description().timestep)) < 1e-12,
+          "暂停期间仿真时间不变，单步后恰好多一个步长");
+    check(sim.view->liveBindings() == sim.instance.bindings.size(), "全部 glTF 绑定可用（" + std::to_string(sim.view->liveBindings()) + " 个）");
+
+    // 选中与高亮
+    const auto* chassis = world.description().findEntity("cart_a/chassis");
+    if (chassis != nullptr) {
+        check(f.state.selectedEntity == chassis->id, "大纲中选中了 cart_a/chassis");
+        const auto items = sim.items(f.settings.current.render, f.state.selectedEntity);
+        std::size_t glowing = 0;
+        for (const auto& item : items) glowing += item.material.emissive.x > 0.0f ? 1 : 0;
+        const auto plain = sim.items(f.settings.current.render, {});
+        std::size_t plainGlowing = 0;
+        for (const auto& item : plain) plainGlowing += item.material.emissive.x > 0.0f ? 1 : 0;
+        check(glowing > plainGlowing, "选中实体的视觉部件高亮（" + std::to_string(glowing - plainGlowing) + " 个渲染项）");
+    }
+
+    // 与纯物理一致：同一场景不经过界面，推进同样的步数，全部实体位姿逐位相同
+    {
+        auto fresh = terra::scene::loadScene(sim.path, terra::physics::mujoco::composeWorld);
+        check(fresh.ok(), "独立加载同一场景");
+        if (fresh.ok()) {
+            auto& other = *fresh.scene->world;
+            bool stepped = true;
+            for (std::uint64_t k = 0; k < world.stepIndex() && stepped; ++k) stepped = !other.step();
+            const auto a = world.snapshot();
+            const auto b = other.snapshot();
+            bool same = stepped && a->entities.size() == b->entities.size();
+            for (std::size_t e = 0; same && e < a->entities.size(); ++e) {
+                const auto& p = a->entities[e].pose;
+                const auto& q = b->entities[e].pose;
+                same = p.position.x == q.position.x && p.position.y == q.position.y && p.position.z == q.position.z &&
+                       p.orientation.w == q.orientation.w && p.orientation.x == q.orientation.x && p.orientation.y == q.orientation.y &&
+                       p.orientation.z == q.orientation.z;
+            }
+            check(same, "查看器中的仿真与直接推进的纯物理逐位相同（" + std::to_string(world.stepIndex()) + " 步）");
+        }
+    }
+
+    simReset(f);
+    check(world.stepIndex() == 0 && world.runEpoch() >= 1 && world.simulationTime() == 0.0, "重置后回到第 0 步");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf("INFO 场景自检：暂停于第 %llu 步，渲染项 %zu 个\n", static_cast<unsigned long long>(sceneRecord.stepAtPause),
+                sim.items(f.settings.current.render, {}).size());
+    return failures == 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1182,8 +1651,22 @@ int main(int argc, char** argv) {
     fullscreen.type = in::ActionType::Button;
     fullscreen.bindings = vw::buttonBindings(settings.current.keys[st::Command::AppFullscreen]);
     app.actions.push_back(fullscreen);
+    // 仿真操作（M2-08）：播放 / 暂停、单步、重置，按键来自设置
+    using CommandAction = std::pair<st::Command, const char*>;
+    for (const auto& [command, actionName] : {CommandAction{st::Command::SimPlayPause, "sim_play"},
+                                              CommandAction{st::Command::SimStep, "sim_step"},
+                                              CommandAction{st::Command::SimReset, "sim_reset"}}) {
+        in::ActionDefinition a;
+        a.name = actionName;
+        a.type = in::ActionType::Button;
+        a.bindings = vw::buttonBindings(settings.current.keys[command]);
+        app.actions.push_back(a);
+    }
     (void)input.addActionMap(app);
     const in::ActionHandle fullscreenAction = input.findAction(kAppMap, "fullscreen");
+    const in::ActionHandle simPlayAction = input.findAction(kAppMap, "sim_play");
+    const in::ActionHandle simStepAction = input.findAction(kAppMap, "sim_step");
+    const in::ActionHandle simResetAction = input.findAction(kAppMap, "sim_reset");
 
     auto rendererMade = r::SceneRenderer::create(ctx);
     if (!rendererMade.renderer) {
@@ -1201,44 +1684,7 @@ int main(int argc, char** argv) {
     state.monitors = monitors;
     state.log.push_back(tr(TextId::LogStarted));
     state.log.push_back(std::string{tr(TextId::StatsRenderer)} + "：" + ctx.info().renderer);
-    {
-        std::vector<vw::SceneMessage> messages;
-        scene.loadAssets(TERRA_ASSETS_DIR, messages);
-        appendMessages(state, messages);
-    }
-    // 场景文件（M2-07）
     std::optional<SimulatedScene> simulated;
-    if (!options.scenePath.empty()) {
-        auto result = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
-        for (const auto& issue : result.issues) {
-            std::fprintf(issue.severity == terra::scene::SceneIssue::Severity::Error ? stderr : stdout, "%s %s%s%s%s\n",
-                         issue.severity == terra::scene::SceneIssue::Severity::Error ? "错误" : "警告", issue.where.c_str(),
-                         issue.where.empty() ? "" : "：", issue.instance.empty() ? "" : ("[" + issue.instance + "] ").c_str(),
-                         issue.message.c_str());
-            state.log.push_back(issue.message);
-        }
-        if (!result.ok()) {
-            std::fprintf(stderr, "错误：场景文件不能使用：%s\n", options.scenePath.c_str());
-            return 4;
-        }
-        simulated.emplace();
-        simulated->instance = std::move(*result.scene);
-        simulated->runner = std::make_unique<terra::simulation::SimulationRunner>(*simulated->instance.world);
-        simulated->demoDrive = options.demoDrive;
-        std::vector<vw::SceneMessage> messages;
-        simulated->view = vw::SceneView::create(simulated->instance, messages);
-        for (const auto& m : messages) std::printf("INFO 场景：%s\n", m.text.c_str());
-        appendMessages(state, messages);
-        const auto& view = simulated->instance.document.view;
-        if (view.cameraPosition) {
-            camera.position = *view.cameraPosition;
-            if (view.cameraTarget) camera.lookAt(*view.cameraTarget);
-        }
-        const auto& d = simulated->instance.world->description();
-        std::printf("INFO 场景 %s：%zu 个模型实例，%zu 个实体，%zu 个几何体，%zu 个 glTF 绑定（可用 %zu），步长 %.4g 秒\n",
-                    simulated->instance.document.name.c_str(), d.modelInstances.size(), d.entities.size(), d.geoms.size(),
-                    simulated->instance.bindings.size(), simulated->view->liveBindings(), d.timestep);
-    }
     if (loaded) {
         switch (loaded->status) {
             case st::LoadStatus::Loaded: state.log.push_back(tr(TextId::LogSettingsLoaded) + settings.path); break;
@@ -1252,8 +1698,20 @@ int main(int argc, char** argv) {
         for (const auto& w : loaded->warnings) state.log.push_back(tr(TextId::LogSettingsWarning) + w);
     }
     settings.applied = settings.current;
-    Frame frame{platform,     window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings,
-                simulated ? &*simulated : nullptr};
+    Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings, simulated};
+
+    // 场景文件（M2-07 起；M2-08 起打开后暂停，--demo-drive 时直接运行）。没有场景时才加载演示场景的资产。
+    if (!options.scenePath.empty()) {
+        if (!openScene(frame, options.scenePath)) {
+            for (const auto& line : state.sceneErrors) std::fprintf(stderr, "%s\n", line.c_str());
+            std::fprintf(stderr, "错误：场景文件不能使用：%s\n", options.scenePath.c_str());
+            return 4;
+        }
+        simulated->demoDrive = options.demoDrive;
+        if (options.demoDrive) simulated->runner->resume();
+    } else {
+        ensureDemoAssets(frame);
+    }
 
     // 不可恢复错误（M2-02）：退出前把当前设置（含布局）写入设置文件；诊断报告中写出设置文件路径。
     // 只写文件，不调用 GL 与物理后端（terra/core/fatal.hpp 的要求）。
@@ -1306,10 +1764,18 @@ int main(int argc, char** argv) {
         if (input.state(fullscreenAction).pressed) toggleFullscreen(frame);
         controller.update(camera, dt);
         if (simulated) {
+            const bool keyboardFree = !uiContext.wantsTextInput() && !state.settingsWindow.capturingKey();
+            if (keyboardFree && input.state(simPlayAction).pressed) simulated->togglePlay();
+            if (keyboardFree && input.state(simStepAction).pressed && simulated->runner->paused()) simulated->runner->stepOnce();
+            if (keyboardFree && input.state(simResetAction).pressed) simReset(frame);
+            if (options.selfTest) sceneSelfTestScript(frame, frames, options.frames);
             simulated->drive();
+            const double before = simulated->instance.world->simulationTime();
             const auto stepped = simulated->runner->update(dt);
-            if (stepped.error) state.log.push_back("仿真错误：" + stepped.error->message);
-            for (const auto& e : stepped.controlErrors) state.log.push_back("控制被拒绝：" + e.message);
+            const double rate = dt > 0 ? (simulated->instance.world->simulationTime() - before) / dt : 0.0;
+            simulated->realtimeFactor = simulated->runner->paused() ? 0.0 : simulated->realtimeFactor * 0.9 + rate * 0.1;
+            if (stepped.error) state.log.push_back(std::string{tr(TextId::StatusFaulted)} + "：" + stepped.error->message);
+            for (const auto& e : stepped.controlErrors) state.log.push_back(e.message);
         }
 
         if (options.selfTest && options.frames > 0) {
@@ -1343,10 +1809,21 @@ int main(int argc, char** argv) {
         ctx.clear({bg.x, bg.y, bg.z, 1.0f});
         uiContext.render();
 
+        // 打开 / 关闭场景在帧末处理：本帧的界面已经提交，替换 GPU 资源是安全的
+        if (state.openRequest) {
+            const std::string path = *state.openRequest;
+            state.openRequest.reset();
+            openScene(frame, path);
+        }
+        if (state.closeRequest) {
+            state.closeRequest = false;
+            closeScene(frame);
+        }
+
         ++frames;
         const bool lastFrame = (options.frames > 0 && frames >= options.frames) ||
                                (options.seconds > 0.0 && now - start >= options.seconds);
-        if (lastFrame && options.selfTest) result = selfTest(frame, uiContext, options);
+        if (lastFrame && options.selfTest) result = simulated ? sceneSelfTest(frame, options) : selfTest(frame, uiContext, options);
         window.swapBuffers();
         persistSettings(frame, now, false);
         if (lastFrame) break;

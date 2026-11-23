@@ -5,6 +5,7 @@
 //
 // 用法：test_settings <临时目录>（测试开始时清空该目录）
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -98,6 +99,10 @@ st::Settings everythingChanged() {
     s.keys[Command::CameraBack] = {in::Key::K, in::Key::Down};
     s.keys[Command::CameraBoost] = {in::Key::LeftAlt, in::Key::Unknown};
     s.keys[Command::AppFullscreen] = {in::Key::F10, in::Key::F11};
+    s.keys[Command::SimPlayPause] = {in::Key::P, in::Key::Unknown};
+    s.keys[Command::SimStep] = {in::Key::N, in::Key::Unknown};
+    s.keys[Command::SimReset] = {in::Key::Backspace, in::Key::Unknown};
+    s.ui.recentScenes = {"/data/scenes/b.terra-scene.json", "/data/scenes/a.terra-scene.json"};
     return s;
 }
 
@@ -149,7 +154,7 @@ void testRoundTrip() {
           "界面缩放：数字或 \"auto\"");
     check(text.find("\"camera.forward\": [\n      \"I\",\n      \"\"\n    ]") != std::string::npos,
           "按键写成键名数组，空槽位为空字符串");
-    check(text.rfind("{\n  \"version\": 1,", 0) == 0 && text.back() == '\n', "以 version 开头、以换行结尾");
+    check(text.rfind("{\n  \"version\": 2,", 0) == 0 && text.back() == '\n', "以 version 开头、以换行结尾（M2-08 起为版本 2）");
 }
 
 void testPartialAndInvalidFields() {
@@ -260,7 +265,7 @@ void testKeys() {
               "未知键名 → 该操作用默认按键");
         check(k[Command::CameraLeft] == st::KeySlots{in::Key::A, in::Key::Left} && contains(r.warnings, "保留键"),
               "保留键 Esc → 该操作用默认按键");
-        check(k[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Space} && contains(r.warnings, "keys.camera.up：应为"),
+        check(k[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Unknown} && contains(r.warnings, "keys.camera.up：应为"),
               "不是数组 → 默认按键");
         check(contains(r.warnings, "未知字段 keys.camera.dance"), "未知操作：警告");
         check(r.warnings.size() == 4, "共 4 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
@@ -355,6 +360,57 @@ void testFiles(const fs::path& dir) {
           "load 返回字段级警告");
 }
 
+// M2-08：仿真操作、版本 1 → 2 的按键迁移、最近打开的场景
+void testSimulationSettings() {
+    const st::Settings d;
+    check(d.keys[Command::SimPlayPause] == st::KeySlots{in::Key::Space, in::Key::Unknown} &&
+              d.keys[Command::SimStep] == st::KeySlots{in::Key::Period, in::Key::Unknown} &&
+              d.keys[Command::SimReset] == st::KeySlots{in::Key::Unknown, in::Key::Unknown},
+          "默认：空格播放 / 暂停，句号单步，重置不绑定单键");
+    check(d.keys[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Unknown}, "版本 2 默认：camera.up 只有 E");
+    check(st::kVersion == 2 && st::commandName(Command::SimPlayPause) == std::string{"sim.playPause"}, "版本 2；操作名 sim.playPause");
+
+    // 版本 1 的文件：camera.up 仍为旧默认（E、空格）→ 迁移，空格归 sim.playPause
+    {
+        const auto r = st::fromJson(R"({"version": 1, "keys": {"camera.up": ["E", "Space"]}})");
+        check(r.settings.keys[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Unknown} &&
+                  r.settings.keys[Command::SimPlayPause][0] == in::Key::Space && contains(r.warnings, "设置文件版本 1"),
+              "版本 1 迁移：空格改给播放 / 暂停\n" + joined(r.warnings));
+    }
+    // 版本 1 但用户改过 camera.up：不迁移；空格冲突按操作顺序处理（camera.up 在前，播放 / 暂停的空格被清空）
+    {
+        const auto r = st::fromJson(R"({"version": 1, "keys": {"camera.up": ["Space", "E"]}})");
+        check(r.settings.keys[Command::CameraUp] == st::KeySlots{in::Key::Space, in::Key::E} &&
+                  r.settings.keys[Command::SimPlayPause][0] == in::Key::Unknown && !contains(r.warnings, "设置文件版本 1") &&
+                  contains(r.warnings, "同时用于 camera.up 与 sim.playPause"),
+              "用户自定义的按键不迁移\n" + joined(r.warnings));
+    }
+    // 版本 2 的文件写了 camera.up [E, Space]：用户的选择，不迁移
+    {
+        const auto r = st::fromJson(R"({"version": 2, "keys": {"camera.up": ["E", "Space"]}})");
+        check(r.settings.keys[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Space} && !contains(r.warnings, "设置文件版本 1"),
+              "版本 2 不迁移");
+    }
+
+    // 最近打开的场景
+    st::InterfaceSettings ui;
+    for (int i = 0; i < 10; ++i) st::rememberScene(ui, "/s/" + std::to_string(i) + ".json");
+    check(ui.recentScenes.size() == st::InterfaceSettings::kMaxRecentScenes && ui.recentScenes.front() == "/s/9.json" &&
+              ui.recentScenes.back() == "/s/2.json",
+          "最多 8 个，最新的在前");
+    st::rememberScene(ui, "/s/5.json");
+    check(ui.recentScenes.front() == "/s/5.json" && ui.recentScenes.size() == 8 &&
+              std::count(ui.recentScenes.begin(), ui.recentScenes.end(), "/s/5.json") == 1,
+          "再次打开：移到最前，不重复");
+    st::rememberScene(ui, "");
+    check(ui.recentScenes.front() == "/s/5.json", "空路径不记录");
+    const auto bad = st::fromJson(R"({"version": 2, "interface": {"recentScenes": ["/a.json", 3, "", "/b.json"]}})");
+    check(bad.settings.ui.recentScenes == std::vector<std::string>{"/a.json", "/b.json"} && contains(bad.warnings, "recentScenes"),
+          "recentScenes 中不是路径的项被忽略并警告");
+    const auto notArray = st::fromJson(R"({"version": 2, "interface": {"recentScenes": "/a.json"}})");
+    check(notArray.settings.ui.recentScenes.empty() && contains(notArray.warnings, "recentScenes"), "recentScenes 不是数组");
+}
+
 void testDefaultPath() {
     check(st::defaultPath("/xdg", "/home/u") == "/xdg/eai-terra/settings.json", "XDG_CONFIG_HOME 优先");
     check(st::defaultPath("/xdg/", "/home/u") == "/xdg/eai-terra/settings.json", "XDG_CONFIG_HOME 末尾斜杠");
@@ -382,6 +438,7 @@ int main(int argc, char** argv) {
     testKeys();
     testFiles(dir);
     testDefaultPath();
+    testSimulationSettings();
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;
 }

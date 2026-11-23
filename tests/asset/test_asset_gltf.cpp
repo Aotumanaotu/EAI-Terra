@@ -358,7 +358,8 @@ void testRealAssets() {
 // M2-07：节点表、按名字或下标查找节点、子树与两种对齐方式（夹具 assets/tests/scene/cart.gltf）
 r::Matrix4 identity4() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
 
-std::array<double, 3> apply(const r::Matrix4& m, double x, double y, double z) {
+// 双精度版本；不与上面单精度的 apply 重载（整数实参时两者同样匹配，会产生歧义）
+std::array<double, 3> transformPoint(const r::Matrix4& m, double x, double y, double z) {
     return {m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]};
 }
 
@@ -386,19 +387,19 @@ void testNodes(const fs::path& dir) {
     const auto node = a::subtreeTransforms(asset, 0, a::NodeFrame::Node);
     check(node.size() == 1 && node[0].first == 0, "Chassis 子树只有车身一个实例");
     if (node.size() == 1) {
-        const auto o = apply(node[0].second, 0, 0, 0);
-        const auto c = apply(node[0].second, 0.5, 0.5, 0.5);
+        const auto o = transformPoint(node[0].second, 0, 0, 0);
+        const auto c = transformPoint(node[0].second, 0.5, 0.5, 0.5);
         check(near(o[0], 0) && near(o[1], 0) && near(o[2], 0), "Node 对齐：原点在绑定框架原点（节点的平移被去掉）");
         check(near(c[0], 0.21) && near(c[1], -0.11) && near(c[2], 0.06), "Node 对齐：缩放保留并换算到 Z 向上");
     }
     const auto assembly = a::subtreeTransforms(asset, 0, a::NodeFrame::Assembly);
     if (assembly.size() == 1) {
-        const auto o = apply(assembly[0].second, 0, 0, 0);
+        const auto o = transformPoint(assembly[0].second, 0, 0, 0);
         check(near(o[0], 1) && near(o[1], 0) && near(o[2], 0), "Assembly 对齐：保留装配位置 (1, 0, 0)");
     }
     const auto mast = a::subtreeTransforms(asset, 2, a::NodeFrame::Assembly);
     if (mast.size() == 1) {
-        const auto o = apply(mast[0].second, 0, 0, 0);
+        const auto o = transformPoint(mast[0].second, 0, 0, 0);
         check(near(o[0], 0) && near(o[1], -0.6) && near(o[2], 0.2), "Mast 的装配位置：glTF (0, 0.2, 0.6) → Terra (0, −0.6, 0.2)");
     }
     check(a::subtreeTransforms(asset, -1, a::NodeFrame::Node).size() == 2, "root = −1：整个文件");

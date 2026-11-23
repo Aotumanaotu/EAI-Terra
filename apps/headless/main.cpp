@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <exception>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "terra/physics/mujoco/backend_info.hpp"
 #include "terra/physics/mujoco/mujoco_backend.hpp"
 #include "terra/physics/physics_world.hpp"
+#include "terra/scene/scene.hpp"
 
 namespace {
 
@@ -81,15 +83,29 @@ int run(const RunOptions& options) {
     }
 
     // 唯一与具体后端相关的调用；之后只通过 PhysicsWorld 接口使用世界。
-    physics::LoadResult loaded = terra::physics::mujoco::loadWorld(terra::data::ModelSource{options.modelPath});
-    for (const std::string& warning : loaded.warnings) {
-        diagnose("模型警告：" + warning);
+    std::unique_ptr<physics::PhysicsWorld> owned;
+    if (!options.scenePath.empty()) {
+        // 场景文件（M2-08）：由 terra_scene 组合模型实例，只跑物理；视觉绑定只检查文件是否存在
+        auto scene = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
+        for (const auto& issue : scene.issues) {
+            const bool error = issue.severity == terra::scene::SceneIssue::Severity::Error;
+            diagnose(std::string{error ? "场景错误 " : "场景警告 "} + issue.where + (issue.where.empty() ? "" : "：") +
+                     (issue.instance.empty() ? std::string{} : "[" + issue.instance + "] ") + issue.message);
+        }
+        if (!scene.ok()) return kExitModel;
+        owned = std::move(scene.scene->world);
+    } else {
+        physics::LoadResult loaded = terra::physics::mujoco::loadWorld(terra::data::ModelSource{options.modelPath});
+        for (const std::string& warning : loaded.warnings) {
+            diagnose("模型警告：" + warning);
+        }
+        if (loaded.error) {
+            diagnose(loaded.error->message);
+            return loaded.error->kind == physics::LoadErrorKind::Internal ? kExitInternal : kExitModel;
+        }
+        owned = std::move(loaded.world);
     }
-    if (loaded.error) {
-        diagnose(loaded.error->message);
-        return loaded.error->kind == physics::LoadErrorKind::Internal ? kExitInternal : kExitModel;
-    }
-    physics::PhysicsWorld& world = *loaded.world;
+    physics::PhysicsWorld& world = *owned;
 
     ResolvedRun resolved;
     resolved.modelPath = world.description().sourcePath;

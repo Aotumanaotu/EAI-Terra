@@ -1,6 +1,6 @@
 # M1-02 渲染依赖源码锁定
 
-> 状态：**待验收**。GLFW、GLM 与 glad 生成器按版本 + sha256 锁定；glad 生成的 OpenGL 4.5 core 加载代码已提交并经基线机器复核一致；新增 `TERRA_BUILD_RENDER` 选项（默认关闭）与渲染依赖探针。基线机器（2026-11-19）全部通过：渲染关闭 35/35，渲染开启 Debug 与 Release + `-Werror` 均 36/36，真实 GPU 探针通过（第 6.2 节）。
+> 状态：**已验收**（M1-11，2026-11-23 用户评审通过）。GLFW、GLM 与 glad 生成器按版本 + sha256 锁定；glad 生成的 OpenGL 4.5 core 加载代码已提交并经基线机器复核一致；新增 `TERRA_BUILD_RENDER` 选项（默认关闭）与渲染依赖探针。基线机器（2026-11-19）全部通过：渲染关闭 35/35，渲染开启 Debug 与 Release + `-Werror` 均 36/36，真实 GPU 探针通过（第 6.2 节）。
 
 ## 1. 锁定的依赖（`third_party/render/render.lock`）
 

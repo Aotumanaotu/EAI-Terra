@@ -1,6 +1,6 @@
 # M1-01 图形环境与 OpenGL 最低版本
 
-> 状态：**待验收**。两次采集（2026-11-19）确认：桌面默认、NVIDIA PRIME 与 Xvfb + llvmpipe 三种情况的 OpenGL core 版本均 ≥ 4.5。按第 3 节的判定标准，**OpenGL 最低版本定为 4.5 core**（D-021），**自动化图形测试采用 Xvfb + Mesa llvmpipe**（D-022）。
+> 状态：**已验收**（M1-11，2026-11-23 用户评审通过）。两次采集（2026-11-19）确认：桌面默认、NVIDIA PRIME 与 Xvfb + llvmpipe 三种情况的 OpenGL core 版本均 ≥ 4.5。按第 3 节的判定标准，**OpenGL 最低版本定为 4.5 core**（D-021），**自动化图形测试采用 Xvfb + Mesa llvmpipe**（D-022）。
 
 ## 1. 目的
 

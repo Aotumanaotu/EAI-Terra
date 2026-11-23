@@ -6,7 +6,7 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0 已完成，M1 进行中（Pre-Alpha）。M1-01～M1-04、M1-06、M1-07、M1-12、M1-13 已完成基线验证、待验收：平台、输入、OpenGL 渲染核心、相机控制、显示模式与中英文编辑器界面均已实现；材质、资产加载和设置持久化尚未实现。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+> 项目状态：M0、M1 已完成，M2 准备中（Pre-Alpha）。M1 自研基础渲染器已于 2026-11-23 验收：编辑器式查看器、PBR 材质与光照（阴影、基于图像的光照）、glTF 资产、设置持久化、参考图与帧耗时基线；渲染尚未接入物理（M2）。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
 </div>
 
@@ -117,7 +117,7 @@ EAI Terra **不依赖 Unity 或 Unreal Engine 作为运行时引擎**。项目�
 ## 7. 开发路线图
 
 - [x] **M0 · 基础工程与物理集成**（2026-11-19 验收）：验证并锁定 MuJoCo 官方库，加载 MJCF，完成 Headless 固定步进、状态输出、Terra Physics 适配及自动化验收。
-- [ ] **M1 · 自研基础渲染器**：使用 OpenGL 建立窗口、相机、基础网格、材质与光照，保持渲染可独立运行。
+- [x] **M1 · 自研基础渲染器**（2026-11-23 验收）：OpenGL 4.5 窗口与编辑器式界面、相机、PBR 材质与光照、glTF 资产、设置持久化、参考图与帧耗时基线；渲染可独立运行。
 - [ ] **M2 · 状态同步与场景系统**：通过 Terra 快照驱动渲染，建立稳定实体 ID、场景实例与物理/视觉资源映射。
 - [ ] **M3 · 机器人模型及运动仿真**：加载参考机器人，验证连杆、关节、执行器控制和可重复运动。
 - [ ] **M4 · 传感器与 ROS2 接口**：验证首批 IMU、RGB/深度和时间语义，提供可选 ROS2 状态与控制桥接；按需扩展其他传感器。
@@ -177,26 +177,29 @@ build/debug/apps/headless/terra_headless --model assets/tests/falling_cube.xml -
 渲染（M1 起，可选；默认关闭，不影响上面的物理构建）：
 
 ```bash
-scripts/render/fetch.sh          # 下载并校验 GLFW、GLM（版本见 third_party/render/render.lock）
+scripts/render/fetch.sh          # 下载并校验 GLFW、GLM、Dear ImGui（版本见 third_party/render/render.lock）
 scripts/render/build.sh          # 构建 GLFW 静态库到 third_party/render/install
-cmake --preset render-debug && cmake --build --preset render-debug && ctest --preset render-debug
+scripts/assets/fetch_hdri.sh && scripts/assets/fetch_models.sh   # Poly Haven 的 HDRI 与 glTF 资产（CC0，可选）
+cmake --preset render-release && cmake --build --preset render-release && ctest --preset render-release
+build/render-release/apps/viewer/terra_viewer     # 编辑器式查看器（M1 演示场景，尚未接入物理）
 ```
 
 图形测试带 `graphics` 标签，固定在 Xvfb + Mesa llvmpipe 上运行（需要 `xvfb`）。
 
-完整复现 M0 验收（三种构建配置的全量测试、变异测试、场景判定、重复运行、依赖检查与性能基线，约数分钟）：
+完整复现 M0 验收（三种构建配置的全量测试、变异测试、场景判定、重复运行、依赖检查与性能基线，约数分钟）；M1 验收（含 M0 回归、全部变异测试、真实 GPU 自检与帧耗时，需在桌面会话中运行，约 8 分钟）：
 
 ```bash
 bash scripts/verify/m0_acceptance.sh
+bash scripts/verify/m1_acceptance.sh
 ```
 
-说明与验证记录见 [`docs/validation/`](docs/validation/)，M0 汇总见 [M0-09 验收报告](docs/validation/M0-09-acceptance.md)。
+说明与验证记录见 [`docs/validation/`](docs/validation/)；阶段汇总见 [M0-09](docs/validation/M0-09-acceptance.md) 与 [M1-11](docs/validation/M1-11-acceptance.md) 验收报告。
 
 ## 10. 当前状态
 
-**M0（基础工程与 MuJoCo Headless 物理集成）已于 2026-11-19 完成验收**，下一阶段为 M1。已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；立方体主场景与辅助用例在基线机器上通过，数值容差已冻结。无图形界面，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
+**M0（基础工程与 MuJoCo Headless 物理集成）已于 2026-11-19 完成验收；M1（自研基础渲染器）已于 2026-11-23 完成验收。**已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；OpenGL 4.5 渲染器（PBR、阴影、基于图像的光照、4× MSAA、AgX 色调映射）、glTF 资产加载、独立输入系统、编辑器式中英文界面、显示模式、JSON 设置持久化、参考图测试与帧耗时基线。渲染与物理尚未连接，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
 
-近期第一优先级：评审 M1-01～M1-04、M1-06、M1-07、M1-12、M1-13；随后实现 M1-14 设置与持久化，再推进网格材质和资产加载。
+近期第一优先级：评审 M2 任务分解草案（[开发计划](docs/planning/DEVELOPMENT_PLAN.md)第 9 节）——场景格式、多模型实例、几何体描述、快照驱动渲染与 MuJoCo 致命错误接管。
 
 ### 规划文档入口
 

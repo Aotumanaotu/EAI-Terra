@@ -1,0 +1,155 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "EAI Terra 测试夹具（M2-05/07）"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0,
+    2
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "Chassis",
+   "translation": [
+    1.0,
+    0,
+    0
+   ],
+   "children": [
+    1
+   ]
+  },
+  {
+   "name": "ChassisBody",
+   "mesh": 0,
+   "scale": [
+    0.42,
+    0.12,
+    0.22
+   ]
+  },
+  {
+   "name": "Mast",
+   "translation": [
+    0,
+    0.2,
+    0.6
+   ],
+   "children": [
+    3
+   ]
+  },
+  {
+   "name": "MastBody",
+   "mesh": 1,
+   "scale": [
+    0.03,
+    0.22,
+    0.03
+   ]
+  }
+ ],
+ "meshes": [
+  {
+   "name": "chassis_box",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0
+     },
+     "indices": 1,
+     "material": 0
+    }
+   ]
+  },
+  {
+   "name": "mast_box",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0
+     },
+     "indices": 1,
+     "material": 1
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "blue",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.1,
+     0.3,
+     0.8,
+     1
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.6
+   }
+  },
+  {
+   "name": "steel",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.8,
+     0.8,
+     0.8,
+     1
+    ],
+    "metallicFactor": 1.0,
+    "roughnessFactor": 0.3
+   }
+  }
+ ],
+ "buffers": [
+  {
+   "byteLength": 168,
+   "uri": "data:application/octet-stream;base64,AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAACAAEAAAADAAIABAAFAAYABAAGAAcAAAABAAUAAAAFAAQAAgADAAcAAgAHAAYAAQACAAYAAQAGAAUAAAAEAAcAAAAHAAMA"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 96,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 96,
+   "byteLength": 72,
+   "target": 34963
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 8,
+   "type": "VEC3",
+   "min": [
+    -0.5,
+    -0.5,
+    -0.5
+   ],
+   "max": [
+    0.5,
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5123,
+   "count": 36,
+   "type": "SCALAR"
+  }
+ ]
+}

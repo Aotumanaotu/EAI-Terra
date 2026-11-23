@@ -11,7 +11,7 @@
 #      渲染开启 Debug 与 Release + -Werror（57 项，含三张参考图）；ASan/UBSan；M1-15 变异 5 个
 #   6. M1 历次变异：M1-03/04、06、07、12、13、14、08a、08b、09、10 各脚本 --mutation-only（共 55 个）
 #   7. 渲染开启重复运行：Release 全量 CTest 每项至多 3 次（--repeat until-fail:3），检查偶发失败
-#   8. 依赖边界：terra_headless、terra_bench 不链接任何图形库；terra_viewer、terra_render_bench 不链接 MuJoCo；
+#   8. 依赖边界：terra_headless、terra_bench 不链接任何图形库；terra_render_bench 不链接 MuJoCo（M2 起查看器按设计链接物理）；
 #      渲染侧模块（render、asset、ui、view、platform、input、settings、viewer、bench_render）的 CMake 与源码不引用物理模块
 #      （terra_data 的几何类型是与后端无关的数据契约，允许使用，例如相机用 terra/data/geometry.hpp）
 #   9. 真实 GPU：查看器 40 帧自检；帧耗时基线 5 组（只记录，不判定）
@@ -165,7 +165,8 @@ done
 record "Headless 无图形库" "$([ $bad = 0 ] && echo "terra_headless、terra_bench 均无图形库" || echo "存在图形库或程序缺失（见 $logs/ldd.txt）")" \
     "$([ $bad = 0 ] && echo 1 || echo 0)"
 bad=0
-for bin in build/render-release/apps/viewer/terra_viewer build/render-release/apps/bench_render/terra_render_bench; do
+# M2-07 起 terra_viewer 按设计链接物理后端（开发计划 9.5 节第 7 条），这里只检查渲染基准程序
+for bin in build/render-release/apps/bench_render/terra_render_bench; do
     if [ ! -x "$bin" ]; then echo "$bin 不存在" >>"$logs/ldd.txt"; bad=1; continue; fi
     { echo "== $bin"; ldd "$bin"; } >>"$logs/ldd.txt" 2>&1
     if ldd "$bin" | grep -q "libmujoco"; then
@@ -173,7 +174,7 @@ for bin in build/render-release/apps/viewer/terra_viewer build/render-release/ap
         bad=1
     fi
 done
-record "渲染程序无 MuJoCo" "$([ $bad = 0 ] && echo "terra_viewer、terra_render_bench 均不链接 libmujoco" || echo "存在 MuJoCo 依赖或程序缺失（见 $logs/ldd.txt）")" \
+record "渲染程序无 MuJoCo" "$([ $bad = 0 ] && echo "terra_render_bench 不链接 libmujoco（M2 起查看器按设计链接物理）" || echo "存在 MuJoCo 依赖或程序缺失（见 $logs/ldd.txt）")" \
     "$([ $bad = 0 ] && echo 1 || echo 0)"
 render_side=(engine/render engine/asset engine/ui engine/view engine/platform engine/input engine/settings apps/viewer apps/bench_render)
 grep -rnE "terra::physics|terra_physics|mujoco|terra/physics/" "${render_side[@]}" >"$logs/render_physics_refs.txt" 2>&1

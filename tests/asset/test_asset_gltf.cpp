@@ -5,6 +5,7 @@
 //
 // 用法：test_asset_gltf <临时目录>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -353,6 +354,79 @@ void testRealAssets() {
 
 }  // namespace
 
+
+// M2-07：节点表、按名字或下标查找节点、子树与两种对齐方式（夹具 assets/tests/scene/cart.gltf）
+r::Matrix4 identity4() { return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}; }
+
+std::array<double, 3> apply(const r::Matrix4& m, double x, double y, double z) {
+    return {m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]};
+}
+
+void testNodes(const fs::path& dir) {
+    const auto loaded = a::loadGltf(std::string{TERRA_ASSETS_DIR} + "/tests/scene/cart.gltf");
+    check(loaded.asset.has_value() && !loaded.hasErrors(), "加载 cart.gltf\n" + loaded.summary());
+    if (!loaded.asset) return;
+    const a::Asset& asset = *loaded.asset;
+    check(asset.nodes.size() == 4, "4 个节点");
+    if (asset.nodes.size() != 4) return;
+    check(asset.nodes[0].name == "Chassis" && asset.nodes[0].parent == -1 && asset.nodes[1].parent == 0 && asset.nodes[3].parent == 2,
+          "节点名与父子关系与文件一致");
+    check(asset.instances.size() == 2 && asset.instances[0].nodeIndex == 1 && asset.instances[1].nodeIndex == 3, "实例记录所在节点");
+
+    std::string error;
+    check(a::findNode(asset, "Chassis", error) == 0 && error.empty(), "按名字找到 Chassis");
+    check(a::findNode(asset, "#2", error) == 2, "按下标 #2 找到 Mast");
+    check(a::findNode(asset, "Wheel", error) == -1 && error.find("找不到节点") != std::string::npos && error.find("Chassis") != std::string::npos,
+          "找不到时列出文件中的节点：" + error);
+    check(a::findNode(asset, "#9", error) == -1 && error.find("超出范围") != std::string::npos, "下标超出范围");
+    check(a::findNode(asset, "#x", error) == -1 && error.find("#数字") != std::string::npos, "下标写法不对");
+    check(a::inSubtree(asset.nodes, 1, 0) && a::inSubtree(asset.nodes, 0, 0) && !a::inSubtree(asset.nodes, 3, 0), "子树判断");
+
+    // Node 对齐：去掉 Chassis 的平移 (1, 0, 0)，只剩车身的缩放；glTF (x, y, z) → Terra (x, −z, y)
+    const auto node = a::subtreeTransforms(asset, 0, a::NodeFrame::Node);
+    check(node.size() == 1 && node[0].first == 0, "Chassis 子树只有车身一个实例");
+    if (node.size() == 1) {
+        const auto o = apply(node[0].second, 0, 0, 0);
+        const auto c = apply(node[0].second, 0.5, 0.5, 0.5);
+        check(near(o[0], 0) && near(o[1], 0) && near(o[2], 0), "Node 对齐：原点在绑定框架原点（节点的平移被去掉）");
+        check(near(c[0], 0.21) && near(c[1], -0.11) && near(c[2], 0.06), "Node 对齐：缩放保留并换算到 Z 向上");
+    }
+    const auto assembly = a::subtreeTransforms(asset, 0, a::NodeFrame::Assembly);
+    if (assembly.size() == 1) {
+        const auto o = apply(assembly[0].second, 0, 0, 0);
+        check(near(o[0], 1) && near(o[1], 0) && near(o[2], 0), "Assembly 对齐：保留装配位置 (1, 0, 0)");
+    }
+    const auto mast = a::subtreeTransforms(asset, 2, a::NodeFrame::Assembly);
+    if (mast.size() == 1) {
+        const auto o = apply(mast[0].second, 0, 0, 0);
+        check(near(o[0], 0) && near(o[1], -0.6) && near(o[2], 0.2), "Mast 的装配位置：glTF (0, 0.2, 0.6) → Terra (0, −0.6, 0.2)");
+    }
+    check(a::subtreeTransforms(asset, -1, a::NodeFrame::Node).size() == 2, "root = −1：整个文件");
+
+    // 求逆
+    r::Matrix4 m = identity4();
+    m[0] = 2;
+    m[5] = 4;
+    m[10] = 0.5f;
+    m[12] = 3;
+    m[13] = -1;
+    const r::Matrix4 product = a::multiply(a::invertAffine(m), m);
+    bool isIdentity = true;
+    for (std::size_t i = 0; i < 16; ++i) isIdentity = isIdentity && near(product[i], identity4()[i], 1e-6);
+    check(isIdentity, "仿射矩阵求逆");
+
+    // 名字重复的节点：要求改用下标
+    writeText(dir / "dup.gltf", R"({"asset": {"version": "2.0"}, "nodes": [{"name": "Wheel"}, {"name": "Wheel"}], "scenes": [{"nodes": [0, 1]}]})");
+    const auto dup = a::loadGltf((dir / "dup.gltf").string());
+    if (dup.asset) {
+        check(a::findNode(*dup.asset, "Wheel", error) == -1 && error.find("出现 2 次") != std::string::npos && error.find("#0") != std::string::npos,
+              "节点名重复：报错并提示 “#下标”：" + error);
+        check(a::findNode(*dup.asset, "#1", error) == 1, "重复时可用下标");
+    } else {
+        check(false, "加载 dup.gltf\n" + dup.summary());
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "用法：test_asset_gltf <临时目录>\n");
@@ -367,6 +441,7 @@ int main(int argc, char** argv) {
     testGlb(dir);
     testArm(dir);
     testRealAssets();
+    testNodes(dir);
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;
 }

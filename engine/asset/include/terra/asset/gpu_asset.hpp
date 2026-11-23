@@ -20,6 +20,9 @@ public:
     // placement：整个资产在 Terra 世界中的摆放（先应用资产自身的实例变换）。
     // armOcclusion 为假时，不使用按 ARM 约定推断出的遮蔽贴图（显式声明的遮蔽贴图不受影响）。
     std::vector<terra::render::RenderItem> items(const terra::render::Matrix4& placement, bool armOcclusion = true) const;
+    // 节点子树（M2-07）：root 为 -1 时取整个文件。模型矩阵 = placement × bindingBase(root, frame) × 实例的 glTF 世界矩阵。
+    std::vector<terra::render::RenderItem> subtreeItems(const terra::render::Matrix4& placement, int root, NodeFrame frame,
+                                                        bool armOcclusion = true) const;
 
     int textureCount() const noexcept { return static_cast<int>(textures_.size()); }
     int meshCount() const noexcept { return static_cast<int>(meshes_.size()); }
@@ -30,7 +33,10 @@ private:
         terra::render::Material material;
         terra::render::Matrix4 transform{};
         bool occlusionFromArm = false;
+        int node = -1;                        // 所在节点（M2-07）
+        terra::render::Matrix4 nodeWorld{};   // 节点的 glTF 世界矩阵
     };
+    std::vector<AssetNode> nodes_;
     std::vector<terra::render::Texture2D> textures_;
     std::vector<terra::render::GpuMesh> meshes_;
     std::vector<Part> parts_;

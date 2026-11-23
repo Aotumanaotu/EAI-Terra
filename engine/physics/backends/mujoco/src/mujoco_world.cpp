@@ -165,6 +165,37 @@ std::string solverName(int solver) {
     }
 }
 
+// 组合世界中的名字（M2-04）：按前缀确定所属实例。组合前，后端给没有名字的 body 与几何体起了临时名字
+// （kHiddenNameMark 开头），使每个元素都能按前缀归属；对外显示时去掉，仍为空名字，与 M0 一致。
+constexpr const char* kHiddenNameMark = "__terra_unnamed_";
+
+class InstanceNames {
+public:
+    explicit InstanceNames(std::vector<std::string> prefixes) : prefixes_(std::move(prefixes)) {}
+
+    // 最长前缀匹配；只有一个实例时都属于它（单模型加载，前缀为空）。
+    ModelInstanceId instanceOf(const std::string& raw) const {
+        if (prefixes_.size() == 1) return ModelInstanceId{1};
+        std::size_t best = 0;
+        std::size_t bestLength = 0;
+        for (std::size_t i = 0; i < prefixes_.size(); ++i) {
+            const std::string& p = prefixes_[i];
+            if (!p.empty() && p.size() >= bestLength && raw.compare(0, p.size(), p) == 0) {
+                best = i + 1;
+                bestLength = p.size();
+            }
+        }
+        return ModelInstanceId{static_cast<std::uint32_t>(best)};
+    }
+
+    static std::string visible(const std::string& raw) {
+        return raw.find(kHiddenNameMark) != std::string::npos ? std::string{} : raw;
+    }
+
+private:
+    std::vector<std::string> prefixes_;
+};
+
 GeomShape shapeOf(int type) {
     switch (type) {
         case mjGEOM_PLANE: return GeomShape::Plane;
@@ -180,7 +211,7 @@ GeomShape shapeOf(int type) {
 
 // 几何体与网格描述（M2-03）。颜色规则与 MuJoCo 自带查看器相同（engine_vis_visualize.c 的 setMaterial）：
 // 用了材质时取材质颜色，但几何体颜色不是默认值（0.5, 0.5, 0.5, 1）时以几何体颜色为准。
-void describeGeometry(const mjModel* m, const std::vector<EntityId>& bodyToEntity, ModelInstanceId instance,
+void describeGeometry(const mjModel* m, const std::vector<EntityId>& bodyToEntity, const InstanceNames& names,
                       terra::data::ModelDescription& desc) {
     const int nmesh = static_cast<int>(m->nmesh);
     desc.meshes.reserve(static_cast<std::size_t>(nmesh));
@@ -211,9 +242,10 @@ void describeGeometry(const mjModel* m, const std::vector<EntityId>& bodyToEntit
         const auto gi = static_cast<std::size_t>(g);
         terra::data::GeomDescription geom;
         geom.id = GeomId{static_cast<std::uint32_t>(g + 1)};
-        geom.name = nameOf(m, mjOBJ_GEOM, g);
+        const std::string raw = nameOf(m, mjOBJ_GEOM, g);
+        geom.name = InstanceNames::visible(raw);
         geom.entity = bodyToEntity[static_cast<std::size_t>(m->geom_bodyid[g])];
-        geom.modelInstance = instance;
+        geom.modelInstance = names.instanceOf(raw);
         geom.shape = shapeOf(m->geom_type[g]);
         const mjtNum* size = m->geom_size + 3 * gi;
         geom.size = {size[0], size[1], size[2]};
@@ -470,6 +502,16 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         result.warnings.emplace_back(message.data());
     }
 
+    // 直接加载单个 MJCF：唯一的模型实例，名字为空（不加前缀），放置位姿为单位变换（M2-03）。
+    BuildInput input;
+    input.sourcePath = path.string();
+    input.instances.push_back({ModelInstanceId{1}, std::string{}, path.string(), terra::data::Pose{}});
+    input.prefixes.emplace_back();
+    return build(model.release(), input, std::move(result));
+}
+
+LoadResult MujocoWorld::build(mjModel* rawModel, const BuildInput& inputs, LoadResult result) {
+    ModelPtr model{rawModel};
     const mjtNum timestep = model->opt.timestep;
     if (!std::isfinite(timestep) || timestep <= 0) {
         return failure(LoadErrorKind::InvalidModel, "模型步长无效：" + std::to_string(timestep));
@@ -494,8 +536,10 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
 
     auto impl = std::make_unique<Impl>();
     terra::data::ModelDescription& desc = impl->description;
-    desc.sourcePath = path.string();
+    desc.sourcePath = inputs.sourcePath;
     desc.timestep = timestep;
+    desc.modelInstances = inputs.instances;
+    const InstanceNames names{inputs.prefixes};
     desc.settings.gravity = {model->opt.gravity[0], model->opt.gravity[1], model->opt.gravity[2]};
     desc.settings.integrator = integratorName(model->opt.integrator);
     desc.settings.solver = solverName(model->opt.solver);
@@ -513,8 +557,9 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         const EntityId id{static_cast<std::uint32_t>(desc.entities.size() + 1)};
         bodyToEntity[static_cast<std::size_t>(b)] = id;
         const int parentBody = model->body_parentid[b];
-        desc.entities.push_back({id, nameOf(model.get(), mjOBJ_BODY, b),
-                                 bodyToEntity[static_cast<std::size_t>(parentBody)], ModelInstanceId{1}});
+        const std::string raw = nameOf(model.get(), mjOBJ_BODY, b);
+        desc.entities.push_back({id, InstanceNames::visible(raw), bodyToEntity[static_cast<std::size_t>(parentBody)],
+                                 names.instanceOf(raw)});
         impl->entityToBody.push_back(b);
     }
 
@@ -592,9 +637,7 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         desc.actuators.push_back(std::move(act));
     }
 
-    // 直接加载单个 MJCF：唯一的模型实例，名字为空（不加前缀），放置位姿为单位变换（M2-03）。
-    desc.modelInstances.push_back({ModelInstanceId{1}, std::string{}, desc.sourcePath, terra::data::Pose{}});
-    describeGeometry(model.get(), bodyToEntity, ModelInstanceId{1}, desc);
+    describeGeometry(model.get(), bodyToEntity, names, desc);
 
     // 只在加载成功时分配实例号，失败的加载不消耗编号。
     static std::atomic<std::uint64_t> nextWorldInstance{1};
@@ -736,8 +779,280 @@ std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::snapshot() cons
     return impl_->cachedSnapshot;
 }
 
+// ---- 世界组合（M2-04）----
+
+namespace {
+
+struct SpecDeleter {
+    void operator()(mjSpec* s) const noexcept { mj_deleteSpec(s); }
+};
+using SpecPtr = std::unique_ptr<mjSpec, SpecDeleter>;
+
+std::string trimmed(std::string text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) text.pop_back();
+    return text;
+}
+
+PhysicsOptions optionsOf(const mjOption& o) {
+    PhysicsOptions p;
+    p.timestep = o.timestep;
+    p.gravity = {o.gravity[0], o.gravity[1], o.gravity[2]};
+    p.integrator = integratorName(o.integrator);
+    p.solver = solverName(o.solver);
+    p.iterations = o.iterations;
+    p.tolerance = o.tolerance;
+    return p;
+}
+
+std::optional<int> integratorFromName(const std::string& name) {
+    for (const int i : {mjINT_EULER, mjINT_RK4, mjINT_IMPLICIT, mjINT_IMPLICITFAST, mjINT_DISCRETE}) {
+        if (integratorName(i) == name) return i;
+    }
+    return std::nullopt;
+}
+
+std::optional<int> solverFromName(const std::string& name) {
+    for (const int s : {mjSOL_PGS, mjSOL_CG, mjSOL_NEWTON}) {
+        if (solverName(s) == name) return s;
+    }
+    return std::nullopt;
+}
+
+// 6 项之外的全局物理设置中，与第一个实例不同的字段名（组合后一律取第一个实例的值）。
+std::vector<std::string> otherOptionDifferences(const mjSpec& a, const mjSpec& b) {
+    std::vector<std::string> fields;
+    const mjOption& x = a.option;
+    const mjOption& y = b.option;
+    const auto num = [&](const char* name, mjtNum p, mjtNum q) {
+        if (p != q) fields.emplace_back(name);
+    };
+    const auto vec = [&](const char* name, const mjtNum* p, const mjtNum* q, int n) {
+        for (int i = 0; i < n; ++i) {
+            if (p[i] != q[i]) {
+                fields.emplace_back(name);
+                return;
+            }
+        }
+    };
+    const auto integer = [&](const char* name, long long p, long long q) {
+        if (p != q) fields.emplace_back(name);
+    };
+    num("impratio", x.impratio, y.impratio);
+    num("ls_tolerance", x.ls_tolerance, y.ls_tolerance);
+    num("noslip_tolerance", x.noslip_tolerance, y.noslip_tolerance);
+    num("ccd_tolerance", x.ccd_tolerance, y.ccd_tolerance);
+    num("sleep_tolerance", x.sleep_tolerance, y.sleep_tolerance);
+    vec("wind", x.wind, y.wind, 3);
+    vec("magnetic", x.magnetic, y.magnetic, 3);
+    num("density", x.density, y.density);
+    num("viscosity", x.viscosity, y.viscosity);
+    num("o_margin", x.o_margin, y.o_margin);
+    vec("o_solref", x.o_solref, y.o_solref, mjNREF);
+    vec("o_solimp", x.o_solimp, y.o_solimp, mjNIMP);
+    vec("o_friction", x.o_friction, y.o_friction, 5);
+    integer("cone", x.cone, y.cone);
+    integer("jacobian", x.jacobian, y.jacobian);
+    integer("ls_iterations", x.ls_iterations, y.ls_iterations);
+    integer("noslip_iterations", x.noslip_iterations, y.noslip_iterations);
+    integer("ccd_iterations", x.ccd_iterations, y.ccd_iterations);
+    integer("disableflags", x.disableflags, y.disableflags);
+    integer("enableflags", x.enableflags, y.enableflags);
+    integer("disableactuator", x.disableactuator, y.disableactuator);
+    integer("sdf_initpoints", x.sdf_initpoints, y.sdf_initpoints);
+    integer("sdf_iterations", x.sdf_iterations, y.sdf_iterations);
+    integer("size/memory", a.memory, b.memory);
+    integer("size/nemax", a.nemax, b.nemax);
+    integer("size/nuserdata", a.nuserdata, b.nuserdata);
+    integer("size/njmax", a.njmax, b.njmax);
+    integer("size/nconmax", a.nconmax, b.nconmax);
+    integer("size/nstack", a.nstack, b.nstack);
+    return fields;
+}
+
+// 全局设置随第一个实例：物理选项与尺寸（编译器设置由各实例自己保留，MuJoCo 按元素所属的子模型应用）。
+void copyGlobals(mjSpec& to, const mjSpec& from) {
+    to.option = from.option;
+    to.memory = from.memory;
+    to.nemax = from.nemax;
+    to.nuserdata = from.nuserdata;
+    to.njmax = from.njmax;
+    to.nconmax = from.nconmax;
+    to.nstack = from.nstack;
+}
+
+void applyOptions(mjOption& o, const PhysicsOptions& p, int integrator, int solver) {
+    o.timestep = p.timestep;
+    o.gravity[0] = p.gravity.x;
+    o.gravity[1] = p.gravity.y;
+    o.gravity[2] = p.gravity.z;
+    o.integrator = integrator;
+    o.solver = solver;
+    o.iterations = p.iterations;
+    o.tolerance = p.tolerance;
+}
+
+// 给没有名字的 body 与几何体起临时名字，使组合后每个元素都能按实例前缀归属（显示时去掉，见 InstanceNames）。
+void nameUnnamed(mjSpec* spec, mjtObj type, const char* kind) {
+    int counter = 0;
+    for (mjsElement* e = mjs_firstElement(spec, type); e != nullptr; e = mjs_nextElement(spec, e)) {
+        const char* name = mjs_getString(mjs_getName(e));
+        if (name == nullptr || name[0] == '\0') {
+            const std::string hidden = std::string{kHiddenNameMark} + kind + std::to_string(counter++);
+            mjs_setName(e, hidden.c_str());
+        }
+    }
+}
+
+}  // namespace
+
+ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
+    configureMujocoLogging();
+    namespace fs = std::filesystem;
+    using Severity = ComposeIssue::Severity;
+    ComposeResult out;
+    const auto error = [&](int model, LoadErrorKind kind, std::string message) {
+        out.issues.push_back({Severity::Error, model, kind, std::move(message)});
+    };
+    const auto warning = [&](int model, std::string message) {
+        out.issues.push_back({Severity::Warning, model, LoadErrorKind::InvalidModel, std::move(message)});
+    };
+    const auto hasError = [&] {
+        return std::any_of(out.issues.begin(), out.issues.end(),
+                           [](const ComposeIssue& i) { return i.severity == Severity::Error; });
+    };
+    const auto& models = composition.models;
+    if (models.empty()) {
+        error(-1, LoadErrorKind::InvalidModel, "组合请求中没有模型实例");
+        return out;
+    }
+
+    // 1. 逐个解析
+    std::vector<SpecPtr> children(models.size());
+    std::vector<std::string> paths(models.size());
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        const int index = static_cast<int>(i);
+        std::error_code ec;
+        fs::path path = fs::absolute(models[i].mjcfPath, ec);
+        if (ec) path = models[i].mjcfPath;
+        path = path.lexically_normal();
+        paths[i] = path.string();
+        if (models[i].mjcfPath.empty()) {
+            error(index, LoadErrorKind::FileUnavailable, "模型路径为空");
+            continue;
+        }
+        if (std::string problem = checkFile(path); !problem.empty()) {
+            error(index, LoadErrorKind::FileUnavailable, std::move(problem));
+            continue;
+        }
+        std::array<char, 1024> message{};
+        children[i].reset(mj_parseXML(paths[i].c_str(), nullptr, message.data(), static_cast<int>(message.size())));
+        if (!children[i]) {
+            error(index, LoadErrorKind::InvalidModel,
+                  "MJCF 解析失败（" + paths[i] + "）：" + trimmed(message[0] != '\0' ? message.data() : "未知错误"));
+        } else if (message[0] != '\0') {
+            warning(index, "MJCF 解析警告（" + paths[i] + "）：" + trimmed(message.data()));
+        }
+    }
+    if (hasError()) return out;
+
+    // 2. 全局配置：6 项由场景决定，其余随第一个实例
+    std::vector<PhysicsOptions> options;
+    options.reserve(children.size());
+    for (const auto& child : children) options.push_back(optionsOf(child->option));
+    const PhysicsOptions chosen = composition.resolveOptions ? composition.resolveOptions(options) : options.front();
+    const std::optional<int> integrator = integratorFromName(chosen.integrator);
+    const std::optional<int> solver = solverFromName(chosen.solver);
+    if (!(std::isfinite(chosen.timestep) && chosen.timestep > 0)) {
+        error(-1, LoadErrorKind::InvalidModel, "全局步长无效：" + std::to_string(chosen.timestep));
+    }
+    if (!integrator) error(-1, LoadErrorKind::InvalidModel, "未知的积分器：" + chosen.integrator);
+    if (!solver) error(-1, LoadErrorKind::InvalidModel, "未知的求解器：" + chosen.solver);
+    if (!(chosen.iterations > 0)) error(-1, LoadErrorKind::InvalidModel, "求解器迭代次数无效：" + std::to_string(chosen.iterations));
+    if (!(std::isfinite(chosen.tolerance) && chosen.tolerance >= 0)) {
+        error(-1, LoadErrorKind::InvalidModel, "求解器容差无效：" + std::to_string(chosen.tolerance));
+    }
+    if (!std::isfinite(chosen.gravity.x) || !std::isfinite(chosen.gravity.y) || !std::isfinite(chosen.gravity.z)) {
+        error(-1, LoadErrorKind::InvalidModel, "重力含非有限值");
+    }
+    if (!integrator || !solver || hasError()) return out;
+
+    SpecPtr parent{mj_makeSpec()};
+    if (!parent) {
+        error(-1, LoadErrorKind::Internal, "无法创建组合模型");
+        return out;
+    }
+    copyGlobals(*parent, *children.front());
+    parent->authored = children.front()->authored;
+    applyOptions(parent->option, chosen, *integrator, *solver);
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        if (i > 0) {
+            const std::vector<std::string> fields = otherOptionDifferences(*children[i], *children.front());
+            if (!fields.empty()) {
+                std::string list;
+                for (const auto& f : fields) list += (list.empty() ? "" : "、") + f;
+                warning(static_cast<int>(i), "以下全局物理设置与第一个实例“" + models.front().instanceName +
+                                                 "”不同，组合后采用第一个实例的值：" + list);
+            }
+        }
+        // 使每个实例的全局设置与组合模型完全相同，组合时不产生属性冲突
+        copyGlobals(*children[i], *parent);
+    }
+
+    // 3. 组合：每个实例放在世界中的一个框架上
+    mjsBody* world = mjs_findBody(parent.get(), "world");
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        nameUnnamed(children[i].get(), mjOBJ_BODY, "body_");
+        nameUnnamed(children[i].get(), mjOBJ_GEOM, "geom_");
+        mjsFrame* frame = mjs_addFrame(world, nullptr);
+        const terra::data::Pose& p = models[i].placement;
+        frame->pos[0] = p.position.x;
+        frame->pos[1] = p.position.y;
+        frame->pos[2] = p.position.z;
+        frame->quat[0] = p.orientation.w;
+        frame->quat[1] = p.orientation.x;
+        frame->quat[2] = p.orientation.y;
+        frame->quat[3] = p.orientation.z;
+        if (mjs_attach(frame->element, children[i]->element, models[i].prefix.c_str(), "") == nullptr) {
+            error(static_cast<int>(i), LoadErrorKind::InvalidModel,
+                  "组合失败（" + paths[i] + "）：" + trimmed(mjs_getError(parent.get())));
+            return out;
+        }
+    }
+
+    // 4. 编译。编译期间的错误由 MuJoCo 编译器截获并返回，不会终止进程
+    ModelPtr model{mj_compile(parent.get(), nullptr)};
+    if (!model) {
+        error(-1, LoadErrorKind::InvalidModel, "组合后编译失败：" + trimmed(mjs_getError(parent.get())));
+        return out;
+    }
+    for (int k = 0; k < mjs_numWarnings(parent.get()); ++k) {
+        if (const char* text = mjs_getWarning(parent.get(), k)) warning(-1, "编译警告：" + trimmed(text));
+    }
+
+    BuildInput input;
+    input.sourcePath = composition.sourceLabel;
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        input.instances.push_back({ModelInstanceId{static_cast<std::uint32_t>(i + 1)}, models[i].instanceName, paths[i],
+                                   models[i].placement});
+        input.prefixes.push_back(models[i].prefix);
+    }
+    LoadResult built = build(model.release(), input, LoadResult{});
+    if (!built.world) {
+        const LoadError e = built.error.value_or(LoadError{LoadErrorKind::Internal, "未知错误"});
+        error(-1, e.kind, e.message);
+        return out;
+    }
+    for (auto& w : built.warnings) warning(-1, std::move(w));
+    out.world = std::move(built.world);
+    return out;
+}
+
 LoadResult loadWorld(const terra::data::ModelSource& source) {
     return MujocoWorld::load(source);
+}
+
+ComposeResult composeWorld(const WorldComposition& composition) {
+    return MujocoWorld::compose(composition);
 }
 
 }  // namespace terra::physics::mujoco

@@ -1,0 +1,7 @@
+<!-- 场景组合夹具（M2-04）：只有一块地面（世界上的静态几何），供多个实例共用；见 M2-01 设计 3.5 节。 -->
+<mujoco model="ground">
+  <option timestep="0.002" integrator="implicitfast"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+  </worldbody>
+</mujoco>

@@ -13,6 +13,7 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "terra/render/image.hpp"
@@ -63,7 +64,20 @@ struct AssetInstance {
     int mesh = -1;
     std::string node;
     terra::render::Matrix4 transform{};  // 网格坐标 → Terra 世界坐标（含 Y→Z 换算）
+    int nodeIndex = -1;                  // 所在节点（Asset::nodes 下标，M2-07）
+    terra::render::Matrix4 nodeWorld{};  // 节点在 glTF 中的世界矩阵（Y 向上，不含换算）
 };
+
+// glTF 节点（M2-07：按节点绑定到物理实体）。下标与 glTF 文件中的 nodes 数组相同。
+struct AssetNode {
+    std::string name;
+    int parent = -1;
+    terra::render::Matrix4 world{};  // glTF 中的世界矩阵（Y 向上）
+};
+
+// 绑定节点时的对齐方式（M2-01 设计第 6 节）：Node——以节点自身坐标为准（去掉节点的世界变换）；
+// Assembly——保留节点在 glTF 中的世界变换（整体装配位置）。
+enum class NodeFrame { Node, Assembly };
 
 struct Asset {
     std::string source;
@@ -71,6 +85,7 @@ struct Asset {
     std::vector<AssetMaterial> materials;
     std::vector<AssetMesh> meshes;
     std::vector<AssetInstance> instances;
+    std::vector<AssetNode> nodes;
     std::array<float, 3> boundsMin{0.0f, 0.0f, 0.0f};  // Terra 世界坐标（Z 向上）
     std::array<float, 3> boundsMax{0.0f, 0.0f, 0.0f};
     std::size_t triangleCount() const noexcept;
@@ -89,6 +104,23 @@ struct LoadOptions {
 };
 
 LoadResult loadGltf(const std::string& path, const LoadOptions& options = {});
+// 按名字或 "#下标" 查找节点（M2-07）。找不到或名字重复时返回 -1 并在 error 中说明原因。
+int findNode(const Asset& asset, const std::string& nameOrIndex, std::string& error);
+
+// node 是否在 root 的子树中（含 root 本身）
+bool inSubtree(const std::vector<AssetNode>& nodes, int node, int root);
+
+// 绑定框架的基准矩阵：Node 对齐时为 C × 节点世界⁻¹，Assembly 对齐（或 root 为 -1）时为 C
+terra::render::Matrix4 bindingBase(const std::vector<AssetNode>& nodes, int root, NodeFrame frame);
+
+// 节点子树中每个实例相对绑定框架的变换（M2-07）：返回 (实例下标, 网格坐标 → 绑定框架)。
+// 绑定框架为 Terra 坐标（Z 向上）：Node 对齐时为 C × 节点世界⁻¹ × 实例世界；Assembly 对齐时为 C × 实例世界（C 为 Y→Z 换算）。
+// root 为 -1 时取全部实例（整个文件）。
+std::vector<std::pair<int, terra::render::Matrix4>> subtreeTransforms(const Asset& asset, int root, NodeFrame frame);
+
+// 仿射矩阵求逆（线性部分可含缩放与剪切，不可奇异；奇异时返回单位矩阵）
+terra::render::Matrix4 invertAffine(const terra::render::Matrix4& m);
+
 // 文件名（不含目录）是否符合 ARM 约定：含 "_arm"（不区分大小写），如 "metal_toolbox_arm_2k.jpg"。
 bool looksLikeArmTexture(const std::string& uriOrPath);
 

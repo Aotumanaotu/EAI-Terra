@@ -21,6 +21,10 @@
 # M1-14：设置模型与 JSON 读写（settings.store，总是运行）；输入替换绑定与键位名称（input.system）；相机按键改绑（view.camera）。
 # M2-02：致命错误报告与紧急保存（core.fatal）；后端致命错误改为退出码 70（physics.backend_fatal）。
 # M2-03：几何体与网格描述（physics.geometry）。
+# M2-04：模型实例组合（scene.composition）。
+# M2-05：场景文件（scene.file）；场景实例与视觉部件（scene.instance）。
+# M2-06：仿真时钟与插值（simulation.logic）；仿真推进与帧率无关性（simulation.runner）。
+# M2-07：场景渲染参考图（graphics.render_reference.carts）；glTF 节点表与子树变换（asset.gltf）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -176,6 +180,41 @@ target_compile_definitions(test_mujoco_state PRIVATE
     TERRA_TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/work/mujoco_state")
 terra_configure_target(test_mujoco_state)
 add_test(NAME physics.mujoco_state COMMAND test_mujoco_state)
+
+# 模型实例组合（M2-04）：terra_scene 的纯逻辑（假工厂）与 MuJoCo 后端集成（前缀、归属、互不串扰、逐位相同、配置与错误）。
+add_executable(test_scene_composition scene/test_scene_composition.cpp)
+target_link_libraries(test_scene_composition PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_scene_composition PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_scene_composition)
+add_test(NAME scene.composition COMMAND test_scene_composition)
+
+# 场景文件读取与校验（M2-05）：纯逻辑，不需要物理后端。
+add_executable(test_scene_file scene/test_scene_file.cpp)
+target_link_libraries(test_scene_file PRIVATE terra::scene)
+target_compile_definitions(test_scene_file PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_scene_file)
+add_test(NAME scene.file COMMAND test_scene_file)
+
+# 场景实例与视觉部件（M2-05）：映射、隐藏规则、视觉部件世界位姿（node / assembly 对齐）、诊断。
+add_executable(test_scene_instance scene/test_scene_instance.cpp)
+target_link_libraries(test_scene_instance PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_scene_instance PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_scene_instance)
+add_test(NAME scene.instance COMMAND test_scene_instance)
+
+# 仿真时钟与快照插值（M2-06）：纯逻辑，不需要物理后端。
+add_executable(test_simulation_logic simulation/test_simulation_logic.cpp)
+target_link_libraries(test_simulation_logic PRIVATE terra::simulation)
+terra_configure_target(test_simulation_logic)
+add_test(NAME simulation.logic COMMAND test_simulation_logic)
+
+# 仿真推进（M2-06）：不同帧率与抖动下轨迹逐位相同、暂停、单步、reset 屏障、命令、故障。
+add_executable(test_simulation_runner simulation/test_simulation_runner.cpp)
+target_link_libraries(test_simulation_runner PRIVATE terra::simulation terra::scene terra::physics_mujoco)
+target_compile_definitions(test_simulation_runner PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_simulation_runner)
+add_test(NAME simulation.runner COMMAND test_simulation_runner)
 
 # 几何体与网格描述（M2-03）：形状、尺寸、局部位姿、颜色、分组、网格、模型实例。
 add_executable(test_mujoco_geometry physics/test_mujoco_geometry.cpp)
@@ -338,10 +377,12 @@ if(TERRA_BUILD_RENDER)
 
     # 参考图（M1-10）：与 tests/render/reference/ 中的 PNG 比较；带资产的场景在素材缺失时跳过（返回码 77）。
     add_executable(test_render_reference render/test_render_reference.cpp)
-    target_link_libraries(test_render_reference PRIVATE terra::viewer_scene terra::render terra::view terra::platform_glfw terra::input)
+    target_link_libraries(test_render_reference PRIVATE terra::viewer_scene terra::render terra::view terra::platform_glfw terra::input
+                                                terra::scene terra::physics_mujoco)
     target_compile_definitions(test_render_reference PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
     terra_configure_target(test_render_reference)
-    foreach(_scene procedural studio outdoor)
+    # M2-07：carts 由场景文件与物理快照驱动（MJCF 几何体 + glTF 节点绑定），不需要下载素材
+    foreach(_scene procedural studio outdoor carts)
         add_test(NAME graphics.render_reference.${_scene}
             COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_reference>
                     "${PROJECT_SOURCE_DIR}/tests/render/reference" "${CMAKE_CURRENT_BINARY_DIR}/render_reference"

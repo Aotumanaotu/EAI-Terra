@@ -1,0 +1,13 @@
+<!--
+  场景组合夹具（M2-04）：XML 合法、能解析，但编译失败——带自由关节的 body 质量为 0。
+  用于检查合并后的编译错误能按实例前缀归属到实例。
+-->
+<mujoco model="bad_compile">
+  <option timestep="0.002" integrator="implicitfast"/>
+  <worldbody>
+    <body name="massless" pos="0 0 1">
+      <freejoint/>
+      <geom name="ghost" type="sphere" size="0.1" mass="0"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -30,6 +30,8 @@ GpuAsset GpuAsset::create(const Asset& asset) {
             Part part;
             part.mesh = first[static_cast<std::size_t>(inst.mesh)] + static_cast<int>(p);
             part.transform = inst.transform;
+            part.node = inst.nodeIndex;
+            part.nodeWorld = inst.nodeWorld;
             if (prim.material >= 0 && static_cast<std::size_t>(prim.material) < asset.materials.size()) {
                 const AssetMaterial& m = asset.materials[static_cast<std::size_t>(prim.material)];
                 part.material = m.factors;
@@ -48,6 +50,7 @@ GpuAsset GpuAsset::create(const Asset& asset) {
             g.parts_.push_back(part);
         }
     }
+    g.nodes_ = asset.nodes;
     return g;
 }
 
@@ -58,6 +61,23 @@ std::vector<r::RenderItem> GpuAsset::items(const r::Matrix4& placement, bool arm
         r::RenderItem item;
         item.mesh = &meshes_[static_cast<std::size_t>(part.mesh)];
         item.model = multiply(placement, part.transform);
+        item.material = part.material;
+        if (part.occlusionFromArm && !armOcclusion) item.material.occlusionTexture = 0;
+        item.castsShadow = true;
+        out.push_back(item);
+    }
+    return out;
+}
+
+std::vector<r::RenderItem> GpuAsset::subtreeItems(const r::Matrix4& placement, int root, NodeFrame frame,
+                                                   bool armOcclusion) const {
+    const r::Matrix4 base = multiply(placement, bindingBase(nodes_, root, frame));
+    std::vector<r::RenderItem> out;
+    for (const Part& part : parts_) {
+        if (root >= 0 && !inSubtree(nodes_, part.node, root)) continue;
+        r::RenderItem item;
+        item.mesh = &meshes_[static_cast<std::size_t>(part.mesh)];
+        item.model = multiply(base, part.nodeWorld);
         item.material = part.material;
         if (part.occlusionFromArm && !armOcclusion) item.material.occlusionTexture = 0;
         item.castsShadow = true;

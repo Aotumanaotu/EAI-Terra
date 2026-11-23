@@ -1,0 +1,6 @@
+<!-- 场景组合夹具（M2-04）：XML 语法错误（标签未闭合），解析失败。 -->
+<mujoco model="broken">
+  <worldbody>
+    <body name="oops">
+  </worldbody>
+</mujoco>

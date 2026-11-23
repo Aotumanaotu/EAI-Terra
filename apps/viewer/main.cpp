@@ -11,6 +11,9 @@
 //   --language   本次使用的界面语言（会写入设置）
 //   --self-test  从默认设置开始（不读取设置文件），运行 --frames 帧后检查：字体未回退、中文字形可用、无 GL 错误、
 //                视口与窗口像素、语言切换、设置换算与生效；给出 --settings 时另把设置保存到该文件再读回比较。失败返回 1
+//   --scene      （M2-07）打开场景文件（JSON）：组合物理世界、运行仿真，视口显示由快照驱动的场景（代替演示场景）；
+//                场景有错误时打印诊断并返回 4。场景文件中的 view.camera 作为初始相机
+//   --demo-drive （M2-07）演示：给场景中的所有执行器施加正弦控制（幅度为控制范围的 60%），用于观看运动
 
 #include <algorithm>
 #include <array>
@@ -31,6 +34,9 @@
 #include "terra/asset/gltf.hpp"
 #include "terra/asset/gpu_asset.hpp"
 #include "terra/core/fatal.hpp"
+#include "terra/physics/mujoco/mujoco_backend.hpp"
+#include "terra/scene/scene.hpp"
+#include "terra/simulation/runner.hpp"
 #include "terra/core/system_monitor.hpp"
 #include "terra/core/time_series.hpp"
 #include "terra/input/input_system.hpp"
@@ -49,6 +55,7 @@
 #include "terra/ui/widgets.hpp"
 #include "terra/view/camera.hpp"
 #include "terra/view/camera_controller.hpp"
+#include "scene_view.hpp"
 #include "viewer_settings.hpp"
 
 #ifndef TERRA_ASSETS_DIR
@@ -73,6 +80,8 @@ struct Options {
     std::string expectRenderer;
     std::string settingsPath;
     std::optional<ui::Language> language;
+    std::string scenePath;
+    bool demoDrive = false;
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -92,6 +101,10 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.settingsPath = argv[++i];
         } else if (a == "--self-test") {
             o.selfTest = true;
+        } else if (a == "--scene" && hasValue) {
+            o.scenePath = argv[++i];
+        } else if (a == "--demo-drive") {
+            o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
             o.expectRenderer = argv[++i];
         } else {
@@ -285,6 +298,38 @@ struct SettingsRuntime {
     bool saveFailureReported = false;
 };
 
+// 由场景文件创建的仿真场景（M2-07）：场景实例、仿真推进与渲染适配。GPU 资源在 OpenGL 上下文之前销毁。
+struct SimulatedScene {
+    terra::scene::SceneInstance instance;
+    std::unique_ptr<terra::simulation::SimulationRunner> runner;
+    std::unique_ptr<vw::SceneView> view;
+    bool demoDrive = false;
+
+    // 演示控制：所有执行器正弦驱动，相位错开；在下一步之前生效
+    void drive() {
+        if (!demoDrive) return;
+        const auto& d = instance.world->description();
+        const double t = instance.world->simulationTime();
+        std::vector<terra::physics::ActuatorCommand> commands;
+        for (std::size_t k = 0; k < d.actuators.size(); ++k) {
+            const auto& a = d.actuators[k];
+            terra::physics::ActuatorCommand c{a.id, {}};
+            for (const auto& input : a.inputs) {
+                const double amplitude = input.limited ? 0.6 * std::min(std::fabs(input.min), std::fabs(input.max)) : 1.0;
+                c.values.push_back(amplitude * std::sin(2.0 * 3.14159265358979323846 * 0.25 * t + 1.3 * static_cast<double>(k)));
+            }
+            commands.push_back(std::move(c));
+        }
+        if (!commands.empty()) runner->scheduleNext(std::move(commands));
+    }
+
+    std::vector<r::RenderItem> items(const st::RenderSettings& rs) const {
+        vw::SceneViewOptions options;
+        options.armOcclusion = rs.assetArmOcclusion;
+        return view->items(instance, terra::scene::visualPoses(instance, runner->displayPoses()), options);
+    }
+};
+
 struct Frame {
     terra::platform::Platform& platform;
     terra::platform::Window& window;
@@ -298,6 +343,7 @@ struct Frame {
     EnvironmentLibrary& environments;
     AppState& state;
     SettingsRuntime& settings;
+    SimulatedScene* sim;  // 未打开场景文件时为空，视口显示演示场景
 };
 
 constexpr const char* kAppMap = "app";
@@ -526,7 +572,8 @@ void viewportPanel(Frame& f) {
             const vw::FrameLighting lit = vw::frameLighting(rs, f.environments, f.ctx, messages);
             appendMessages(f.state, messages);
             f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)),
-                              f.scene.items(rs.assetArmOcclusion), lit.sun, lit.hemisphere, lit.settings, lit.image);
+                              f.sim != nullptr ? f.sim->items(rs) : f.scene.items(rs.assetArmOcclusion), lit.sun, lit.hemisphere,
+                              lit.settings, lit.image);
             if (f.renderer.lastFrame().imageLighting && f.renderer.lastFrame().backgroundDrawn) f.state.imageLightingSeen = true;
             ImGui::Image(static_cast<ImTextureID>(f.renderer.outputTexture()), avail, ImVec2(0, 1), ImVec2(1, 0));
             f.state.viewportHovered = ImGui::IsItemHovered();
@@ -1159,6 +1206,39 @@ int main(int argc, char** argv) {
         scene.loadAssets(TERRA_ASSETS_DIR, messages);
         appendMessages(state, messages);
     }
+    // 场景文件（M2-07）
+    std::optional<SimulatedScene> simulated;
+    if (!options.scenePath.empty()) {
+        auto result = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
+        for (const auto& issue : result.issues) {
+            std::fprintf(issue.severity == terra::scene::SceneIssue::Severity::Error ? stderr : stdout, "%s %s%s%s%s\n",
+                         issue.severity == terra::scene::SceneIssue::Severity::Error ? "错误" : "警告", issue.where.c_str(),
+                         issue.where.empty() ? "" : "：", issue.instance.empty() ? "" : ("[" + issue.instance + "] ").c_str(),
+                         issue.message.c_str());
+            state.log.push_back(issue.message);
+        }
+        if (!result.ok()) {
+            std::fprintf(stderr, "错误：场景文件不能使用：%s\n", options.scenePath.c_str());
+            return 4;
+        }
+        simulated.emplace();
+        simulated->instance = std::move(*result.scene);
+        simulated->runner = std::make_unique<terra::simulation::SimulationRunner>(*simulated->instance.world);
+        simulated->demoDrive = options.demoDrive;
+        std::vector<vw::SceneMessage> messages;
+        simulated->view = vw::SceneView::create(simulated->instance, messages);
+        for (const auto& m : messages) std::printf("INFO 场景：%s\n", m.text.c_str());
+        appendMessages(state, messages);
+        const auto& view = simulated->instance.document.view;
+        if (view.cameraPosition) {
+            camera.position = *view.cameraPosition;
+            if (view.cameraTarget) camera.lookAt(*view.cameraTarget);
+        }
+        const auto& d = simulated->instance.world->description();
+        std::printf("INFO 场景 %s：%zu 个模型实例，%zu 个实体，%zu 个几何体，%zu 个 glTF 绑定（可用 %zu），步长 %.4g 秒\n",
+                    simulated->instance.document.name.c_str(), d.modelInstances.size(), d.entities.size(), d.geoms.size(),
+                    simulated->instance.bindings.size(), simulated->view->liveBindings(), d.timestep);
+    }
     if (loaded) {
         switch (loaded->status) {
             case st::LoadStatus::Loaded: state.log.push_back(tr(TextId::LogSettingsLoaded) + settings.path); break;
@@ -1172,7 +1252,8 @@ int main(int argc, char** argv) {
         for (const auto& w : loaded->warnings) state.log.push_back(tr(TextId::LogSettingsWarning) + w);
     }
     settings.applied = settings.current;
-    Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings};
+    Frame frame{platform,     window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings,
+                simulated ? &*simulated : nullptr};
 
     // 不可恢复错误（M2-02）：退出前把当前设置（含布局）写入设置文件；诊断报告中写出设置文件路径。
     // 只写文件，不调用 GL 与物理后端（terra/core/fatal.hpp 的要求）。
@@ -1224,6 +1305,12 @@ int main(int argc, char** argv) {
         input.update();
         if (input.state(fullscreenAction).pressed) toggleFullscreen(frame);
         controller.update(camera, dt);
+        if (simulated) {
+            simulated->drive();
+            const auto stepped = simulated->runner->update(dt);
+            if (stepped.error) state.log.push_back("仿真错误：" + stepped.error->message);
+            for (const auto& e : stepped.controlErrors) state.log.push_back("控制被拒绝：" + e.message);
+        }
 
         if (options.selfTest && options.frames > 0) {
             // 自检脚本：第 4–7 帧依次打开偏好设置的四个页面，第 7 帧打开按键录制弹窗，第 8 帧取消录制、第 9 帧关闭窗口；
@@ -1277,6 +1364,13 @@ int main(int argc, char** argv) {
         persistSettings(frame, platform.time(), true);
         std::printf("INFO 设置%s：%s\n", settings.saved && *settings.saved == settings.current ? "已保存" : "保存失败",
                     settings.path.c_str());
+    }
+    if (simulated) {
+        const auto& clock = simulated->runner->clock();
+        std::printf("INFO 仿真：%llu 步，仿真时间 %.3f 秒，过载 %llu 次（丢弃 %.3f 秒）%s\n",
+                    static_cast<unsigned long long>(simulated->instance.world->stepIndex()),
+                    simulated->instance.world->simulationTime(), static_cast<unsigned long long>(clock.overloadCount()),
+                    clock.droppedSeconds(), simulated->runner->faulted() ? "，世界处于故障状态" : "");
     }
     std::printf("INFO 结束：%d 帧，%.1f 秒\n", frames, platform.time() - start);
     return result;

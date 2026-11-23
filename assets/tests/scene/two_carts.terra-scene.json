@@ -1,0 +1,96 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "两辆小车（M2-05 测试夹具）",
+  "physics": {
+    "timestep": 0.002
+  },
+  "models": [
+    {
+      "name": "ground",
+      "mjcf": "ground.xml"
+    },
+    {
+      "name": "cart_a",
+      "mjcf": "cart.xml",
+      "position": [
+        0,
+        -0.6,
+        0
+      ]
+    },
+    {
+      "name": "cart_b",
+      "mjcf": "cart.xml",
+      "position": [
+        0,
+        0.6,
+        0
+      ],
+      "rotation": {
+        "rpyDeg": [
+          0,
+          0,
+          90
+        ]
+      }
+    }
+  ],
+  "visuals": [
+    {
+      "entity": "cart_a/chassis",
+      "gltf": "cart.gltf",
+      "node": "Chassis"
+    },
+    {
+      "entity": "cart_a/mast",
+      "gltf": "cart.gltf",
+      "node": "Mast",
+      "frame": "assembly"
+    },
+    {
+      "entity": "cart_b/chassis",
+      "gltf": "cart.gltf",
+      "node": "Chassis",
+      "position": [
+        0,
+        0,
+        0.01
+      ],
+      "scale": 1.0,
+      "showGeoms": true
+    },
+    {
+      "entity": "world",
+      "gltf": "cart.gltf",
+      "position": [
+        2,
+        0,
+        0
+      ],
+      "rotation": {
+        "quat": [
+          1,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "view": {
+    "environment": "outdoor",
+    "camera": {
+      "position": [
+        -3,
+        0,
+        1.2
+      ],
+      "target": [
+        0,
+        0,
+        0.2
+      ]
+    }
+  }
+}

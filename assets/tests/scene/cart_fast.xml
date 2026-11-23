@@ -1,0 +1,13 @@
+<!-- 场景组合夹具（M2-04）：与 cart.xml 相同的小车，但全局物理配置不同（步长、重力、摩擦锥），用于检查配置冲突的警告。 -->
+<mujoco model="cart_fast">
+  <option timestep="0.001" gravity="0 0 -9.7" integrator="implicitfast" cone="elliptic"/>
+  <worldbody>
+    <body name="chassis" pos="0 0 0.1">
+      <joint name="slide" type="slide" axis="1 0 0" damping="0.5"/>
+      <geom name="hull" type="box" size="0.2 0.1 0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="drive" joint="slide" gear="1" ctrllimited="true" ctrlrange="-5 5"/>
+  </actuator>
+</mujoco>

@@ -108,6 +108,16 @@ public:
         asset_.source = path_;
         for (cgltf_size i = 0; i < data->materials_count; ++i) asset_.materials.push_back(material(data->materials[i]));
 
+        // 节点表（M2-07）：下标与文件中的 nodes 数组相同
+        for (cgltf_size i = 0; i < data->nodes_count; ++i) {
+            const cgltf_node& n = data->nodes[i];
+            AssetNode node;
+            node.name = text(n.name);
+            node.parent = n.parent != nullptr ? static_cast<int>(n.parent - data->nodes) : -1;
+            cgltf_node_transform_world(&n, node.world.data());
+            asset_.nodes.push_back(std::move(node));
+        }
+
         const cgltf_scene* scene = data->scene != nullptr ? data->scene : (data->scenes_count > 0 ? &data->scenes[0] : nullptr);
         if (scene != nullptr) {
             for (cgltf_size i = 0; i < scene->nodes_count; ++i) visit(scene->nodes[i]);
@@ -305,6 +315,8 @@ private:
             r::Matrix4 world{};
             cgltf_node_transform_world(node, world.data());
             instance.transform = multiply(yUpToZUp(), world);
+            instance.nodeIndex = static_cast<int>(node - data_->nodes);
+            instance.nodeWorld = world;
             asset_.instances.push_back(std::move(instance));
         }
         for (cgltf_size i = 0; i < node->children_count; ++i) visit(node->children[i]);
@@ -410,6 +422,94 @@ LoadResult loadGltf(const std::string& path, const LoadOptions& options) {
     Loader loader(result, path, options);
     loader.run();
     return result;
+}
+
+int findNode(const Asset& asset, const std::string& nameOrIndex, std::string& error) {
+    error.clear();
+    if (!nameOrIndex.empty() && nameOrIndex[0] == '#') {
+        const std::string digits = nameOrIndex.substr(1);
+        const bool numeric = !digits.empty() && std::all_of(digits.begin(), digits.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+        if (!numeric || digits.size() > 9) {
+            error = "节点下标写法应为 “#数字”：" + nameOrIndex;
+            return -1;
+        }
+        const int index = std::stoi(digits);
+        if (index >= static_cast<int>(asset.nodes.size())) {
+            error = "节点下标 " + digits + " 超出范围（共 " + std::to_string(asset.nodes.size()) + " 个节点）";
+            return -1;
+        }
+        return index;
+    }
+    int found = -1;
+    int count = 0;
+    for (std::size_t i = 0; i < asset.nodes.size(); ++i) {
+        if (asset.nodes[i].name == nameOrIndex) {
+            if (found < 0) found = static_cast<int>(i);
+            ++count;
+        }
+    }
+    if (count == 0) {
+        std::string names;
+        int listed = 0;
+        for (const auto& n : asset.nodes) {
+            if (n.name.empty() || listed >= 12) continue;
+            names += (names.empty() ? "" : "、") + n.name;
+            ++listed;
+        }
+        error = "找不到节点“" + nameOrIndex + "”" + (names.empty() ? std::string{} : "；文件中的节点：" + names);
+        return -1;
+    }
+    if (count > 1) {
+        error = "节点名“" + nameOrIndex + "”在文件中出现 " + std::to_string(count) + " 次，请改用 “#下标” 写法（第一个为 #" +
+                std::to_string(found) + "）";
+        return -1;
+    }
+    return found;
+}
+
+bool inSubtree(const std::vector<AssetNode>& nodes, int node, int root) {
+    std::size_t guard = 0;
+    for (int n = node; n >= 0 && guard <= nodes.size(); ++guard) {
+        if (n == root) return true;
+        if (static_cast<std::size_t>(n) >= nodes.size()) return false;
+        n = nodes[static_cast<std::size_t>(n)].parent;
+    }
+    return false;
+}
+
+r::Matrix4 bindingBase(const std::vector<AssetNode>& nodes, int root, NodeFrame frame) {
+    const bool strip = frame == NodeFrame::Node && root >= 0 && static_cast<std::size_t>(root) < nodes.size();
+    return strip ? multiply(yUpToZUp(), invertAffine(nodes[static_cast<std::size_t>(root)].world)) : yUpToZUp();
+}
+
+std::vector<std::pair<int, r::Matrix4>> subtreeTransforms(const Asset& asset, int root, NodeFrame frame) {
+    std::vector<std::pair<int, r::Matrix4>> out;
+    const r::Matrix4 base = bindingBase(asset.nodes, root, frame);
+    for (std::size_t i = 0; i < asset.instances.size(); ++i) {
+        const AssetInstance& inst = asset.instances[i];
+        if (root >= 0 && !inSubtree(asset.nodes, inst.nodeIndex, root)) continue;
+        out.emplace_back(static_cast<int>(i), multiply(base, inst.nodeWorld));
+    }
+    return out;
+}
+
+r::Matrix4 invertAffine(const r::Matrix4& m) {
+    // 列主序：线性部分 a[行][列] = m[列 * 4 + 行]，平移为第 3 列
+    const double a00 = m[0], a10 = m[1], a20 = m[2];
+    const double a01 = m[4], a11 = m[5], a21 = m[6];
+    const double a02 = m[8], a12 = m[9], a22 = m[10];
+    const double det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
+    r::Matrix4 out{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    if (!(std::fabs(det) > 1e-20)) return out;
+    const double inv[3][3] = {{(a11 * a22 - a12 * a21) / det, (a02 * a21 - a01 * a22) / det, (a01 * a12 - a02 * a11) / det},
+                              {(a12 * a20 - a10 * a22) / det, (a00 * a22 - a02 * a20) / det, (a02 * a10 - a00 * a12) / det},
+                              {(a10 * a21 - a11 * a20) / det, (a01 * a20 - a00 * a21) / det, (a00 * a11 - a01 * a10) / det}};
+    const double t[3] = {m[12], m[13], m[14]};
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t col = 0; col < 3; ++col) out[col * 4 + row] = static_cast<float>(inv[row][col]);
+        out[12 + row] = static_cast<float>(-(inv[row][0] * t[0] + inv[row][1] * t[1] + inv[row][2] * t[2]));
+    }
+    return out;
 }
 
 r::Matrix4 yUpToZUp() {

@@ -1,6 +1,6 @@
 # M1-11 阶段验收
 
-> 状态：**进行中——验收脚本与报告已准备，基线机器统一运行未执行**（第 11 节）。M1 各任务均已通过各自的基线验证（第 9 节）；本报告按开发计划第 5 节逐条核对 M1 完成标准（第 7 节）和 PRD 的 M1 需求（第 8 节）。统一验收运行通过并经用户评审后，M1 才算完成。
+> 状态：**统一验收运行全部通过，等待用户评审**。2026-11-23，基线机器在干净提交 `e5900c8` 上运行 `scripts/verify/m1_acceptance.sh`，全部必需项通过（第 11.2 节）。按开发计划第 5 节逐条核对的 M1 完成标准见第 7 节，PRD 的 M1 需求见第 8 节。用户评审通过后，M1 阶段完成。
 
 ## 1. 范围（开发计划 M1-11）
 
@@ -53,7 +53,7 @@ nlohmann/json、stb、cgltf 与 glad 生成代码直接提交在 `third_party/` 
 | 9 | 真实 GPU：查看器 40 帧自检（必须通过）；帧耗时 5 组（只记录） | 自检退出码 0 |
 | 10 | 可交互总览，最长 180 秒 | 用户确认 |
 
-日志在 `build/verify-m1/logs/`，各子脚本另有自己的日志目录。预计用时 1–2 小时，主要花在干净构建和 71 个变异的逐个编译上。
+日志在 `build/verify-m1/logs/`，各子脚本另有自己的日志目录。实际用时约 7 分半（基线机器 24 个逻辑核；准备时估计的 1–2 小时偏保守）。
 
 ## 3. 依赖锁定与许可
 
@@ -120,17 +120,17 @@ nlohmann/json、stb、cgltf 与 glad 生成代码直接提交在 `third_party/` 
 | 4K 无阴影 | — | 1.11 ms |
 | 4K 程序场景 | 1.36 ms | 1.05 ms |
 
-完整表格（含 p95 与分阶段耗时）见 [M1-10 报告](M1-10-render-baseline-design.md)。验收运行会再测一次（第 11 节），只记录不判定。这些数值远低于 PRD NFR-03 的候选目标（基础画面 60 FPS，即 16.7 ms），但只代表这几个小场景，不构成性能承诺。
+完整表格（含 p95 与分阶段耗时）见 [M1-10 报告](M1-10-render-baseline-design.md)。验收运行又测了一次（第 11.2 节），结果与上表一致或略好，只记录不判定。这些数值远低于 PRD NFR-03 的候选目标（基础画面 60 FPS，即 16.7 ms），但只代表这几个小场景，不构成性能承诺。
 
 ## 6. 依赖边界审查
 
-| 检查 | 方式 | 开发机静态结果 |
+| 检查 | 方式 | 结果 |
 | --- | --- | --- |
-| 公共头不含 MuJoCo 头文件 | `boundary.no_mujoco_in_public_headers`：扫描 `engine/**/include/`、`apps/` 等 | —（由测试判定） |
-| 窗口库与图形 API 只出现在允许的位置 | `boundary.render_isolation`：GLFW、glad/GL、ImGui、JSON、stb、cgltf、X11/Wayland/Vulkan 各有允许目录；输入模块与平台接口层不得包含 | —（由测试判定） |
-| Headless 不链接图形库 | `headless.no_graphics_libs`，并由验收脚本对 `terra_headless`、`terra_bench` 再做一次 ldd | — |
-| 渲染程序不链接 MuJoCo | 验收脚本对 `terra_viewer`、`terra_render_bench` 做 ldd | — |
-| 渲染侧不引用物理模块 | 在 render、asset、ui、view、platform、input、settings、viewer、bench_render 的 CMake 与源码中搜索 `terra::physics`、`terra_physics`、`terra/physics/`、`mujoco` | **0 处**（2026-11-23） |
+| 公共头不含 MuJoCo 头文件 | `boundary.no_mujoco_in_public_headers`：扫描 `engine/**/include/`、`apps/` 等 | 通过 |
+| 窗口库与图形 API 只出现在允许的位置 | `boundary.render_isolation`：GLFW、glad/GL、ImGui、JSON、stb、cgltf、X11/Wayland/Vulkan 各有允许目录；输入模块与平台接口层不得包含 | 通过 |
+| Headless 不链接图形库 | `headless.no_graphics_libs`，并由验收脚本对 `terra_headless`、`terra_bench` 再做一次 ldd | 通过，无图形库 |
+| 渲染程序不链接 MuJoCo | 验收脚本对 `terra_viewer`、`terra_render_bench` 做 ldd | 通过，不链接 libmujoco |
+| 渲染侧不引用物理模块 | 在 render、asset、ui、view、platform、input、settings、viewer、bench_render 的 CMake 与源码中搜索 `terra::physics`、`terra_physics`、`terra/physics/`、`mujoco` | **0 处**（开发机与基线机器） |
 
 渲染侧唯一使用的 M0 模块是 `terra_data` 的几何类型（`terra/view/camera.hpp` 包含 `terra/data/geometry.hpp`）。这是与后端无关的数据契约，不含 MuJoCo 类型，允许使用。
 
@@ -138,10 +138,10 @@ nlohmann/json、stb、cgltf 与 glad 生成代码直接提交在 `third_party/` 
 
 | 完成标准 | 证据 | 状态 |
 | --- | --- | --- |
-| PRD 的 M1 P0 通过 | 第 8 节逐条核对 | 各任务的基线验证均已满足；待统一运行 |
-| 无 MuJoCo 类型进入渲染接口 | 第 6 节：公共头检查、ldd、源码搜索；渲染公共接口只用 Terra 类型（`terra::render::Vec3f` 等），GLM 只在渲染实现内部（D-020） | 静态检查满足；待统一运行 |
+| PRD 的 M1 P0 通过 | 第 8 节逐条核对 | 满足（统一运行全部通过） |
+| 无 MuJoCo 类型进入渲染接口 | 第 6 节：公共头检查、ldd、源码搜索；渲染公共接口只用 Terra 类型（`terra::render::Vec3f` 等），GLM 只在渲染实现内部（D-020） | 满足（第 8 步全部通过） |
 | 可独立显示测试资产 | M1-09：三个 glTF 资产在查看器中显示（真实 GPU 自检与参考图 `studio`、`outdoor`）；资产缺失时给出路径与原因（`asset.gltf`） | 满足（LOG-062） |
-| Headless 仍可单独构建运行 | 渲染关闭 39/39，与 M0 的 35 项结果一致；`TERRA_BUILD_RENDER` 默认关闭；`headless.no_graphics_libs`；第 4 步 M0 回归 | 满足（LOG-071）；待统一运行 |
+| Headless 仍可单独构建运行 | 渲染关闭 39/39，与 M0 的 35 项结果一致；`TERRA_BUILD_RENDER` 默认关闭；`headless.no_graphics_libs`；第 4 步 M0 回归 | 满足：M0 回归全部通过，渲染关闭 39/39 |
 | 图像与基线记录齐全 | 参考图 3 张（已提交）；帧耗时 5 组；GPU 分阶段耗时；测量条件与硬件（第 5 节） | 满足（LOG-065、LOG-068） |
 
 ## 8. PRD M1 需求核对
@@ -154,7 +154,7 @@ nlohmann/json、stb、cgltf 与 glad 生成代码直接提交在 `third_party/` 
 | F-M1-04 / P0 独立输入抽象与动作映射 | 相机控制器只依赖动作接口；映射可配置；多来源优先级仲裁；死区与热插拔有接口与测试（手柄实现可为 P1） | M1-04（`input.system`，8 个变异）；`boundary.render_isolation`；M1-14 按键绑定可在设置中修改 | 满足；GLFW 手柄适配器（M1-05，P1）后置 |
 | F-M1-05 / P0 编辑器式界面与显示模式 | 深色主题、可停靠面板；F11 无边框全屏；鼠标在面板上时视口不响应；界面不绕过 Terra 输入系统 | M1-12（显示模式，真实显示器检查）；M1-13（`ui.input_bridge`，不使用 ImGui 的 GLFW 后端，用户试用） | 满足 |
 | F-M1-06 / P0 视口相机控制与设置 | 中键转视角、Shift+中键平移、键盘移动、滚轮拉近；按键可改；设置立即生效并跨次运行保留；损坏文件回退默认值且有诊断 | M1-07、M1-13 修订（中键操作）；M1-14（`settings.store`，两次展示确认改动保留） | 满足 |
-| NFR-01 模块解耦 | 公共契约不暴露 MuJoCo 与 OpenGL 类型；纯物理目标不需要窗口 | 第 6 节 | 满足；待统一运行 |
+| NFR-01 模块解耦 | 公共契约不暴露 MuJoCo 与 OpenGL 类型；纯物理目标不需要窗口 | 第 6 节 | 满足 |
 | NFR-03 性能 | M1 起记录帧耗时 | 第 5 节；查看器统计面板与性能图表（M1-15） | 已记录 |
 | NFR-06 可测试性 | 图形测试单独启用，不阻塞无图形测试 | `graphics` 标签；Xvfb + llvmpipe 无人值守（D-022） | 满足 |
 
@@ -177,13 +177,13 @@ nlohmann/json、stb、cgltf 与 glad 生成代码直接提交在 `third_party/` 
 | M1-09 资产加载最小路径 | P0 | 待验收 | [M1-09](M1-09-assets-design.md)；LOG-061、062 |
 | M1-10 渲染测试与帧耗时基线 | P0 / P1 | 待验收 | [M1-10](M1-10-render-baseline-design.md)；LOG-064、065、068 |
 | M1-15 性能监视图表 | P2 | 待验收 | [M1-15](M1-15-perf-charts.md)；LOG-066–071 |
-| M1-11 阶段验收 | P0 | 进行中 | 本报告；LOG-072 |
+| M1-11 阶段验收 | P0 | 统一运行通过，待评审 | 本报告；LOG-072、073 |
 
 ## 10. 剩余风险与待决事项
 
 **需要用户处理：**
 
-1. **提交与统一验收运行**：提交全部改动（包括 `tests/render/reference/*.png`），然后在干净提交上运行 `bash scripts/verify/m1_acceptance.sh`。
+1. ~~提交与统一验收运行~~：已完成（提交 `e5900c8`，第 11.2 节）。**M1 评审**：请评审本报告。
 2. **项目许可证**（D-109）：仍待决定；发布前确定即可，不阻塞 M1。
 
 **技术风险（不阻塞 M1，在后续阶段处理）：**
@@ -211,8 +211,35 @@ nlohmann/json、stb、cgltf 与 glad 生成代码直接提交在 `third_party/` 
 
 ### 11.2 基线机器
 
-未执行。请先提交全部改动，然后在桌面会话终端运行：
+- **日期：**2026-11-23。
+- **提交：**`e5900c8`，未提交改动 0 个文件。
+- **环境：**Ubuntu 22.04，x86-64；gcc/g++ 11.4.0（apt 包 `gcc-11`/`g++-11` 11.4.0-1ubuntu1~22.04.3）；cmake/ctest 3.22.1；ninja 1.10.1；git 2.34.1；GNU ld 2.38。GPU：NVIDIA GeForce RTX 5060（PCI 10de:2d05），驱动 595.91.07，OpenGL 4.6 core；自动化图形测试：llvmpipe（LLVM 15.0.7，Mesa 23.2.1）。
+- **命令：**`bash scripts/verify/m1_acceptance.sh`，用时 7 分 19 秒。
+- **结果：**
 
-```bash
-bash scripts/verify/m1_acceptance.sh
-```
+| 步骤 | 结果 |
+| --- | --- |
+| 1. 提交 | `e5900c8`，工作区干净 |
+| 2. 环境清单 | 已采集；工具均来自 Ubuntu 官方软件包；图形清单确认桌面为 NVIDIA、Xvfb 为 llvmpipe |
+| 3. 变异锚点 | **71/71** 唯一 |
+| 4. M0 回归 | `m0_acceptance.sh` 全部通过：MuJoCo 源码包 sha256 一致；`m0_08.sh`、`m0_07.sh` 退出码 0；重复运行 39/39（每项至多 5 次）；运行依赖无图形库 |
+| 5. M1 全量 | 依赖与素材 sha256 全部一致（json 3/3、stb 3/3、cgltf 2/2、渲染依赖、HDRI 2/2、glTF 15/15）；渲染关闭 Debug **39/39**；渲染开启 Debug、Release + `-Werror` **57/57**；ASan 非图形 46/46、图形 11/11；M1-15 变异 5/5 |
+| 6. M1 历次变异 | 03/04 8/8、06 5/5、07 5/5、12 3/3、13 5/5、14 6/6、08a 6/6、08b 6/6、09 6/6、10 5/5；**合计 60/60**（加 M0 的 11 个，共 71 个变异全部被发现）；没有“以非 0 退出但没有 FAILED 行”的可疑项 |
+| 7. 重复运行 | 渲染开启 57 项每项至多 3 次，**全部通过** |
+| 8. 依赖边界 | `terra_headless`、`terra_bench` 无图形库；`terra_viewer`、`terra_render_bench` 不链接 libmujoco；渲染侧 9 个模块 0 处引用物理模块；三项边界测试通过 |
+| 9. 真实 GPU | 查看器自检通过（视口射线、C++ 参考着色、性能图表、显存 8151 / 可用 5342 MB）；帧耗时见下表 |
+| 10. 可交互展示 | 117.7 秒、7049 帧、59.9 FPS（垂直同步）；三个资产、两张环境贴图加载正常，设置自动保存；退出码 0 |
+
+帧耗时（RTX 5060，600 帧，预热 60 帧，不经过垂直同步）：
+
+| 配置 | 整帧中位数（p95） | GPU 中位数（p95） |
+| --- | --- | --- |
+| 1080p 默认 | 0.47 ms（0.56） | 0.38 ms（0.39） |
+| 4K 默认 | 1.58 ms（1.73） | 1.30 ms（1.56） |
+| 4K 无 MSAA | 0.84 ms（1.24） | 0.81 ms（0.81） |
+| 4K 无阴影 | 1.17 ms（1.54） | 1.11 ms（1.12） |
+| 4K 程序场景 | 1.30 ms（1.41） | 1.05 ms（1.06） |
+
+GPU 中位数与 M1-10/M1-15 记录的数值相差不超过 0.01 ms，基线稳定。
+
+**结论：全部通过。**等待用户评审。

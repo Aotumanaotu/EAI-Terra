@@ -24,3 +24,5 @@ compile_commands.json
 # glTF 测试资产：由 scripts/assets/fetch_models.sh 下载（记录见 assets/models/models.lock）；GLTF/ 是用户保存的原件
 /assets/models/*/
 /GLTF/
+# 参考机器人（M3）：用户下载的 MuJoCo Menagerie 等原件；仓库内的锁定记录与复制由 M3-01 的脚本管理
+/ROBOTS/

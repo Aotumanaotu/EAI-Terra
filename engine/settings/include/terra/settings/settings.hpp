@@ -74,6 +74,10 @@ enum class ToneMapperSetting { AgX, PbrNeutral, Aces, None };
 // 文件中的名称："agx" | "pbrNeutral" | "aces" | "none"。
 const char* toneMapperName(ToneMapperSetting mapper) noexcept;
 
+// 环境光来源（M1-08b）：半球光，或 assets/hdri/ 中的环境贴图。文件中的名称："hemisphere" | "outdoor" | "studio"。
+enum class EnvironmentSetting { Hemisphere, Outdoor, Studio };
+const char* environmentName(EnvironmentSetting environment) noexcept;
+
 struct RenderSettings {
     double sunAzimuthDegrees = 150.0;   // 太阳方位角：从 +X 起逆时针（从上往下看），[0, 360]
     double sunElevationDegrees = 50.0;  // 太阳高度角，[1, 90]
@@ -84,6 +88,16 @@ struct RenderSettings {
     int msaaSamples = 4;                // 1、2、4、8
     bool shadows = true;
     bool grid = true;
+    // M1-08b：环境贴图光照
+    EnvironmentSetting environment = EnvironmentSetting::Outdoor;
+    double environmentIntensity = 0.6;          // [0, 5]
+    double environmentRotationDegrees = 0.0;    // [0, 360]
+    bool environmentBackground = true;          // 视口背景显示环境贴图
+    double backgroundBlur = 0.25;               // [0, 1]
+    // M1-09：方向光跟随环境贴图中的太阳（方向与亮度，贴图中的太阳同时从环境光照中去掉）；贴图没有明显太阳时不起作用
+    bool sunFromEnvironment = true;
+    // M1-10：资产按 ARM 打包约定（R = 环境遮蔽）推断的遮蔽贴图是否使用
+    bool assetArmOcclusion = true;
 };
 
 struct Range {
@@ -102,6 +116,9 @@ constexpr Range kElevation{1.0, 90.0};
 constexpr Range kSunIntensity{0.0, 20.0};
 constexpr Range kAmbient{0.0, 5.0};
 constexpr Range kExposure{-10.0, 10.0};
+constexpr Range kEnvironmentIntensity{0.0, 5.0};
+constexpr Range kEnvironmentRotation{0.0, 360.0};
+constexpr Range kBackgroundBlur{0.0, 1.0};
 }  // namespace ranges
 
 // ---- 按键 ----

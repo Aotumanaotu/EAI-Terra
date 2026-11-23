@@ -5,6 +5,8 @@
 #   terra::glfw  GLFW 静态库（窗口、OpenGL 上下文、首个输入适配器）
 #   terra::glad  glad 生成的 OpenGL 4.5 core 加载代码（third_party/glad，已提交）
 #   terra::glm   GLM 头文件（只在 Render 与视图层内部使用）
+#   terra::cgltf cgltf 头文件（M1-09，已提交在 third_party/cgltf/，解析 glTF）
+#   terra::stb   stb_image 头文件（M1-08b，已提交在 third_party/stb/，读取 .hdr）
 #   terra::imgui Dear ImGui docking 源码编译的静态库（M1-13，D-024），含官方 OpenGL3 渲染后端（自带最小 GL 加载器）
 # 三者的头文件均以 SYSTEM 方式引入，避免第三方头文件触发 Terra 的 -Werror 警告。
 
@@ -78,5 +80,25 @@ target_compile_definitions(terra_imgui PUBLIC IMGUI_DISABLE_OBSOLETE_FUNCTIONS I
 target_compile_features(terra_imgui PUBLIC cxx_std_17)
 set_target_properties(terra_imgui PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
 target_link_libraries(terra_imgui PRIVATE ${CMAKE_DL_LIBS})
+
+# ---- stb_image（M1-08b）----
+# 头文件直接提交在 third_party/stb/（sha256 见 stb.lock）；只在 engine/render/src/ 中编译 HDR 解码。
+set(_terra_stb_dir "${PROJECT_SOURCE_DIR}/third_party/stb")
+if(NOT EXISTS "${_terra_stb_dir}/stb_image.h")
+    message(FATAL_ERROR "找不到 stb_image：${_terra_stb_dir}/stb_image.h（应随仓库提交）")
+endif()
+add_library(terra_stb INTERFACE)
+add_library(terra::stb ALIAS terra_stb)
+target_include_directories(terra_stb SYSTEM INTERFACE "${_terra_stb_dir}")
+
+# ---- cgltf（M1-09）----
+# 头文件直接提交在 third_party/cgltf/（sha256 见 cgltf.lock）；只在 engine/asset/src/ 中编译实现。
+set(_terra_cgltf_dir "${PROJECT_SOURCE_DIR}/third_party/cgltf")
+if(NOT EXISTS "${_terra_cgltf_dir}/cgltf.h")
+    message(FATAL_ERROR "找不到 cgltf：${_terra_cgltf_dir}/cgltf.h（应随仓库提交）")
+endif()
+add_library(terra_cgltf INTERFACE)
+add_library(terra::cgltf ALIAS terra_cgltf)
+target_include_directories(terra_cgltf SYSTEM INTERFACE "${_terra_cgltf_dir}")
 
 message(STATUS "Render: GLFW ${TERRA_GLFW_VERSION}、GLM ${TERRA_GLM_VERSION}、glad ${TERRA_GLAD_VERSION}（${TERRA_GLAD_API}）、Dear ImGui ${TERRA_IMGUI_VERSION}")

@@ -43,8 +43,10 @@ endif()
 #   terra_platform_glfw   engine/platform/backends/glfw   GLFW 实现与键鼠适配器，PRIVATE 链接 GLFW
 #   terra_render          engine/render                   渲染核心（M1-06），PRIVATE 链接 glad，不依赖平台与物理
 #   terra_view            engine/view                     相机与视口相机控制器（M1-07），只消费输入动作，PRIVATE 使用 GLM
+#   terra_asset           engine/asset                    资产加载（M1-09）：glTF 解析（cgltf，PRIVATE）与上传，仅渲染开启
 #   terra_ui              engine/ui                       界面基础（M1-13）：ImGui 上下文、输入桥、主题、字体、中英文文本
 #   terra_viewer          apps/viewer                     第一个应用：编辑器式外壳（M1-13），仅 TERRA_BUILD_RENDER=ON
+#   terra_render_bench    apps/bench_render               渲染帧耗时基线（M1-10），仅渲染开启
 #   terra_headless        apps/headless                   命令行入口，只链接 Terra 目标
 #   terra_bench           apps/bench                      性能基线程序（M0-09），只链接 Terra 目标
 add_subdirectory(engine/core)
@@ -56,11 +58,13 @@ if(TERRA_BUILD_RENDER)
     add_subdirectory(engine/render)
     add_subdirectory(engine/view)
     add_subdirectory(engine/ui)
+    add_subdirectory(engine/asset)
 endif()
 add_subdirectory(apps/headless)
 add_subdirectory(apps/bench)
 if(TERRA_BUILD_RENDER)
     add_subdirectory(apps/viewer)
+    add_subdirectory(apps/bench_render)
 endif()
 
 if(TERRA_BUILD_TESTS)

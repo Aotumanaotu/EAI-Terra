@@ -1,6 +1,7 @@
 #include "viewer_settings.hpp"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <tuple>
@@ -8,6 +9,7 @@
 #include "imgui.h"
 #include "terra/ui/text.hpp"
 #include "terra/ui/ui_input.hpp"
+#include "terra/ui/widgets.hpp"
 
 namespace terra::viewer {
 
@@ -59,12 +61,10 @@ void rowLabel(TextId id) {
     ImGui::SetNextItemWidth(-1.0f);
 }
 
+// 整行宽的属性滑块，名称显示在滑块内（用户 2026-11-19 反馈：默认滑块不够精致）。
 bool sliderDouble(TextId id, const char* stableId, double& value, st::Range range, const char* format, bool logarithmic) {
-    rowLabel(id);
-    ImGuiSliderFlags flags = ImGuiSliderFlags_AlwaysClamp;
-    if (logarithmic) flags |= ImGuiSliderFlags_Logarithmic;
-    const std::string hidden = std::string{"##"} + stableId;
-    return ImGui::SliderScalar(hidden.c_str(), ImGuiDataType_Double, &value, &range.min, &range.max, format, flags);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    return terra::ui::propertySlider(stableId, tr(id), &value, range.min, range.max, format, logarithmic);
 }
 
 void interfacePage(SettingsWindow& w, st::Settings& s, float currentUiScale) {
@@ -89,13 +89,13 @@ void interfacePage(SettingsWindow& w, st::Settings& s, float currentUiScale) {
         }
     }
     ImGui::BeginDisabled(automatic);
-    rowLabel(TextId::SettingsUiScale);
-    float percent = w.editingScale ? w.scaleEdit : static_cast<float>(s.ui.uiScale.value_or(currentUiScale) * 100.0);
-    ImGui::SliderFloat("##uiScale", &percent, static_cast<float>(st::InterfaceSettings::kMinScale * 100.0),
-                       static_cast<float>(st::InterfaceSettings::kMaxScale * 100.0), "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+    double percent = w.editingScale ? static_cast<double>(w.scaleEdit) : s.ui.uiScale.value_or(currentUiScale) * 100.0;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    terra::ui::propertySlider("uiScale", tr(TextId::SettingsUiScale), &percent, st::InterfaceSettings::kMinScale * 100.0,
+                              st::InterfaceSettings::kMaxScale * 100.0, "%.0f%%");
     w.editingScale = ImGui::IsItemActive();
-    w.scaleEdit = percent;
-    if (ImGui::IsItemDeactivatedAfterEdit()) s.ui.uiScale = std::round(static_cast<double>(percent)) / 100.0;
+    w.scaleEdit = static_cast<float>(percent);
+    if (ImGui::IsItemDeactivatedAfterEdit()) s.ui.uiScale = std::round(percent) / 100.0;
     ImGui::EndDisabled();
     ImGui::TextDisabled("Ctrl + / -  ·  Ctrl+0");
 
@@ -327,43 +327,6 @@ st::WindowMode toWindowMode(terra::platform::DisplayMode mode) noexcept {
         case terra::platform::DisplayMode::ExclusiveFullscreen: return st::WindowMode::ExclusiveFullscreen;
     }
     return st::WindowMode::Windowed;
-}
-
-terra::render::ToneMapper toToneMapper(st::ToneMapperSetting mapper) noexcept {
-    switch (mapper) {
-        case st::ToneMapperSetting::AgX: return terra::render::ToneMapper::AgX;
-        case st::ToneMapperSetting::PbrNeutral: return terra::render::ToneMapper::PbrNeutral;
-        case st::ToneMapperSetting::Aces: return terra::render::ToneMapper::Aces;
-        case st::ToneMapperSetting::None: return terra::render::ToneMapper::None;
-    }
-    return terra::render::ToneMapper::AgX;
-}
-
-terra::render::SunLight toSunLight(const st::RenderSettings& render) {
-    const double az = render.sunAzimuthDegrees * kRadiansPerDegree;
-    const double el = render.sunElevationDegrees * kRadiansPerDegree;
-    terra::render::SunLight sun;
-    sun.direction = {static_cast<float>(std::cos(el) * std::cos(az)), static_cast<float>(std::cos(el) * std::sin(az)),
-                     static_cast<float>(std::sin(el))};
-    sun.color = {1.0f, 0.95f, 0.88f};  // 略暖的白光
-    sun.intensity = static_cast<float>(render.sunIntensity);
-    return sun;
-}
-
-terra::render::HemisphereLight toEnvironment(const st::RenderSettings& render) {
-    terra::render::HemisphereLight env;  // 天空色与地面色用渲染模块的默认值
-    env.intensity = static_cast<float>(render.ambientIntensity);
-    return env;
-}
-
-terra::render::RenderSettings toRenderSettings(const st::RenderSettings& render) {
-    terra::render::RenderSettings out;
-    out.toneMapper = toToneMapper(render.toneMapper);
-    out.exposureEv = static_cast<float>(render.exposureEv);
-    out.msaaSamples = render.msaaSamples;
-    out.shadows = render.shadows;
-    out.grid = render.grid;
-    return out;
 }
 
 std::vector<in::Binding> buttonBindings(const st::KeySlots& slots) {

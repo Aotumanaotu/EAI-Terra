@@ -87,6 +87,13 @@ st::Settings everythingChanged() {
     s.render.msaaSamples = 8;
     s.render.shadows = false;
     s.render.grid = false;
+    s.render.environment = st::EnvironmentSetting::Studio;
+    s.render.environmentIntensity = 1.5;
+    s.render.environmentRotationDegrees = 90.0;
+    s.render.environmentBackground = false;
+    s.render.backgroundBlur = 0.6;
+    s.render.sunFromEnvironment = false;
+    s.render.assetArmOcclusion = false;
     s.keys[Command::CameraForward] = {in::Key::I, in::Key::Unknown};
     s.keys[Command::CameraBack] = {in::Key::K, in::Key::Down};
     s.keys[Command::CameraBoost] = {in::Key::LeftAlt, in::Key::Unknown};
@@ -108,6 +115,10 @@ void testDefaults() {
               s.render.toneMapper == st::ToneMapperSetting::AgX && s.render.msaaSamples == 4 && s.render.shadows &&
               s.render.grid,
           "渲染默认：太阳 150°/50°、强度 3、环境 0.6、0 EV、AgX、4× MSAA、阴影与网格开启（M1-08 设计稿）");
+    check(s.render.environment == st::EnvironmentSetting::Outdoor && s.render.environmentIntensity == 0.6 &&
+              s.render.environmentRotationDegrees == 0.0 && s.render.environmentBackground && s.render.backgroundBlur == 0.25 &&
+              s.render.sunFromEnvironment && s.render.assetArmOcclusion,
+          "环境默认：室外贴图、强度 0.6、不旋转、显示背景、模糊 0.25（M1-08b）");
     const st::KeySlots forward{in::Key::W, in::Key::Up};
     const st::KeySlots down{in::Key::Q, in::Key::Unknown};
     const st::KeySlots full{in::Key::F11, in::Key::Unknown};
@@ -189,6 +200,17 @@ void testPartialAndInvalidFields() {
         check(rs.exposureEv == 2.5, "合法的曝光照常读取");
         check(contains(r.warnings, "未知字段 render.toneMapper2") && r.warnings.size() == 4,
               "渲染组共 4 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
+        const auto e = st::fromJson(R"({"version": 1, "render": {"environment": "forest", "environmentIntensity": 9,
+                                         "backgroundBlur": 0.5}})");
+        check(e.settings.render.environment == st::EnvironmentSetting::Outdoor && contains(e.warnings, "render.environment") &&
+                  e.settings.render.environmentIntensity == 0.6 && contains(e.warnings, "render.environmentIntensity = 9") &&
+                  e.settings.render.backgroundBlur == 0.5 && e.warnings.size() == 2,
+              "环境：未知贴图名与超出范围的强度回退默认值，模糊照常读取\n" + joined(e.warnings));
+        for (const auto env : {st::EnvironmentSetting::Hemisphere, st::EnvironmentSetting::Outdoor, st::EnvironmentSetting::Studio}) {
+            st::Settings one;
+            one.render.environment = env;
+            check(st::fromJson(st::toJson(one)).settings == one, std::string{"环境往返："} + st::environmentName(env));
+        }
         for (const auto m : {st::ToneMapperSetting::AgX, st::ToneMapperSetting::PbrNeutral, st::ToneMapperSetting::Aces,
                              st::ToneMapperSetting::None}) {
             st::Settings one;

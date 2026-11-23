@@ -1,0 +1,12 @@
+# stb_image 源码锁定记录（M1-08b，D-019、D-027）。由 scripts/render/check_stb.sh 读取并复核。
+# 状态：已锁定（2026-11-19）。单头文件，公有领域或 MIT 双许可（LICENSE）。直接提交在仓库中（约 0.28 MB），构建不联网。
+# 用途：读取 Radiance .hdr 环境贴图（M1-08b），PNG / JPEG 贴图（M1-09）；stb_image_write 写 PNG 参考图（M1-10）。文件未做任何修改。
+STB_IMAGE_VERSION=2.32
+STB_COMMIT=9f755b604db3492df2cbeb39bf84b81e3e3932e3
+STB_IMAGE_URL=https://raw.githubusercontent.com/nothings/stb/9f755b604db3492df2cbeb39bf84b81e3e3932e3/stb_image.h
+STB_IMAGE_SHA256=deb4f18c9ca21b751a1323019031c94c0bf5ca1d2929ef5913cc56f00aab6e91
+STB_LICENSE_URL=https://raw.githubusercontent.com/nothings/stb/9f755b604db3492df2cbeb39bf84b81e3e3932e3/LICENSE
+STB_LICENSE_SHA256=eb36e45c704dd0b59730115523e089b051852625b4db0a6fe76c991900af20e7
+STB_IMAGE_WRITE_VERSION=1.18
+STB_IMAGE_WRITE_URL=https://raw.githubusercontent.com/nothings/stb/9f755b604db3492df2cbeb39bf84b81e3e3932e3/stb_image_write.h
+STB_IMAGE_WRITE_SHA256=a8e7f77f0ccfdc9bac09a71268b131931ff81aafca82c393aeb6aaba10d9e7ca

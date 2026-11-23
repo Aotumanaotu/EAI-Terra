@@ -3,6 +3,7 @@
 //   - 字体文件存在、大小与生成记录一致
 //   - 界面用到的每一个字符（两种语言全部文本）在字体中都有字形：用 stb_truetype 查 cmap
 
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -14,6 +15,7 @@
 #include "imstb_truetype.h"
 
 #include "terra/ui/text.hpp"
+#include "terra/ui/widgets.hpp"
 
 #ifndef TERRA_ASSETS_DIR
 #error "需要 TERRA_ASSETS_DIR"
@@ -103,7 +105,17 @@ void testFont(const char* file, std::size_t expectedBytes) {
 
 }  // namespace
 
+// 图表纵轴的自动上限（M1-15）
+void testNiceCeiling() {
+    namespace ui = terra::ui;
+    const auto eq = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
+    check(eq(ui::niceCeiling(3.0), 5.0) && eq(ui::niceCeiling(16.7), 20.0) && eq(ui::niceCeiling(2.2), 2.5) && eq(ui::niceCeiling(0.7), 1.0) &&
+              eq(ui::niceCeiling(1.0), 1.0) && eq(ui::niceCeiling(95.0), 100.0) && eq(ui::niceCeiling(0.0), 1.0),
+          "图表上限取 1、2、2.5、5 × 10ⁿ 中不小于数值的最小者");
+}
+
 int main() {
+    testNiceCeiling();
     testCatalog();
     testFont("NotoSansSC-Regular-Subset.otf", 1956920);
     testFont("NotoSansSC-Bold-Subset.otf", 1993812);

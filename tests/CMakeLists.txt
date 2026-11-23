@@ -15,6 +15,9 @@
 # M1-12：显示模式（graphics.platform_display，仅渲染开启，Xvfb）。
 # M1-13：界面输入与文本（ui.input_bridge、ui.text，不需要显示）；查看器自检（graphics.viewer_selftest，Xvfb）。
 # M1-08a：网格与 PBR 数学（render.math）、PBR 场景渲染（graphics.render_pbr）。
+# M1-15：性能监视数据层（core.system_monitor，总是运行）。
+# M1-10：参考图比较规则（render.image_compare）、三个场景的参考图（graphics.render_reference.*）、渲染基准冒烟。
+# M1-09：glTF 资产加载（asset.gltf）；贴图材质、切线、环境遮蔽、环境贴图中的太阳（render.math、graphics.render_pbr）。
 # M1-14：设置模型与 JSON 读写（settings.store，总是运行）；输入替换绑定与键位名称（input.system）；相机按键改绑（view.camera）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
@@ -22,6 +25,12 @@ add_executable(test_core_build_info core/test_build_info.cpp)
 target_link_libraries(test_core_build_info PRIVATE terra::core)
 terra_configure_target(test_core_build_info)
 add_test(NAME core.build_info COMMAND test_core_build_info)
+
+# 性能监视数据层（M1-15）：滚动时间序列与 /proc 解析，总是运行。
+add_executable(test_system_monitor core/test_system_monitor.cpp)
+target_link_libraries(test_system_monitor PRIVATE terra::core)
+terra_configure_target(test_system_monitor)
+add_test(NAME core.system_monitor COMMAND test_system_monitor)
 
 set(_terra_check_exit "${PROJECT_SOURCE_DIR}/cmake/TerraCheckExitCode.cmake")
 
@@ -285,7 +294,8 @@ if(TERRA_BUILD_RENDER)
     add_executable(test_render_math render/test_render_math.cpp)
     target_link_libraries(test_render_math PRIVATE terra::render)
     terra_configure_target(test_render_math)
-    add_test(NAME render.math COMMAND test_render_math)
+    target_compile_definitions(test_render_math PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+    add_test(NAME render.math COMMAND test_render_math "${CMAKE_CURRENT_BINARY_DIR}/render_math_tmp")
 
     # PBR 场景渲染（M1-08a）：与 C++ 参考实现比较像素；阴影、MSAA、网格。
     add_executable(test_render_pbr render/test_render_pbr.cpp)
@@ -293,6 +303,40 @@ if(TERRA_BUILD_RENDER)
     terra_configure_target(test_render_pbr)
     add_test(NAME graphics.render_pbr COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_pbr> llvmpipe)
     set_tests_properties(graphics.render_pbr PROPERTIES LABELS graphics)
+
+    # glTF 资产加载（M1-09）：纯 CPU；用代码生成的小型 glTF / glb，另在真实资产存在时检查。
+    add_executable(test_asset_gltf asset/test_asset_gltf.cpp)
+    target_link_libraries(test_asset_gltf PRIVATE terra::asset)
+    target_compile_definitions(test_asset_gltf PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+    terra_configure_target(test_asset_gltf)
+    add_test(NAME asset.gltf COMMAND test_asset_gltf "${CMAKE_CURRENT_BINARY_DIR}/asset_gltf_tmp")
+
+    # 参考图比较规则（M1-10）：纯 CPU。
+    add_executable(test_image_compare render/test_image_compare.cpp)
+    target_link_libraries(test_image_compare PRIVATE terra::render)
+    terra_configure_target(test_image_compare)
+    add_test(NAME render.image_compare COMMAND test_image_compare "${CMAKE_CURRENT_BINARY_DIR}/image_compare_tmp")
+
+    # 参考图（M1-10）：与 tests/render/reference/ 中的 PNG 比较；带资产的场景在素材缺失时跳过（返回码 77）。
+    add_executable(test_render_reference render/test_render_reference.cpp)
+    target_link_libraries(test_render_reference PRIVATE terra::viewer_scene terra::render terra::view terra::platform_glfw terra::input)
+    target_compile_definitions(test_render_reference PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+    terra_configure_target(test_render_reference)
+    foreach(_scene procedural studio outdoor)
+        add_test(NAME graphics.render_reference.${_scene}
+            COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_reference>
+                    "${PROJECT_SOURCE_DIR}/tests/render/reference" "${CMAKE_CURRENT_BINARY_DIR}/render_reference"
+                    --scene ${_scene} --expect-renderer llvmpipe)
+        set_tests_properties(graphics.render_reference.${_scene} PROPERTIES LABELS graphics SKIP_RETURN_CODE 77)
+    endforeach()
+
+    # 渲染基准冒烟（M1-10）：小分辨率、少量帧，确认能跑完并输出汇总（数值不判定）。
+    add_test(NAME graphics.render_bench_smoke
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${CMAKE_COMMAND}" -DEXPECTED=0 -DCOMMAND=$<TARGET_FILE:terra_render_bench>
+                "-DSTDOUT_REGEX=summary [{].type.:.summary.,.*.gpu_ms.:[{].mean.:"
+                -P "${_terra_check_exit}" --width 160 --height 90 --frames 10 --warmup 2 --scene procedural
+                --output "${CMAKE_CURRENT_BINARY_DIR}/render_bench_smoke.jsonl" --expect-renderer llvmpipe)
+    set_tests_properties(graphics.render_bench_smoke PROPERTIES LABELS graphics)
 
     # 相机与相机控制器（M1-07）。自动化部分只用虚拟设备与数学检查，不需要显示；--show 模式供桌面交互展示。
     add_executable(test_view view/test_view.cpp)

@@ -13,6 +13,7 @@
 //                视口与窗口像素、语言切换、设置换算与生效；给出 --settings 时另把设置保存到该文件再读回比较。失败返回 1
 
 #include <algorithm>
+#include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
@@ -27,9 +28,15 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "terra/asset/gltf.hpp"
+#include "terra/asset/gpu_asset.hpp"
+#include "terra/core/system_monitor.hpp"
+#include "terra/core/time_series.hpp"
 #include "terra/input/input_system.hpp"
 #include "terra/platform/glfw/glfw_platform.hpp"
 #include "terra/render/context.hpp"
+#include "terra/render/environment.hpp"
+#include "terra/render/hdr_image.hpp"
 #include "terra/render/mesh.hpp"
 #include "terra/render/pbr.hpp"
 #include "terra/render/resources.hpp"
@@ -38,6 +45,7 @@
 #include "terra/ui/text.hpp"
 #include "terra/ui/ui_context.hpp"
 #include "terra/ui/ui_input.hpp"
+#include "terra/ui/widgets.hpp"
 #include "terra/view/camera.hpp"
 #include "terra/view/camera_controller.hpp"
 #include "viewer_settings.hpp"
@@ -92,65 +100,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
     return true;
 }
 
-// ---- 视口演示场景（M1-08a）：地面、立方体、两排材质球（金属度 0→1、粗糙度 0→1）、圆柱、胶囊 ----
-// 网格与材质由 Terra Render 绘制（PBR、太阳光阴影、色调映射）；地面网格与 X/Y 轴由渲染器在着色器中绘制。
-
-class DemoScene {
-public:
-    static r::Material cubeMaterial() {
-        r::Material m;
-        m.baseColor = {0.80f, 0.42f, 0.22f};
-        m.roughness = 0.45f;
-        return m;
-    }
-
-    // 网格存放在本对象中，items 指向它们：创建后不能移动。
-    void create() {
-        ground_ = r::GpuMesh::create(r::meshes::plane(20.0f, 20.0f));
-        cube_ = r::GpuMesh::create(r::meshes::box(0.5f, 0.5f, 0.5f));
-        sphere_ = r::GpuMesh::create(r::meshes::sphere(0.45f));
-        cylinder_ = r::GpuMesh::create(r::meshes::cylinder(0.35f, 0.5f));
-        capsule_ = r::GpuMesh::create(r::meshes::capsule(0.3f, 0.35f));
-
-        r::Material ground;
-        ground.baseColor = {0.42f, 0.42f, 0.43f};
-        ground.roughness = 0.85f;
-        items_.push_back({&ground_, r::identityMatrix(), ground, false});
-        items_.push_back({&cube_, r::translationScale({0.0f, 0.0f, 0.5f}), cubeMaterial(), true});
-        for (int i = 0; i < 5; ++i) {
-            const float t = static_cast<float>(i) / 4.0f;
-            const float y = -3.2f + 1.6f * static_cast<float>(i);
-            r::Material metal;  // 金属度 0 → 1
-            metal.baseColor = {0.95f, 0.72f, 0.30f};
-            metal.roughness = 0.3f;
-            metal.metallic = t;
-            items_.push_back({&sphere_, r::translationScale({2.2f, y, 0.45f}), metal, true});
-            r::Material rough;  // 粗糙度 0 → 1
-            rough.baseColor = {0.15f, 0.38f, 0.80f};
-            rough.roughness = t;
-            items_.push_back({&sphere_, r::translationScale({3.4f, y, 0.45f}), rough, true});
-        }
-        r::Material green;
-        green.baseColor = {0.30f, 0.65f, 0.38f};
-        green.roughness = 0.6f;
-        items_.push_back({&cylinder_, r::translationScale({0.5f, -2.2f, 0.5f}), green, true});
-        r::Material steel;
-        steel.baseColor = {0.86f, 0.86f, 0.88f};
-        steel.metallic = 1.0f;
-        steel.roughness = 0.25f;
-        items_.push_back({&capsule_, r::translationScale({0.5f, 2.2f, 0.65f}), steel, true});
-    }
-
-    const std::vector<r::RenderItem>& items() const noexcept { return items_; }
-
-private:
-    r::GpuMesh ground_;
-    r::GpuMesh cube_;
-    r::GpuMesh sphere_;
-    r::GpuMesh cylinder_;
-    r::GpuMesh capsule_;
-    std::vector<r::RenderItem> items_;
-};
+using vw::DemoScene;
+using vw::EnvironmentLibrary;
 
 r::ViewParams viewParams(const v::Camera& camera, double aspect) {
     r::ViewParams p;
@@ -247,6 +198,33 @@ int navigationGizmo(const v::Camera& camera, ImVec2 imageMin, ImVec2 imageMax, f
     return clicked;
 }
 
+// 性能监视（M1-15）：每帧记录帧时间与 GPU 耗时；每 0.25 秒采样 CPU、显存与进程内存。
+struct PerfState {
+    terra::core::TimeSeries frameMs{600};
+    terra::core::TimeSeries gpuMs{600};
+    terra::core::TimeSeries processCpu{240};
+    terra::core::TimeSeries systemCpu{240};
+    terra::core::TimeSeries vramUsedMb{240};
+    terra::core::TimeSeries residentMb{240};
+    terra::core::SystemMonitor monitor;
+    terra::core::SystemMonitor::Sample sample;
+    std::optional<r::GpuMemory> vram;
+    double nextSample = 0.0;
+
+    void record(double now, double frameMilliseconds, const r::PassTimings& timings, const r::RenderContext& ctx) {
+        frameMs.push(frameMilliseconds);
+        if (timings.valid) gpuMs.push(timings.total());
+        if (now < nextSample) return;
+        nextSample = now + 0.25;
+        sample = monitor.sample();
+        if (sample.processCpuPercent) processCpu.push(*sample.processCpuPercent);
+        if (sample.systemCpuPercent) systemCpu.push(*sample.systemCpuPercent);
+        if (sample.residentMb) residentMb.push(*sample.residentMb);
+        vram = ctx.gpuMemory();
+        if (vram && vram->totalMb) vramUsedMb.push(*vram->totalMb - vram->availableMb);
+    }
+};
+
 struct AppState {
     bool showControls = false;
     bool showAbout = false;
@@ -256,6 +234,9 @@ struct AppState {
     ImVec2 viewportImageMin{0, 0};  // 视口图像在窗口中的位置（屏幕坐标），供自检
     ImVec2 viewportImageMax{0, 0};
     GizmoLayout gizmo;
+    bool imageLightingSeen = false;
+    std::array<double, r::kRenderPassCount> gpuMs{};  // 统计面板中平滑后的 GPU 分阶段耗时
+    PerfState perf;  // 自检：某一帧使用了环境贴图光照并画出了背景
     float autoUiScale = 1.0f;
     vw::SettingsWindow settingsWindow;
     std::vector<terra::platform::MonitorInfo> monitors;
@@ -313,6 +294,7 @@ struct Frame {
     v::CameraController& controller;
     DemoScene& scene;
     r::SceneRenderer& renderer;
+    EnvironmentLibrary& environments;
     AppState& state;
     SettingsRuntime& settings;
 };
@@ -510,6 +492,22 @@ void statusBar(Frame& f) {
     ImGui::End();
 }
 
+// 场景库返回的消息 → 界面日志（按当前语言）。
+void appendMessages(AppState& state, const std::vector<vw::SceneMessage>& messages) {
+    for (const auto& m : messages) {
+        TextId id = TextId::LogAssetLoaded;
+        switch (m.kind) {
+            case vw::SceneMessage::Kind::AssetLoaded: id = TextId::LogAssetLoaded; break;
+            case vw::SceneMessage::Kind::AssetInfo: id = TextId::LogAssetInfo; break;
+            case vw::SceneMessage::Kind::AssetWarning: id = TextId::LogAssetWarning; break;
+            case vw::SceneMessage::Kind::AssetError: id = TextId::LogAssetError; break;
+            case vw::SceneMessage::Kind::EnvironmentLoaded: id = TextId::LogEnvironmentLoaded; break;
+            case vw::SceneMessage::Kind::EnvironmentFailed: id = TextId::LogEnvironmentFailed; break;
+        }
+        state.log.push_back(std::string{tr(id)} + m.text);
+    }
+}
+
 void viewportPanel(Frame& f) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     const bool open = ImGui::Begin(label(TextId::PanelViewport, "Viewport").c_str(), nullptr,
@@ -523,8 +521,12 @@ void viewportPanel(Frame& f) {
         const int h = std::max(1, static_cast<int>(avail.y * scale.y));
         if (avail.x >= 1.0f && avail.y >= 1.0f) {
             const st::RenderSettings& rs = f.settings.current.render;
-            f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)), f.scene.items(),
-                              vw::toSunLight(rs), vw::toEnvironment(rs), vw::toRenderSettings(rs));
+            std::vector<vw::SceneMessage> messages;
+            const vw::FrameLighting lit = vw::frameLighting(rs, f.environments, f.ctx, messages);
+            appendMessages(f.state, messages);
+            f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)),
+                              f.scene.items(rs.assetArmOcclusion), lit.sun, lit.hemisphere, lit.settings, lit.image);
+            if (f.renderer.lastFrame().imageLighting && f.renderer.lastFrame().backgroundDrawn) f.state.imageLightingSeen = true;
             ImGui::Image(static_cast<ImTextureID>(f.renderer.outputTexture()), avail, ImVec2(0, 1), ImVec2(1, 0));
             f.state.viewportHovered = ImGui::IsItemHovered();
             f.state.viewportImageMin = ImGui::GetItemRectMin();
@@ -547,6 +549,9 @@ void outlinerPanel(Frame& f) {
                                       TextId::OutlinerCylinder, TextId::OutlinerCapsule, TextId::OutlinerSun}) {
                 ImGui::BulletText("%s", tr(item));
             }
+            for (const auto& a : f.scene.assets()) {
+                ImGui::BulletText("%s  (%zu △, %d %s)", a.name.c_str(), a.triangles, a.textures, tr(TextId::OutlinerTextures));
+            }
             ImGui::TreePop();
         }
         ImGui::Spacing();
@@ -556,18 +561,54 @@ void outlinerPanel(Frame& f) {
 }
 
 // 属性面板的“渲染”分组（M1-08）：直接修改设置，下一帧生效并自动保存。
-void renderControls(st::RenderSettings& rs) {
+void renderControls(st::RenderSettings& rs, bool environmentHasSun) {
     ImGui::SeparatorText(tr(TextId::DetailsRender));
     const auto slider = [](TextId name, const char* id, double& value, st::Range range, const char* format) {
-        ImGui::TextUnformatted(tr(name));
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::SliderScalar(id, ImGuiDataType_Double, &value, &range.min, &range.max, format, ImGuiSliderFlags_AlwaysClamp);
+        ui::propertySlider(id, tr(name), &value, range.min, range.max, format);
     };
-    slider(TextId::RenderSunAzimuth, "##sunAzimuth", rs.sunAzimuthDegrees, st::ranges::kAzimuth, "%.0f°");
-    slider(TextId::RenderSunElevation, "##sunElevation", rs.sunElevationDegrees, st::ranges::kElevation, "%.0f°");
-    slider(TextId::RenderSunIntensity, "##sunIntensity", rs.sunIntensity, st::ranges::kSunIntensity, "%.2f");
-    slider(TextId::RenderAmbient, "##ambient", rs.ambientIntensity, st::ranges::kAmbient, "%.2f");
-    slider(TextId::RenderExposure, "##exposure", rs.exposureEv, st::ranges::kExposure, "%+.1f EV");
+    // 环境光来源（M1-08b）
+    const std::pair<st::EnvironmentSetting, TextId> environments[] = {
+        {st::EnvironmentSetting::Outdoor, TextId::EnvironmentOutdoor},
+        {st::EnvironmentSetting::Studio, TextId::EnvironmentStudio},
+        {st::EnvironmentSetting::Hemisphere, TextId::EnvironmentHemisphere}};
+    const char* currentEnvironment = "";
+    for (const auto& [e, text] : environments) {
+        if (e == rs.environment) currentEnvironment = tr(text);
+    }
+    ImGui::TextUnformatted(tr(TextId::RenderEnvironment));
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##environment", currentEnvironment)) {
+        for (const auto& [e, text] : environments) {
+            if (ImGui::Selectable(tr(text), e == rs.environment)) rs.environment = e;
+        }
+        ImGui::EndCombo();
+    }
+    const bool imageBased = rs.environment != st::EnvironmentSetting::Hemisphere;
+    ImGui::BeginDisabled(!imageBased);
+    slider(TextId::RenderEnvironmentIntensity, "envIntensity", rs.environmentIntensity, st::ranges::kEnvironmentIntensity, "%.2f");
+    slider(TextId::RenderEnvironmentRotation, "envRotation", rs.environmentRotationDegrees, st::ranges::kEnvironmentRotation, "%.0f°");
+    ImGui::Checkbox(tr(TextId::RenderBackground), &rs.environmentBackground);
+    ImGui::BeginDisabled(!rs.environmentBackground);
+    slider(TextId::RenderBackgroundBlur, "backgroundBlur", rs.backgroundBlur, st::ranges::kBackgroundBlur, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(!imageBased);
+    ImGui::Checkbox(tr(TextId::RenderSunFromEnvironment), &rs.sunFromEnvironment);
+    ImGui::EndDisabled();
+    const bool following = imageBased && rs.sunFromEnvironment && environmentHasSun;
+    if (imageBased && rs.sunFromEnvironment && !environmentHasSun) ImGui::TextDisabled("%s", tr(TextId::RenderNoSunInEnvironment));
+    ImGui::BeginDisabled(following);  // 跟随贴图中的太阳时，手动的太阳方向与强度不起作用
+    slider(TextId::RenderSunAzimuth, "sunAzimuth", rs.sunAzimuthDegrees, st::ranges::kAzimuth, "%.0f°");
+    slider(TextId::RenderSunElevation, "sunElevation", rs.sunElevationDegrees, st::ranges::kElevation, "%.0f°");
+    slider(TextId::RenderSunIntensity, "sunIntensity", rs.sunIntensity, st::ranges::kSunIntensity, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(imageBased);  // 半球光只在不用环境贴图时生效
+    slider(TextId::RenderAmbient, "ambient", rs.ambientIntensity, st::ranges::kAmbient, "%.2f");
+    ImGui::EndDisabled();
+    slider(TextId::RenderExposure, "exposure", rs.exposureEv, st::ranges::kExposure, "%+.1f EV");
 
     const std::pair<st::ToneMapperSetting, TextId> mappers[] = {{st::ToneMapperSetting::AgX, TextId::ToneMapperAgx},
                                                                 {st::ToneMapperSetting::PbrNeutral, TextId::ToneMapperNeutral},
@@ -597,6 +638,7 @@ void renderControls(st::RenderSettings& rs) {
         }
         ImGui::EndCombo();
     }
+    ImGui::Checkbox(tr(TextId::RenderAssetArmOcclusion), &rs.assetArmOcclusion);
     ImGui::Checkbox(tr(TextId::RenderShadows), &rs.shadows);
     ImGui::SameLine();
     ImGui::Checkbox(tr(TextId::RenderGrid), &rs.grid);
@@ -629,7 +671,7 @@ void detailsPanel(Frame& f) {
             row(tr(TextId::DetailsFov), buf);
             ImGui::EndTable();
         }
-        renderControls(f.settings.current.render);
+        renderControls(f.settings.current.render, f.environments.sun(f.settings.current.render.environment).has_value());
         ImGui::Spacing();
         ImGui::TextDisabled("%s", tr(TextId::DetailsHint));
     }
@@ -644,6 +686,31 @@ void logPanel(Frame& f) {
         if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
     }
     ImGui::End();
+}
+
+// 性能图表（M1-15，用户建议）：帧时间、CPU 占用、显存、进程内存，随时间向左滚动。
+void performanceCharts(const PerfState& p) {
+    if (!ImGui::CollapsingHeader(tr(TextId::StatsCharts), ImGuiTreeNodeFlags_DefaultOpen)) return;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const ui::ChartSeries frame[] = {{&p.frameMs, color32(240, 160, 70, 255), tr(TextId::ChartFrame)},
+                                     {&p.gpuMs, color32(90, 160, 245, 255), tr(TextId::ChartGpu)}};
+    ui::lineChart("chartFrame", tr(TextId::ChartFrameTime), frame, 2, 0.0, "%.1f ms", 1000.0 / 60.0);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const ui::ChartSeries cpu[] = {{&p.processCpu, color32(110, 200, 120, 255), tr(TextId::ChartProcess)},
+                                   {&p.systemCpu, color32(160, 170, 200, 255), tr(TextId::ChartSystem)}};
+    ui::lineChart("chartCpu", tr(TextId::ChartCpu), cpu, 2, 100.0, "%.0f%%");
+    if (p.vram && p.vram->totalMb) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const ui::ChartSeries vram[] = {{&p.vramUsedMb, color32(200, 120, 230, 255), tr(TextId::ChartVramUsed)}};
+        char title[96];
+        std::snprintf(title, sizeof(title), "%s（%.0f MB）", tr(TextId::ChartVram), *p.vram->totalMb);
+        ui::lineChart("chartVram", title, vram, 1, *p.vram->totalMb, "%.0f MB");
+    } else {
+        ImGui::TextDisabled("%s", tr(TextId::ChartVramUnavailable));
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const ui::ChartSeries memory[] = {{&p.residentMb, color32(230, 200, 90, 255), tr(TextId::ChartResident)}};
+    ui::lineChart("chartMemory", tr(TextId::ChartMemory), memory, 1, 0.0, "%.0f MB");
 }
 
 void statsPanel(Frame& f) {
@@ -672,13 +739,35 @@ void statsPanel(Frame& f) {
                 row(TextId::StatsViewportSize, buf);
                 const int samples = f.renderer.lastFrame().samples;
                 row(TextId::StatsMsaa, samples > 1 ? std::to_string(samples) + "×" : std::string{tr(TextId::RenderMsaaOff)});
+                // GPU 分阶段耗时（M1-10，时间戳查询，结果落后 1–2 帧；按约 0.5 秒平滑）
+                const r::PassTimings& t = f.renderer.lastTimings();
+                if (t.valid) {
+                    for (int i = 0; i < r::kRenderPassCount; ++i) {
+                        const auto k = static_cast<std::size_t>(i);
+                        f.state.gpuMs[k] = f.state.gpuMs[k] * 0.97 + t.milliseconds[k] * 0.03;
+                    }
+                    double total = 0.0;
+                    for (const double ms : f.state.gpuMs) total += ms;
+                    std::snprintf(buf, sizeof(buf), "%.2f ms", total);
+                    row(TextId::StatsGpuTime, buf);
+                    const TextId names[r::kRenderPassCount] = {TextId::StatsGpuShadow, TextId::StatsGpuOpaque, TextId::StatsGpuBackground,
+                                                               TextId::StatsGpuGrid, TextId::StatsGpuResolve, TextId::StatsGpuToneMap};
+                    for (int i = 0; i < r::kRenderPassCount; ++i) {
+                        std::snprintf(buf, sizeof(buf), "%.2f ms", f.state.gpuMs[static_cast<std::size_t>(i)]);
+                        row(names[i], buf);
+                    }
+                }
             }
             std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(f.window.contentScale()));
             row(TextId::StatsContentScale, buf);
             std::snprintf(buf, sizeof(buf), "%.0f%%", static_cast<double>(f.uiCtx.scale()) * 100.0);
             row(TextId::StatsUiScale, buf);
+            std::snprintf(buf, sizeof(buf), "%d", f.state.perf.sample.logicalCores);
+            row(TextId::StatsCpuCores, buf);
+            row(TextId::StatsVramSource, f.state.perf.vram ? f.state.perf.vram->source : std::string{tr(TextId::StatsUnavailable)});
             ImGui::EndTable();
         }
+        performanceCharts(f.state.perf);
     }
     ImGui::End();
 }
@@ -799,6 +888,34 @@ int selfTest(Frame& f, const ui::UiContext& uiContext, const Options& options) {
                     str(center).c_str(), str(cubeFace).c_str());
         check(near(center, cubeFace, 3), "视口中心与 C++ 参考着色一致（立方体受光面，AgX）");
         check(f.renderer.lastFrame().shadowsDrawn, "绘制了太阳光阴影");
+        {
+            const std::string toolbox = std::string{TERRA_ASSETS_DIR} + "/models/metal_toolbox/metal_toolbox_2k.gltf";
+            if (std::FILE* probe = std::fopen(toolbox.c_str(), "rb")) {
+                std::fclose(probe);
+                const auto& assets = f.scene.assets();
+                bool texturesOk = !assets.empty();
+                for (const auto& asset : assets) texturesOk = texturesOk && asset.textures == 3 && asset.triangles > 0;
+                check(assets.size() == 3 && texturesOk, "三个 glTF 资产已加载，每个 3 张贴图（实际 " + std::to_string(assets.size()) + " 个）");
+            } else {
+                std::printf("INFO 未找到 glTF 资产（未运行 scripts/assets/fetch_models.sh），跳过资产检查\n");
+            }
+        }
+        {
+            const PerfState& p = f.state.perf;
+            check(p.frameMs.size() >= 30 && p.residentMb.size() >= 1 && p.residentMb.latest() > 0.0,
+                  "性能图表数据：帧时间已记录 " + std::to_string(p.frameMs.size()) + " 帧，进程内存已采样");
+            if (p.vram && p.vram->totalMb) {
+                std::printf("INFO 显存（%s）：总量 %.0f MB，可用 %.0f MB\n", p.vram->source.c_str(), *p.vram->totalMb, p.vram->availableMb);
+            } else {
+                std::printf("INFO 显存：当前驱动不提供查询\n");
+            }
+        }
+        if (f.environments.available(st::EnvironmentSetting::Outdoor)) {
+            check(f.state.imageLightingSeen, "室外环境贴图已加载，环境光照与背景已绘制（前 3/4 的帧）");
+        } else {
+            std::printf("INFO 未找到 assets/hdri/%s（未运行 scripts/assets/fetch_hdri.sh），跳过环境贴图检查\n",
+                        EnvironmentLibrary::fileName(st::EnvironmentSetting::Outdoor));
+        }
     } else {
         check(false, "视口已渲染");
     }
@@ -1026,14 +1143,21 @@ int main(int argc, char** argv) {
         return 1;
     }
     r::SceneRenderer& renderer = *rendererMade.renderer;
+    renderer.setTimingEnabled(true);
     DemoScene scene;
     scene.create();
+    EnvironmentLibrary environments(TERRA_ASSETS_DIR);
 
     AppState state;
     state.autoUiScale = autoUiScale;
     state.monitors = monitors;
     state.log.push_back(tr(TextId::LogStarted));
     state.log.push_back(std::string{tr(TextId::StatsRenderer)} + "：" + ctx.info().renderer);
+    {
+        std::vector<vw::SceneMessage> messages;
+        scene.loadAssets(TERRA_ASSETS_DIR, messages);
+        appendMessages(state, messages);
+    }
     if (loaded) {
         switch (loaded->status) {
             case st::LoadStatus::Loaded: state.log.push_back(tr(TextId::LogSettingsLoaded) + settings.path); break;
@@ -1047,7 +1171,7 @@ int main(int argc, char** argv) {
         for (const auto& w : loaded->warnings) state.log.push_back(tr(TextId::LogSettingsWarning) + w);
     }
     settings.applied = settings.current;
-    Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, state, settings};
+    Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings};
 
     // 设置中的全屏模式在窗口创建后进入；失败时退回窗口模式。
     if (settings.current.display.mode != st::WindowMode::Windowed && !options.selfTest) {
@@ -1108,9 +1232,12 @@ int main(int argc, char** argv) {
             if (frames == 8) state.settingsWindow.capture.reset();
             if (frames == 9) openSettingsWindow(frame, false);
             if (frames == options.frames / 2) settings.current.ui.language = "en";
+            // 前 30 帧使用默认的室外环境贴图（检查 IBL 管线），之后切到半球光，使结束时的视口像素可与 C++ 参考精确比较
+            if (frames == options.frames * 3 / 4) settings.current.render.environment = st::EnvironmentSetting::Hemisphere;
         }
         buildUi(frame);
         captureLayout(frame, false);
+        state.perf.record(now, dt * 1000.0, renderer.lastTimings(), ctx);
 
         r::Framebuffer::bindDefault();
         const auto fbSize = window.framebufferSize();

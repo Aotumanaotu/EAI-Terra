@@ -45,6 +45,44 @@ bool Buffer::update(std::size_t offset, std::size_t bytes, const void* data) {
     return true;
 }
 
+// ---- Texture2D ----
+
+Texture2D Texture2D::create(int width, int height, const std::uint8_t* pixels, bool srgb) {
+    Texture2D t;
+    if (width <= 0 || height <= 0 || pixels == nullptr) return t;
+    int levels = 1;
+    while (((width > height ? width : height) >> levels) > 0) ++levels;
+    glCreateTextures(GL_TEXTURE_2D, 1, &t.name_);
+    glTextureStorage2D(t.name_, levels, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, width, height);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTextureSubImage2D(t.name_, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glGenerateTextureMipmap(t.name_);
+    glTextureParameteri(t.name_, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTextureParameteri(t.name_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(t.name_, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTextureParameteri(t.name_, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    t.width_ = width;
+    t.height_ = height;
+    return t;
+}
+
+Texture2D::~Texture2D() {
+    if (name_ != 0) glDeleteTextures(1, &name_);
+}
+
+Texture2D::Texture2D(Texture2D&& other) noexcept
+    : name_(std::exchange(other.name_, 0u)), width_(std::exchange(other.width_, 0)), height_(std::exchange(other.height_, 0)) {}
+
+Texture2D& Texture2D::operator=(Texture2D&& other) noexcept {
+    if (this != &other) {
+        if (name_ != 0) glDeleteTextures(1, &name_);
+        name_ = std::exchange(other.name_, 0u);
+        width_ = std::exchange(other.width_, 0);
+        height_ = std::exchange(other.height_, 0);
+    }
+    return *this;
+}
+
 // ---- VertexArray ----
 
 VertexArray VertexArray::create() {
@@ -242,6 +280,10 @@ void ShaderProgram::setUniformInt(int location, int value) {
 
 void ShaderProgram::setUniformFloat(int location, float value) {
     if (location >= 0) glProgramUniform1f(name_, location, value);
+}
+
+void ShaderProgram::setUniformVec2(int location, float x, float y) {
+    if (location >= 0) glProgramUniform2f(name_, location, x, y);
 }
 
 void ShaderProgram::setUniformVec3(int location, float x, float y, float z) {

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 
 namespace terra::render::pbr {
 
@@ -99,7 +101,12 @@ Vec3f hemisphere(const HemisphereLight& env, Vec3f direction) {
     return scale(mix(env.ground, env.sky, 0.5f * direction.z + 0.5f), env.intensity);
 }
 
-Vec3f shade(const Material& m, Vec3f n, Vec3f v, const SunLight& sun, const HemisphereLight& env, float shadow) {
+float specularOcclusion(float NoV, float occlusion, float alpha) {
+    return clamp01(std::pow(NoV + occlusion, std::exp2(-16.0f * alpha - 1.0f)) - 1.0f + occlusion);
+}
+
+Vec3f shade(const Material& m, Vec3f n, Vec3f v, const SunLight& sun, const HemisphereLight& env, float shadow,
+            float occlusion) {
     const float rough = std::max(m.roughness, kMinRoughness);
     const float alpha = rough * rough;
     const Vec3f diffuseColor = scale(m.baseColor, 1.0f - m.metallic);
@@ -129,7 +136,9 @@ Vec3f shade(const Material& m, Vec3f n, Vec3f v, const SunLight& sun, const Hemi
                                    fresnel));
     const Vec3f r = normalize(mix(reflect(scale(v, -1.0f), n), n, alpha));
     const Vec3f one{1.0f, 1.0f, 1.0f};
-    color = add(color, add(mul(mul(hemisphere(env, n), diffuseColor), sub(one, Fa)), mul(hemisphere(env, r), Fa)));
+    const float so = specularOcclusion(NoV, occlusion, alpha);
+    color = add(color, add(scale(mul(mul(hemisphere(env, n), diffuseColor), sub(one, Fa)), occlusion),
+                           scale(mul(hemisphere(env, r), Fa), so)));
     return color;
 }
 
@@ -143,6 +152,102 @@ Vec3f toneMap(Vec3f c, ToneMapper mapper, float exposureEv) {
         case ToneMapper::None: break;
     }
     return clamp01(c);
+}
+
+// ---- IBL ----
+
+namespace {
+
+float radicalInverse(std::uint32_t bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return static_cast<float>(bits) * 2.3283064365386963e-10f;
+}
+
+}  // namespace
+
+std::vector<float> dfgLut(int size, int samples) {
+    size = std::max(size, 1);
+    samples = std::max(samples, 1);
+    std::vector<float> lut(static_cast<std::size_t>(size) * static_cast<std::size_t>(size) * 2u, 0.0f);
+    for (int j = 0; j < size; ++j) {
+        const float rough = std::max((static_cast<float>(j) + 0.5f) / static_cast<float>(size), kMinRoughness);
+        const float alpha = rough * rough;
+        for (int i = 0; i < size; ++i) {
+            const float NoV = (static_cast<float>(i) + 0.5f) / static_cast<float>(size);
+            const Vec3f v{std::sqrt(1.0f - NoV * NoV), 0.0f, NoV};
+            float a = 0.0f;
+            float b = 0.0f;
+            for (int k = 0; k < samples; ++k) {
+                const float xi0 = static_cast<float>(k) / static_cast<float>(samples);
+                const float xi1 = radicalInverse(static_cast<std::uint32_t>(k));
+                const float phi = 2.0f * kPi * xi0;
+                const float cosTheta = std::sqrt((1.0f - xi1) / (1.0f + (alpha * alpha - 1.0f) * xi1));
+                const float sinTheta = std::sqrt(std::max(0.0f, 1.0f - cosTheta * cosTheta));
+                const Vec3f h{sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta};
+                const float VoH = dot(v, h);
+                const Vec3f l = sub(scale(h, 2.0f * VoH), v);
+                const float NoL = l.z;
+                const float NoH = h.z;
+                if (NoL <= 0.0f || NoH <= 0.0f || VoH <= 0.0f) continue;
+                const float vis = visibilitySmithGgxCorrelated(NoV, NoL, alpha);
+                const float gv = vis * 4.0f * NoL * VoH / NoH;
+                const float fc = std::pow(1.0f - VoH, 5.0f);
+                a += (1.0f - fc) * gv;
+                b += fc * gv;
+            }
+            const std::size_t o = (static_cast<std::size_t>(j) * static_cast<std::size_t>(size) + static_cast<std::size_t>(i)) * 2u;
+            lut[o] = a / static_cast<float>(samples);
+            lut[o + 1] = b / static_cast<float>(samples);
+        }
+    }
+    return lut;
+}
+
+Vec2f sampleDfg(const std::vector<float>& lut, int size, float NoV, float roughness) {
+    if (size <= 0 || lut.size() < static_cast<std::size_t>(size) * static_cast<std::size_t>(size) * 2u) return {};
+    const auto texel = [&](int i, int j) {
+        i = std::min(std::max(i, 0), size - 1);
+        j = std::min(std::max(j, 0), size - 1);
+        const std::size_t o = (static_cast<std::size_t>(j) * static_cast<std::size_t>(size) + static_cast<std::size_t>(i)) * 2u;
+        return Vec2f{lut[o], lut[o + 1]};
+    };
+    const float x = clamp01(NoV) * static_cast<float>(size) - 0.5f;
+    const float y = clamp01(roughness) * static_cast<float>(size) - 0.5f;
+    const float fx = std::floor(x);
+    const float fy = std::floor(y);
+    const int i0 = static_cast<int>(fx);
+    const int j0 = static_cast<int>(fy);
+    const float tx = x - fx;
+    const float ty = y - fy;
+    const Vec2f a = texel(i0, j0);
+    const Vec2f b = texel(i0 + 1, j0);
+    const Vec2f c = texel(i0, j0 + 1);
+    const Vec2f d = texel(i0 + 1, j0 + 1);
+    const auto lerp = [](float p, float q, float t) { return p + (q - p) * t; };
+    return {lerp(lerp(a.x, b.x, tx), lerp(c.x, d.x, tx), ty), lerp(lerp(a.y, b.y, tx), lerp(c.y, d.y, tx), ty)};
+}
+
+Vec3f ambientIbl(const Material& m, Vec3f n, Vec3f v, Vec3f irradiance, Vec3f prefiltered, const std::vector<float>& lut,
+                 int lutSize, float occlusion) {
+    const float rough = std::max(m.roughness, kMinRoughness);
+    const Vec3f diffuseColor = scale(m.baseColor, 1.0f - m.metallic);
+    const float r0 = 0.16f * m.reflectance * m.reflectance;
+    const Vec3f f0 = mix(Vec3f{r0, r0, r0}, m.baseColor, m.metallic);
+    const float NoV = std::max(dot(n, v), 1e-4f);
+    const Vec2f dfg = sampleDfg(lut, lutSize, NoV, rough);
+    const Vec3f e = add(scale(f0, dfg.x), Vec3f{dfg.y, dfg.y, dfg.y});
+    const Vec3f one{1.0f, 1.0f, 1.0f};
+    const float so = specularOcclusion(NoV, occlusion, rough * rough);
+    return add(scale(mul(mul(irradiance, diffuseColor), sub(one, e)), occlusion), scale(mul(prefiltered, e), so));
+}
+
+float srgbDecode(float x) {
+    x = clamp01(x);
+    return x <= 0.04045f ? x / 12.92f : std::pow((x + 0.055f) / 1.055f, 2.4f);
 }
 
 float srgbEncode(float x) {
@@ -188,8 +293,12 @@ vec3 hemisphere(vec3 d) {
     return mix(uGround, uSky, 0.5 * d.z + 0.5) * uAmbient;
 }
 
+float specularOcclusion(float NoV, float occlusion, float a) {
+    return clamp(pow(NoV + occlusion, exp2(-16.0 * a - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
+}
+
 vec3 shadeSurface(vec3 baseColor, float metallic, float roughness, float reflectance, vec3 emissive,
-                  vec3 n, vec3 v, vec3 l, vec3 sunRadiance, float shadow) {
+                  vec3 n, vec3 v, vec3 l, vec3 sunRadiance, float shadow, float occlusion) {
     float rough = max(roughness, MIN_ROUGHNESS);
     float a = rough * rough;
     vec3 diffuseColor = baseColor * (1.0 - metallic);
@@ -212,7 +321,7 @@ vec3 shadeSurface(vec3 baseColor, float metallic, float roughness, float reflect
     float fresnel = pow(1.0 - NoV, 5.0);
     vec3 Fa = f0 + (max(vec3(1.0 - rough), f0) - f0) * fresnel;
     vec3 r = normalize(mix(reflect(-v, n), n, a));
-    color += hemisphere(n) * diffuseColor * (vec3(1.0) - Fa) + hemisphere(r) * Fa;
+    color += hemisphere(n) * diffuseColor * (vec3(1.0) - Fa) * occlusion + hemisphere(r) * Fa * specularOcclusion(NoV, occlusion, a);
     return color;
 }
 
@@ -270,6 +379,30 @@ vec3 toneMap(vec3 c, int mode, float exposureEv) {
 float srgbEncode(float x) {
     x = clamp(x, 0.0, 1.0);
     return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+
+// ---- IBL（M1-08b）：与 C++ ambientIbl 对应；环境贴图按 uEnvRotation（cos, sin）绕 Z 旋转 ----
+uniform samplerCube uIrradiance;
+uniform samplerCube uPrefiltered;
+uniform sampler2D uDfg;
+uniform float uPrefilteredMaxLod;
+uniform vec2 uEnvRotation;
+
+vec3 envDirection(vec3 d) {
+    return vec3(uEnvRotation.x * d.x + uEnvRotation.y * d.y, -uEnvRotation.y * d.x + uEnvRotation.x * d.y, d.z);
+}
+
+vec3 ambientIbl(vec3 baseColor, float metallic, float roughness, float reflectance, vec3 n, vec3 v, float occlusion) {
+    float rough = max(roughness, MIN_ROUGHNESS);
+    vec3 diffuseColor = baseColor * (1.0 - metallic);
+    float r0 = 0.16 * reflectance * reflectance;
+    vec3 f0 = mix(vec3(r0), baseColor, metallic);
+    float NoV = max(dot(n, v), 1e-4);
+    vec2 dfg = texture(uDfg, vec2(NoV, rough)).rg;
+    vec3 e = f0 * dfg.x + vec3(dfg.y);
+    vec3 irradiance = texture(uIrradiance, envDirection(n)).rgb;
+    vec3 prefiltered = textureLod(uPrefiltered, envDirection(reflect(-v, n)), rough * uPrefilteredMaxLod).rgb;
+    return irradiance * diffuseColor * (vec3(1.0) - e) * occlusion + prefiltered * e * specularOcclusion(NoV, occlusion, rough * rough);
 }
 )GLSL";
 }

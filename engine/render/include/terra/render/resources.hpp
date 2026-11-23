@@ -63,6 +63,29 @@ private:
     std::uint32_t name_ = 0;
 };
 
+// 二维纹理（M1-09）：RGBA8，完整 mip 链，三线性过滤，重复寻址。srgb 为真时按 sRGB 解码（基础色、自发光贴图）。
+class Texture2D {
+public:
+    Texture2D() = default;
+    // pixels 为 width × height × 4 字节，行 0 对应纹理坐标 t = 0（glTF 约定：图像顶部 = UV 的 v = 0）。
+    static Texture2D create(int width, int height, const std::uint8_t* pixels, bool srgb);
+
+    ~Texture2D();
+    Texture2D(Texture2D&& other) noexcept;
+    Texture2D& operator=(Texture2D&& other) noexcept;
+    Texture2D(const Texture2D&) = delete;
+    Texture2D& operator=(const Texture2D&) = delete;
+
+    std::uint32_t name() const noexcept { return name_; }
+    int width() const noexcept { return width_; }
+    int height() const noexcept { return height_; }
+
+private:
+    std::uint32_t name_ = 0;
+    int width_ = 0;
+    int height_ = 0;
+};
+
 enum class ShaderStage { Vertex, Fragment };
 
 struct ShaderSource {
@@ -105,6 +128,7 @@ public:
     void setUniformMatrix4(int location, const float* columnMajor16);
     void setUniformInt(int location, int value);  // 也用于采样器绑定的纹理单元
     void setUniformFloat(int location, float value);
+    void setUniformVec2(int location, float x, float y);
     void setUniformVec3(int location, float x, float y, float z);
 
     std::uint32_t name() const noexcept { return name_; }

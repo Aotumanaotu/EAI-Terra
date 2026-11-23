@@ -1,0 +1,8 @@
+# cgltf 源码锁定记录（M1-09，D-019）。由 scripts/render/check_cgltf.sh 读取并复核。
+# 状态：已锁定（2026-11-22）。单头文件，MIT（LICENSE）。直接提交在仓库中（约 0.2 MB），构建不联网。文件未做任何修改。
+CGLTF_VERSION=1.15
+CGLTF_COMMIT=360db1a95480fe102ae9c69b27c5d101167ff5ba
+CGLTF_URL=https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.15/cgltf.h
+CGLTF_SHA256=e378a21c084bf1f288bb799de827bb26906efb024255f1ecf1705ea13f11c6ec
+CGLTF_LICENSE_URL=https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.15/LICENSE
+CGLTF_LICENSE_SHA256=f619925f80ef862497aaf8e8155ef218fa6a2190055129523ca3df9119a9ba95

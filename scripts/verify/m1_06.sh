@@ -12,7 +12,8 @@
 #   5. 打印 graphics.render_core 的 INFO 行
 #   6. 可见展示：桌面会话中用真实 GPU 打开窗口约 4 秒（Esc 可提前关闭），显示旋转的渐变三角形与前方的蓝色三角形
 # 最后打印汇总；任一步失败时退出码非 0。
-# 用法：bash scripts/verify/m1_06.sh [--jobs N] [--skip-asan] [--skip-mutation] [--skip-show]
+# 用法：bash scripts/verify/m1_06.sh [--jobs N] [--skip-asan] [--skip-mutation] [--skip-show] [--mutation-only]
+# --mutation-only：只做变异测试（M1-11 阶段验收调用；不删除、不重建 build/ 下的预设构建目录，跳过 ASan 与真实 GPU 步骤）
 set -uo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -21,14 +22,16 @@ cd "$root"
 jobs=$(nproc)
 skip_asan=0
 skip_mutation=0
+mutation_only=0
 skip_show=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --jobs) jobs=$2; shift 2 ;;
         --skip-asan) skip_asan=1; shift ;;
         --skip-mutation) skip_mutation=1; shift ;;
+        --mutation-only) mutation_only=1; skip_asan=1; skip_show=1; shift ;;
         --skip-show) skip_show=1; shift ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "未知参数：$1" >&2; exit 2 ;;
     esac
 done
@@ -60,6 +63,7 @@ if [ ! -f third_party/render/install/lib/cmake/glfw3/glfw3Config.cmake ]; then
 fi
 
 run_preset() {  # run_preset <preset> <名称> [额外配置参数...]
+    [ $mutation_only = 1 ] && return 0
     local preset=$1 label=$2; shift 2
     local log="$logs/$preset.txt"
     rm -rf "build/$preset"

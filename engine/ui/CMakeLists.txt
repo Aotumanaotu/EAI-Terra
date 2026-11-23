@@ -4,8 +4,9 @@
 add_library(terra_ui STATIC
     src/text.cpp
     src/ui_input.cpp
-    src/ui_context.cpp)
+    src/ui_context.cpp
+    src/widgets.cpp)
 add_library(terra::ui ALIAS terra_ui)
 target_include_directories(terra_ui PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(terra_ui PUBLIC terra::imgui terra::input terra::platform)
+target_link_libraries(terra_ui PUBLIC terra::imgui terra::input terra::platform terra::core)
 terra_configure_target(terra_ui)

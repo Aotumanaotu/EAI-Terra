@@ -227,7 +227,9 @@ void readCamera(Reader& r, const Json& j, CameraSettings& s) {
 void readRender(Reader& r, const Json& j, RenderSettings& s) {
     const std::string path = "render";
     r.unknownFields(j, path, {"sunAzimuthDegrees", "sunElevationDegrees", "sunIntensity", "ambientIntensity", "exposureEv",
-                              "toneMapper", "msaa", "shadows", "grid"});
+                              "toneMapper", "msaa", "shadows", "grid", "environment", "environmentIntensity",
+                              "environmentRotationDegrees", "environmentBackground", "backgroundBlur", "sunFromEnvironment",
+                              "assetArmOcclusion"});
     r.real(j, "sunAzimuthDegrees", path, ranges::kAzimuth, s.sunAzimuthDegrees);
     r.real(j, "sunElevationDegrees", path, ranges::kElevation, s.sunElevationDegrees);
     r.real(j, "sunIntensity", path, ranges::kSunIntensity, s.sunIntensity);
@@ -259,6 +261,26 @@ void readRender(Reader& r, const Json& j, RenderSettings& s) {
     }
     r.boolean(j, "shadows", path, s.shadows);
     r.boolean(j, "grid", path, s.grid);
+    if (const auto it = j.find("environment"); it != j.end()) {
+        const std::string value = it->is_string() ? it->get<std::string>() : std::string{};
+        bool found = false;
+        for (const EnvironmentSetting e : {EnvironmentSetting::Hemisphere, EnvironmentSetting::Outdoor, EnvironmentSetting::Studio}) {
+            if (value == environmentName(e)) {
+                s.environment = e;
+                found = true;
+            }
+        }
+        if (!found) {
+            r.warn("render.environment：应为 \"hemisphere\"、\"outdoor\" 或 \"studio\"，已使用默认值 \"" +
+                   std::string{environmentName(s.environment)} + "\"");
+        }
+    }
+    r.real(j, "environmentIntensity", path, ranges::kEnvironmentIntensity, s.environmentIntensity);
+    r.real(j, "environmentRotationDegrees", path, ranges::kEnvironmentRotation, s.environmentRotationDegrees);
+    r.boolean(j, "environmentBackground", path, s.environmentBackground);
+    r.real(j, "backgroundBlur", path, ranges::kBackgroundBlur, s.backgroundBlur);
+    r.boolean(j, "sunFromEnvironment", path, s.sunFromEnvironment);
+    r.boolean(j, "assetArmOcclusion", path, s.assetArmOcclusion);
 }
 
 void readKeys(Reader& r, const Json& j, KeyMap& keys) {
@@ -337,6 +359,15 @@ const char* toneMapperName(ToneMapperSetting mapper) noexcept {
         case ToneMapperSetting::PbrNeutral: return "pbrNeutral";
         case ToneMapperSetting::Aces: return "aces";
         case ToneMapperSetting::None: return "none";
+    }
+    return "";
+}
+
+const char* environmentName(EnvironmentSetting environment) noexcept {
+    switch (environment) {
+        case EnvironmentSetting::Hemisphere: return "hemisphere";
+        case EnvironmentSetting::Outdoor: return "outdoor";
+        case EnvironmentSetting::Studio: return "studio";
     }
     return "";
 }
@@ -443,7 +474,11 @@ bool operator==(const CameraSettings& a, const CameraSettings& b) noexcept {
 bool operator==(const RenderSettings& a, const RenderSettings& b) noexcept {
     return a.sunAzimuthDegrees == b.sunAzimuthDegrees && a.sunElevationDegrees == b.sunElevationDegrees &&
            a.sunIntensity == b.sunIntensity && a.ambientIntensity == b.ambientIntensity && a.exposureEv == b.exposureEv &&
-           a.toneMapper == b.toneMapper && a.msaaSamples == b.msaaSamples && a.shadows == b.shadows && a.grid == b.grid;
+           a.toneMapper == b.toneMapper && a.msaaSamples == b.msaaSamples && a.shadows == b.shadows && a.grid == b.grid &&
+           a.environment == b.environment && a.environmentIntensity == b.environmentIntensity &&
+           a.environmentRotationDegrees == b.environmentRotationDegrees &&
+           a.environmentBackground == b.environmentBackground && a.backgroundBlur == b.backgroundBlur &&
+           a.sunFromEnvironment == b.sunFromEnvironment && a.assetArmOcclusion == b.assetArmOcclusion;
 }
 
 bool operator==(const Settings& a, const Settings& b) noexcept {
@@ -510,6 +545,13 @@ std::string toJson(const Settings& s) {
     render["msaa"] = s.render.msaaSamples;
     render["shadows"] = s.render.shadows;
     render["grid"] = s.render.grid;
+    render["environment"] = environmentName(s.render.environment);
+    render["environmentIntensity"] = s.render.environmentIntensity;
+    render["environmentRotationDegrees"] = s.render.environmentRotationDegrees;
+    render["environmentBackground"] = s.render.environmentBackground;
+    render["backgroundBlur"] = s.render.backgroundBlur;
+    render["sunFromEnvironment"] = s.render.sunFromEnvironment;
+    render["assetArmOcclusion"] = s.render.assetArmOcclusion;
     root["render"] = render;
 
     Json keys = Json::object();

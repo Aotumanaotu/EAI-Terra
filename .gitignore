@@ -21,3 +21,6 @@ compile_commands.json
 /assets/hdri/*.hdr
 /assets/hdri/*.part
 /HDRI/
+# glTF 测试资产：由 scripts/assets/fetch_models.sh 下载（记录见 assets/models/models.lock）；GLTF/ 是用户保存的原件
+/assets/models/*/
+/GLTF/

@@ -13,7 +13,8 @@ configure_file(
     @ONLY)
 
 add_library(terra_core STATIC
-    src/build_info.cpp)
+    src/build_info.cpp
+    src/system_monitor.cpp)
 add_library(terra::core ALIAS terra_core)
 
 target_include_directories(terra_core

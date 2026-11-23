@@ -19,7 +19,16 @@ struct DebugSink {
 struct RenderContext::Impl {
     GlInfo info;
     DebugSink debug;
+    bool nvxMemoryInfo = false;  // GL_NVX_gpu_memory_info
+    bool atiMemInfo = false;     // GL_ATI_meminfo
 };
+
+namespace {
+// 显存查询扩展的枚举值（glad 只生成了核心功能，按扩展规范直接写出）
+constexpr GLenum kGpuMemoryInfoDedicatedVidmemNvx = 0x9047;
+constexpr GLenum kGpuMemoryInfoCurrentAvailableVidmemNvx = 0x9049;
+constexpr GLenum kTextureFreeMemoryAti = 0x87FC;
+}  // namespace
 
 namespace {
 
@@ -82,6 +91,17 @@ ContextResult RenderContext::create(GlLoader loader) {
                        " 低于 Terra 要求的 4.5（D-021）；渲染器：" + gl.renderer;
         return result;
     }
+    {
+        GLint extensions = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+        for (GLint i = 0; i < extensions; ++i) {
+            const auto* name = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, static_cast<GLuint>(i)));
+            if (name == nullptr) continue;
+            const std::string ext{name};
+            if (ext == "GL_NVX_gpu_memory_info") impl->nvxMemoryInfo = true;
+            if (ext == "GL_ATI_meminfo") impl->atiMemInfo = true;
+        }
+    }
     GLint profile = 0;
     glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile);
     if ((profile & GL_CONTEXT_CORE_PROFILE_BIT) == 0) {
@@ -121,6 +141,43 @@ std::vector<DebugMessage> RenderContext::takeDebugMessages() {
 }
 
 std::size_t RenderContext::errorMessageCount() const noexcept { return impl_->debug.errorCount; }
+
+bool isSoftwareRenderer(const std::string& renderer) {
+    for (const char* name : {"llvmpipe", "softpipe", "swrast", "SWR"}) {
+        if (renderer.find(name) != std::string::npos) return true;
+    }
+    return false;
+}
+
+std::optional<GpuMemory> gpuMemoryFromReport(const std::string& renderer, const std::string& source,
+                                             std::optional<long long> totalKb, long long availableKb) {
+    // 软件渲染器没有专用显存；llvmpipe 的 NVX 查询返回的不是显存（0、约 514 GB 都出现过，LOG-069/070）
+    if (isSoftwareRenderer(renderer)) return std::nullopt;
+    if (availableKb < 0) return std::nullopt;
+    if (totalKb && (*totalKb <= 0 || availableKb > *totalKb)) return std::nullopt;
+    if (!totalKb && availableKb == 0) return std::nullopt;
+    GpuMemory m;
+    if (totalKb) m.totalMb = static_cast<double>(*totalKb) / 1024.0;
+    m.availableMb = static_cast<double>(availableKb) / 1024.0;
+    m.source = source;
+    return m;
+}
+
+std::optional<GpuMemory> RenderContext::gpuMemory() const {
+    if (impl_->nvxMemoryInfo) {
+        GLint total = 0;
+        GLint available = 0;
+        glGetIntegerv(kGpuMemoryInfoDedicatedVidmemNvx, &total);              // KB
+        glGetIntegerv(kGpuMemoryInfoCurrentAvailableVidmemNvx, &available);  // KB
+        return gpuMemoryFromReport(impl_->info.renderer, "GL_NVX_gpu_memory_info", total, available);
+    }
+    if (impl_->atiMemInfo) {
+        GLint freeKb[4] = {};
+        glGetIntegerv(kTextureFreeMemoryAti, freeKb);  // [0] 可用总量，KB
+        return gpuMemoryFromReport(impl_->info.renderer, "GL_ATI_meminfo", std::nullopt, freeKb[0]);
+    }
+    return std::nullopt;
+}
 
 void RenderContext::setViewport(int x, int y, int width, int height) { glViewport(x, y, width, height); }
 

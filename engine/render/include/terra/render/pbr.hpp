@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace terra::render {
 
@@ -30,6 +31,16 @@ struct Material {
     float roughness = 0.5f;             // 感知粗糙度；着色时下限 kMinRoughness
     float reflectance = 0.5f;           // 非金属的镜面反射率参数
     Vec3f emissive{0.0f, 0.0f, 0.0f};   // 线性辐射，直接相加
+
+    // M1-09：贴图（GL 纹理名称，0 = 无）。按 glTF 约定与上面的因子相乘。
+    std::uint32_t baseColorTexture = 0;          // sRGB：RGB 乘以 baseColor
+    std::uint32_t metallicRoughnessTexture = 0;  // 线性：G 乘以粗糙度，B 乘以金属度
+    std::uint32_t normalTexture = 0;             // 线性：切线空间法线（OpenGL 约定，+Y 向上），xy 乘以 normalScale
+    std::uint32_t occlusionTexture = 0;          // 线性：R 为环境遮蔽，按 occlusionStrength 插值
+    std::uint32_t emissiveTexture = 0;           // sRGB：RGB 乘以 emissive
+    float normalScale = 1.0f;
+    float occlusionStrength = 1.0f;
+    bool doubleSided = false;                    // 双面：不剔除背面，背面法线取反
 };
 
 // 太阳光（方向光）。direction 指向光源（单位向量）。
@@ -64,13 +75,36 @@ Vec3f fresnelSchlick(Vec3f f0, float VoH);
 Vec3f hemisphere(const HemisphereLight& env, Vec3f direction);
 
 // 表面一点的出射辐射（线性）。n、v 为单位向量（v 指向相机）；shadow ∈ [0, 1]，1 表示完全受光。
-Vec3f shade(const Material& material, Vec3f n, Vec3f v, const SunLight& sun, const HemisphereLight& env, float shadow);
+// occlusion：环境遮蔽（M1-09），只作用于环境光——漫反射乘以 occlusion，镜面乘以 specularOcclusion。
+Vec3f shade(const Material& material, Vec3f n, Vec3f v, const SunLight& sun, const HemisphereLight& env, float shadow,
+            float occlusion = 1.0f);
+// 镜面遮蔽近似（Lagarde）：saturate((N·V + ao)^(2^(−16α − 1)) − 1 + ao)，α = 粗糙度²。ao = 1 时为 1。
+float specularOcclusion(float NoV, float occlusion, float alpha);
 
 // 乘以 2^exposureEv 后色调映射，返回线性显示值 ∈ [0, 1]。
 Vec3f toneMap(Vec3f radiance, ToneMapper mapper, float exposureEv);
 float srgbEncode(float linear);
+float srgbDecode(float encoded);  // sRGB → 线性（与 GL 的 SRGB8_ALPHA8 解码相同的公式）
 // 最终的 8 位显示像素：色调映射 → sRGB 编码 → 四舍五入（与 GPU 写入 RGBA8 相同）。
 std::array<std::uint8_t, 3> displayPixel(Vec3f radiance, ToneMapper mapper, float exposureEv);
+
+// ---- 基于图像的光照（M1-08b，分离求和近似）----
+// 环境光 = 辐照度(n) · diffuseColor · (1 − E) + 预过滤辐射(r, 粗糙度) · E，其中 E = F0 · DFG.x + DFG.y，
+// r = reflect(−v, n)，DFG 为预积分的 BRDF 查找表（行 = 粗糙度，列 = N·V，取纹素中心，双线性采样）。
+
+struct Vec2f {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+// 生成 size × size 的 DFG 查找表（每项两个值，行优先，第 0 行为最小粗糙度）：
+// GGX 重要性采样（Hammersley 序列，samples 个样本），与着色器中的高度相关 Smith 可见性一致。
+std::vector<float> dfgLut(int size, int samples);
+// 与 GL_LINEAR + CLAMP_TO_EDGE 相同的双线性采样。
+Vec2f sampleDfg(const std::vector<float>& lut, int size, float NoV, float roughness);
+// 环境光部分（不含太阳光与自发光）；irradiance、prefiltered 由调用方提供（测试中来自解析环境）。
+Vec3f ambientIbl(const Material& material, Vec3f n, Vec3f v, Vec3f irradiance, Vec3f prefiltered,
+                 const std::vector<float>& lut, int lutSize, float occlusion = 1.0f);
 
 // GLSL 函数库（不含 #version）：D_GGX、V_SmithGGXCorrelated、F_Schlick、hemisphere、shadeSurface、toneMap、srgbEncode。
 // 使用方需声明 uniform：uSky、uGround、uAmbient（vec3、vec3、float）。

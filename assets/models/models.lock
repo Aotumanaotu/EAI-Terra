@@ -1,0 +1,22 @@
+# glTF 测试资产锁定记录（M1-09，D-013）。由 scripts/assets/fetch_models.sh 读取。
+# 来源：Poly Haven（https://polyhaven.com/models），许可 CC0 1.0；glTF 2K 版本（.gltf + .bin + JPEG 贴图）。
+# 用户 2026-11-22 下载的文件（仓库根目录 GLTF/，不提交）md5 与 Poly Haven 接口一致；sha256 由这些文件计算。
+# 目标目录：assets/models/<模型>/（不提交）。格式：模型|相对路径|URL|sha256
+# metal_toolbox：金属工具箱：涂漆金属与磨损边缘；作者 Mateusz Sadek
+metal_toolbox|metal_toolbox_2k.gltf|https://dl.polyhaven.org/file/ph-assets/Models/gltf/2k/metal_toolbox/metal_toolbox_2k.gltf|7fe287798282bb1085ffcc48d81d7eaecd54bfc6a1fadb1a56cb1493e188969f
+metal_toolbox|textures/metal_toolbox_nor_gl_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/metal_toolbox/metal_toolbox_nor_gl_2k.jpg|e2eeb85716bd244973583dd74b7aec7a2aee1cde5d15d2f49a6a7c2b8cc60b0f
+metal_toolbox|textures/metal_toolbox_diff_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/metal_toolbox/metal_toolbox_diff_2k.jpg|ff84f51ac4c88c13407a591abd2111ed6210566b3528232c655806429e4e0b44
+metal_toolbox|textures/metal_toolbox_arm_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/metal_toolbox/metal_toolbox_arm_2k.jpg|a44b02d7a7d0e694cac55f74942d4a16246a74fbc9d5bdb551aded247c5ff623
+metal_toolbox|metal_toolbox.bin|https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/metal_toolbox/metal_toolbox.bin|fe5551028e5b398c78c86911abf549010f83831c30b01593ca3eb3d8ba7ceae7
+# Drill_01：电钻：塑料与金属混合；作者 Fernando Quinn
+Drill_01|Drill_01_2k.gltf|https://dl.polyhaven.org/file/ph-assets/Models/gltf/2k/Drill_01/Drill_01_2k.gltf|c44753efa792f92f64ec0ced2abdf814f36b590f43ccdec4dedaa0e66f7a2d1f
+Drill_01|textures/Drill_01_nor_gl_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/Drill_01/Drill_01_nor_gl_2k.jpg|db4e34922c9c03dd5445152702918ee993903d0de7fed3bc44126d427f35a511
+Drill_01|textures/Drill_01_arm_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/Drill_01/Drill_01_arm_2k.jpg|c77ad4912adb30f775609436c8cea102e920399b3c7144bf0a40dc8b60d1a81d
+Drill_01|Drill_01.bin|https://dl.polyhaven.org/file/ph-assets/Models/gltf/4k/Drill_01/Drill_01.bin|0353e743c05051546945fd2d79e9c96bfad7ad387e0d47bc5d408d78ae7b9fe8
+Drill_01|textures/Drill_01_diff_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/Drill_01/Drill_01_diff_2k.jpg|2f1837a911e92fc3d48475695e67b7eb997eb597462fc94feaf231640b87736a
+# brass_vase_01：黄铜花瓶：抛光金属反射；作者 Rico Cilliers
+brass_vase_01|brass_vase_01_2k.gltf|https://dl.polyhaven.org/file/ph-assets/Models/gltf/2k/brass_vase_01/brass_vase_01_2k.gltf|e06292d066d3440a57a043149a9ee27f636f41b20318f63fca7db7d38ccc7eae
+brass_vase_01|textures/brass_vase_01_arm_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/brass_vase_01/brass_vase_01_arm_2k.jpg|4c57b8076885c117205ea125a57b13ff2caf90ebb55bbbe5efd55c93562587d4
+brass_vase_01|brass_vase_01.bin|https://dl.polyhaven.org/file/ph-assets/Models/gltf/8k/brass_vase_01/brass_vase_01.bin|acc32719ee7c42c5b5fd07507a3dd7779e95445754759876bdbc133cebefa8ff
+brass_vase_01|textures/brass_vase_01_diff_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/brass_vase_01/brass_vase_01_diff_2k.jpg|3d1455113398211ca010ec836c67faf418100175e99da875002334364fb81b40
+brass_vase_01|textures/brass_vase_01_nor_gl_2k.jpg|https://dl.polyhaven.org/file/ph-assets/Models/jpg/2k/brass_vase_01/brass_vase_01_nor_gl_2k.jpg|b8fb1da280897b51a576b615bcba608692d00f5cbb148f8917ea431002dce098

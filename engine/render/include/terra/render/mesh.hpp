@@ -20,6 +20,7 @@ struct MeshVertex {
     float position[3];
     float normal[3];
     float uv[2];
+    float tangent[4];  // xyz：沿 UV 的 u 方向、与法线正交的单位向量；w = ±1：副切线 = w · (法线 × 切线)（M1-09，法线贴图）
 };
 
 struct MeshData {
@@ -30,6 +31,10 @@ struct MeshData {
 
     std::size_t triangleCount() const noexcept { return indices.size() / 3; }
 };
+
+// 由位置与 UV 计算每个顶点的切线（逐三角形累加 u、v 方向后正交化，手性由 v 方向决定）；
+// UV 退化处取任意与法线正交的方向。生成器与 glTF 加载（缺少切线时）都调用它。
+void computeTangents(MeshData& mesh);
 
 namespace meshes {
 
@@ -46,7 +51,7 @@ MeshData capsule(float radius, float halfLength, int segments = 48, int ringsPer
 
 }  // namespace meshes
 
-// 上传到 GPU 的网格：位置（location 0）、法线（1）、UV（2），32 位索引。
+// 上传到 GPU 的网格：位置（location 0）、法线（1）、UV（2）、切线（3），32 位索引。
 class GpuMesh {
 public:
     GpuMesh() = default;

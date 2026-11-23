@@ -6,6 +6,7 @@
 #include <limits>
 #include <utility>
 
+#include <glad/gl.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -35,13 +36,18 @@ layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
 uniform mat4 uModel;
 uniform mat4 uNormalMatrix;
+layout(location = 3) in vec4 aTangent;
 uniform mat4 uViewProj;
 out vec3 vWorld;
 out vec3 vNormal;
+out vec2 vUv;
+out vec4 vTangent;
 void main() {
     vec4 world = uModel * vec4(aPosition, 1.0);
     vWorld = world.xyz;
     vNormal = mat3(uNormalMatrix) * aNormal;
+    vUv = aUv;
+    vTangent = vec4(mat3(uModel) * aTangent.xyz, aTangent.w);
     gl_Position = uViewProj * world;
 }
 )";
@@ -49,7 +55,19 @@ void main() {
 const char* kPbrFragmentMain = R"(
 in vec3 vWorld;
 in vec3 vNormal;
+in vec2 vUv;
+in vec4 vTangent;
 out vec4 fragColor;
+// 贴图（M1-09）：uTextures 按位表示有哪些贴图——1 基础色、2 金属度-粗糙度、4 法线、8 环境遮蔽、16 自发光
+uniform int uTextures;
+uniform sampler2D uBaseColorMap;
+uniform sampler2D uMetallicRoughnessMap;
+uniform sampler2D uNormalMap;
+uniform sampler2D uOcclusionMap;
+uniform sampler2D uEmissiveMap;
+uniform float uNormalScale;
+uniform float uOcclusionStrength;
+uniform int uDoubleSided;
 uniform vec3 uBaseColor;
 uniform float uMetallic;
 uniform float uRoughness;
@@ -76,11 +94,37 @@ float shadowFactor(vec3 p, vec3 n) {
     return sum / 9.0;
 }
 
+uniform int uIbl;
+uniform float uIblIntensity;
+
 void main() {
-    vec3 n = normalize(vNormal);
+    vec3 geometric = normalize(vNormal);
+    if (uDoubleSided == 1 && !gl_FrontFacing) geometric = -geometric;
+    vec3 baseColor = uBaseColor;
+    float metallic = uMetallic;
+    float roughness = uRoughness;
+    vec3 emissive = uEmissive;
+    float occlusion = 1.0;
+    vec3 n = geometric;
+    if ((uTextures & 1) != 0) baseColor *= texture(uBaseColorMap, vUv).rgb;
+    if ((uTextures & 2) != 0) {
+        vec4 mr = texture(uMetallicRoughnessMap, vUv);
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+    if ((uTextures & 4) != 0) {
+        vec3 t = texture(uNormalMap, vUv).xyz * 2.0 - 1.0;
+        t.xy *= uNormalScale;
+        vec3 tangent = normalize(vTangent.xyz - geometric * dot(geometric, vTangent.xyz));
+        vec3 bitangent = cross(geometric, tangent) * vTangent.w;
+        n = normalize(tangent * t.x + bitangent * t.y + geometric * t.z);
+    }
+    if ((uTextures & 8) != 0) occlusion = 1.0 + uOcclusionStrength * (texture(uOcclusionMap, vUv).r - 1.0);
+    if ((uTextures & 16) != 0) emissive *= texture(uEmissiveMap, vUv).rgb;
     vec3 v = normalize(uCamera - vWorld);
-    float shadow = shadowFactor(vWorld, n);
-    vec3 color = shadeSurface(uBaseColor, uMetallic, uRoughness, uReflectance, uEmissive, n, v, uSunDir, uSunRadiance, shadow);
+    float shadow = shadowFactor(vWorld, geometric);
+    vec3 color = shadeSurface(baseColor, metallic, roughness, uReflectance, emissive, n, v, uSunDir, uSunRadiance, shadow, occlusion);
+    if (uIbl == 1) color += ambientIbl(baseColor, metallic, roughness, uReflectance, n, v, occlusion) * uIblIntensity;
     fragColor = vec4(color, 1.0);
 }
 )";
@@ -140,6 +184,30 @@ void main() {
 }
 )";
 
+// 环境背景：全屏三角形放在远平面（深度 1），只填充没有物体的像素。
+const char* kBackgroundVertex = R"(#version 450 core
+void main() {
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
+}
+)";
+
+const char* kBackgroundFragmentMain = R"(
+out vec4 fragColor;
+uniform mat4 uInvViewProj;
+uniform vec3 uCamera;
+uniform vec2 uViewport;
+uniform samplerCube uEnvironmentCube;
+uniform float uLod;
+uniform float uIntensity;
+void main() {
+    vec2 ndc = gl_FragCoord.xy / uViewport * 2.0 - 1.0;
+    vec4 world = uInvViewProj * vec4(ndc, 1.0, 1.0);
+    vec3 dir = normalize(world.xyz / world.w - uCamera);
+    fragColor = vec4(textureLod(uEnvironmentCube, envDirection(dir), uLod).rgb * uIntensity, 1.0);
+}
+)";
+
 const char* kToneMapFragmentMain = R"(
 out vec4 fragColor;
 uniform sampler2D uHdr;
@@ -168,6 +236,12 @@ Matrix4 fromGlm(const glm::mat4& m) {
 
 glm::vec3 toGlm(Vec3f v) { return {v.x, v.y, v.z}; }
 
+// 环境旋转：着色器中的 envDirection 用 (cos, sin) 把世界方向绕 Z 旋转 −θ 后查找贴图。
+void setRotation(ShaderProgram& program, float radians) {
+    const int loc = program.uniformLocation("uEnvRotation");
+    if (loc >= 0) program.setUniformVec2(loc, std::cos(radians), std::sin(radians));
+}
+
 int toneMapperIndex(ToneMapper t) {
     switch (t) {
         case ToneMapper::AgX: return 0;
@@ -192,6 +266,7 @@ struct SceneRenderer::Impl {
     ShaderProgram pbr;
     ShaderProgram grid;
     ShaderProgram toneMap;
+    ShaderProgram background;
     VertexArray empty;  // 全屏三角形与网格四边形由 gl_VertexID 生成，核心模式仍需绑定一个顶点数组
     std::optional<Framebuffer> hdr;       // 场景（可多重采样）
     std::optional<Framebuffer> resolved;  // 多重采样解析结果
@@ -201,6 +276,45 @@ struct SceneRenderer::Impl {
     int height = 0;
     int samples = 1;
     FrameStats stats;
+
+    // ---- GPU 计时：kRing 帧轮换，每帧 kStamps 个时间戳 ----
+    static constexpr int kRing = 3;
+    static constexpr int kStamps = kRenderPassCount + 1;
+    GLuint queries[kRing][kStamps] = {};
+    bool pending[kRing] = {};
+    bool timing = false;
+    bool queriesCreated = false;
+    int frame = 0;
+    int current = -1;  // 本帧使用的轮换槽；未计时为 -1
+    PassTimings last;
+
+    ~Impl() {
+        if (queriesCreated) glDeleteQueries(kRing * kStamps, &queries[0][0]);
+    }
+
+    void stamp(int index) {
+        if (current >= 0) glQueryCounter(queries[current][index], GL_TIMESTAMP);
+    }
+
+    // 读取一个槽的结果；wait 为假且结果尚不可用时返回假。
+    bool collect(int slot, bool wait) {
+        if (!pending[slot]) return false;
+        if (!wait) {
+            GLint available = 0;
+            glGetQueryObjectiv(queries[slot][kStamps - 1], GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available == 0) return false;
+        }
+        GLuint64 t[kStamps] = {};
+        for (int i = 0; i < kStamps; ++i) glGetQueryObjectui64v(queries[slot][i], GL_QUERY_RESULT, &t[i]);
+        PassTimings out;
+        for (int i = 0; i < kRenderPassCount; ++i) {
+            out.milliseconds[static_cast<std::size_t>(i)] = t[i + 1] >= t[i] ? static_cast<double>(t[i + 1] - t[i]) * 1e-6 : 0.0;
+        }
+        out.valid = true;
+        last = out;
+        pending[slot] = false;
+        return true;
+    }
 
     void ensureTargets(int w, int h, int requestedSamples) {
         int s = std::clamp(requestedSamples, 1, std::max(1, ctx.info().maxSamples));
@@ -257,6 +371,7 @@ SceneRendererResult SceneRenderer::create(RenderContext& context) {
     build(impl->pbr, "pbr.vert", kPbrVertex, "pbr.frag", withLibrary(kPbrFragmentMain));
     build(impl->grid, "grid.vert", kGridVertex, "grid.frag", kGridFragment);
     build(impl->toneMap, "fullscreen.vert", kFullscreenVertex, "tonemap.frag", withLibrary(kToneMapFragmentMain));
+    build(impl->background, "background.vert", kBackgroundVertex, "background.frag", withLibrary(kBackgroundFragmentMain));
     if (result.error) return result;
     impl->empty = VertexArray::create();
     result.renderer.reset(new SceneRenderer(std::move(impl)));
@@ -265,13 +380,33 @@ SceneRendererResult SceneRenderer::create(RenderContext& context) {
 
 void SceneRenderer::render(int width, int height, const ViewParams& view, const std::vector<RenderItem>& items,
                            const SunLight& sun, const HemisphereLight& environment, const RenderSettings& settings) {
+    render(width, height, view, items, sun, environment, settings, EnvironmentLighting{});
+}
+
+void SceneRenderer::render(int width, int height, const ViewParams& view, const std::vector<RenderItem>& items,
+                           const SunLight& sun, const HemisphereLight& environment, const RenderSettings& settings,
+                           const EnvironmentLighting& imageLighting) {
     Impl& s = *impl_;
+    const Environment* env = imageLighting.environment;
     RenderContext& ctx = s.ctx;
     s.stats = FrameStats{};
     if (width <= 0 || height <= 0) return;
     s.ensureTargets(width, height, settings.msaaSamples);
     if (!s.hdr || !s.output || (s.samples > 1 && !s.resolved)) return;
     s.stats.samples = s.samples;
+    s.current = -1;
+    if (s.timing) {
+        if (!s.queriesCreated) {
+            glCreateQueries(GL_TIMESTAMP, Impl::kRing * Impl::kStamps, &s.queries[0][0]);
+            s.queriesCreated = true;
+        }
+        // 先不阻塞地收取较早的帧（由旧到新，最新可用的结果留在 last），再占用本帧的槽
+        for (int k = Impl::kRing - 1; k >= 1; --k) (void)s.collect((s.frame - k + Impl::kRing * 1024) % Impl::kRing, false);
+        const int slot = s.frame % Impl::kRing;
+        if (s.pending[slot]) (void)s.collect(slot, true);
+        s.current = slot;
+        s.stamp(0);
+    }
 
     const glm::mat4 viewProj = toGlm(view.projection) * toGlm(view.view);
     const glm::vec3 l = glm::normalize(toGlm(sun.direction));
@@ -324,6 +459,8 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
         s.stats.shadowsDrawn = true;
     }
 
+    s.stamp(1);
+
     // ---- 场景（HDR）----
     s.hdr->bind();
     ctx.setDepthTest(true);
@@ -340,7 +477,21 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
                      sun.color.z * sun.intensity);
     p.setUniformVec3(p.uniformLocation("uSky"), environment.sky.x, environment.sky.y, environment.sky.z);
     p.setUniformVec3(p.uniformLocation("uGround"), environment.ground.x, environment.ground.y, environment.ground.z);
-    p.setUniformFloat(p.uniformLocation("uAmbient"), environment.intensity);
+    // 有环境贴图时环境光完全来自贴图，半球光不再参与
+    p.setUniformFloat(p.uniformLocation("uAmbient"), env != nullptr ? 0.0f : environment.intensity);
+    p.setUniformInt(p.uniformLocation("uIbl"), env != nullptr ? 1 : 0);
+    p.setUniformFloat(p.uniformLocation("uIblIntensity"), imageLighting.intensity);
+    setRotation(p, imageLighting.rotationRadians);
+    p.setUniformInt(p.uniformLocation("uIrradiance"), 1);
+    p.setUniformInt(p.uniformLocation("uPrefiltered"), 2);
+    p.setUniformInt(p.uniformLocation("uDfg"), 3);
+    if (env != nullptr) {
+        p.setUniformFloat(p.uniformLocation("uPrefilteredMaxLod"), static_cast<float>(env->prefilteredMipCount() - 1));
+        ctx.bindTexture(1, env->irradianceTexture());
+        ctx.bindTexture(2, env->prefilteredTexture());
+        ctx.bindTexture(3, env->dfgTexture());
+        s.stats.imageLighting = true;
+    }
     p.setUniformInt(p.uniformLocation("uShadows"), drawShadows ? 1 : 0);
     p.setUniformMatrix4(p.uniformLocation("uLightViewProj"), lvp.data());
     p.setUniformInt(p.uniformLocation("uShadowMap"), 0);
@@ -354,6 +505,16 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
     const int roughnessLoc = p.uniformLocation("uRoughness");
     const int reflectanceLoc = p.uniformLocation("uReflectance");
     const int emissiveLoc = p.uniformLocation("uEmissive");
+    const int texturesLoc = p.uniformLocation("uTextures");
+    const int normalScaleLoc = p.uniformLocation("uNormalScale");
+    const int occlusionStrengthLoc = p.uniformLocation("uOcclusionStrength");
+    const int doubleSidedLoc = p.uniformLocation("uDoubleSided");
+    // 贴图单元：0 阴影、1–3 环境光照、4 环境立方体（背景）、5–9 材质贴图
+    p.setUniformInt(p.uniformLocation("uBaseColorMap"), 5);
+    p.setUniformInt(p.uniformLocation("uMetallicRoughnessMap"), 6);
+    p.setUniformInt(p.uniformLocation("uNormalMap"), 7);
+    p.setUniformInt(p.uniformLocation("uOcclusionMap"), 8);
+    p.setUniformInt(p.uniformLocation("uEmissiveMap"), 9);
     for (const RenderItem& item : items) {
         if (item.mesh == nullptr) continue;
         const glm::mat4 model = toGlm(item.model);
@@ -366,8 +527,49 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
         p.setUniformFloat(roughnessLoc, m.roughness);
         p.setUniformFloat(reflectanceLoc, m.reflectance);
         p.setUniformVec3(emissiveLoc, m.emissive.x, m.emissive.y, m.emissive.z);
+        int mask = 0;
+        const std::uint32_t maps[5] = {m.baseColorTexture, m.metallicRoughnessTexture, m.normalTexture, m.occlusionTexture,
+                                       m.emissiveTexture};
+        for (int k = 0; k < 5; ++k) {
+            if (maps[k] == 0) continue;
+            mask |= 1 << k;
+            ctx.bindTexture(static_cast<std::uint32_t>(5 + k), maps[k]);
+        }
+        p.setUniformInt(texturesLoc, mask);
+        p.setUniformFloat(normalScaleLoc, m.normalScale);
+        p.setUniformFloat(occlusionStrengthLoc, m.occlusionStrength);
+        p.setUniformInt(doubleSidedLoc, m.doubleSided ? 1 : 0);
+        ctx.setCullBackFaces(!m.doubleSided);
         item.mesh->draw(ctx);
     }
+
+    s.stamp(2);
+
+    // ---- 环境背景：只填充没有物体的像素 ----
+    if (env != nullptr && imageLighting.background) {
+        ShaderProgram& b = s.background;
+        b.use();
+        const Matrix4 inv = fromGlm(glm::inverse(viewProj));
+        b.setUniformMatrix4(b.uniformLocation("uInvViewProj"), inv.data());
+        b.setUniformVec3(b.uniformLocation("uCamera"), view.cameraPosition.x, view.cameraPosition.y, view.cameraPosition.z);
+        b.setUniformVec2(b.uniformLocation("uViewport"), static_cast<float>(s.width), static_cast<float>(s.height));
+        b.setUniformInt(b.uniformLocation("uEnvironmentCube"), 4);
+        b.setUniformFloat(b.uniformLocation("uLod"),
+                          std::clamp(imageLighting.backgroundBlur, 0.0f, 1.0f) * static_cast<float>(env->cubeMipCount() - 1));
+        b.setUniformFloat(b.uniformLocation("uIntensity"), imageLighting.intensity);
+        setRotation(b, imageLighting.rotationRadians);
+        ctx.bindTexture(4, env->cubeTexture());
+        ctx.setCullBackFaces(false);
+        ctx.setDepthLessEqual(true);
+        ctx.setDepthWrite(false);
+        s.empty.bind();
+        ctx.drawTriangles(0, 3);
+        ctx.setDepthWrite(true);
+        ctx.setDepthLessEqual(false);
+        s.stats.backgroundDrawn = true;
+    }
+
+    s.stamp(3);
 
     // ---- 地面网格：叠加在 z = 0，深度测试但不写深度 ----
     if (settings.grid) {
@@ -396,12 +598,15 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
         ctx.setDepthLessEqual(false);
     }
 
+    s.stamp(4);
+
     // ---- 解析与色调映射 ----
     const Framebuffer* source = &*s.hdr;
     if (s.samples > 1) {
         s.hdr->resolveTo(*s.resolved);
         source = &*s.resolved;
     }
+    s.stamp(5);
     s.output->bind();
     ctx.setDepthTest(false);
     ctx.setCullBackFaces(false);
@@ -413,7 +618,41 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
     ctx.bindTexture(0, source->colorTexture());
     s.empty.bind();
     ctx.drawTriangles(0, 3);
+    s.stamp(6);
+    if (s.current >= 0) {
+        s.pending[s.current] = true;
+        ++s.frame;
+    }
     Framebuffer::bindDefault();
+}
+
+const char* renderPassName(RenderPass pass) noexcept {
+    switch (pass) {
+        case RenderPass::Shadow: return "shadow";
+        case RenderPass::Opaque: return "opaque";
+        case RenderPass::Background: return "background";
+        case RenderPass::Grid: return "grid";
+        case RenderPass::Resolve: return "resolve";
+        case RenderPass::ToneMap: return "tonemap";
+    }
+    return "";
+}
+
+double PassTimings::total() const noexcept {
+    double sum = 0.0;
+    for (const double ms : milliseconds) sum += ms;
+    return sum;
+}
+
+void SceneRenderer::setTimingEnabled(bool enabled) { impl_->timing = enabled; }
+bool SceneRenderer::timingEnabled() const noexcept { return impl_->timing; }
+const PassTimings& SceneRenderer::lastTimings() const noexcept { return impl_->last; }
+
+PassTimings SceneRenderer::waitForTimings() {
+    Impl& s = *impl_;
+    const int slot = (s.frame - 1 + Impl::kRing * 1024) % Impl::kRing;
+    if (s.queriesCreated && s.pending[slot]) (void)s.collect(slot, true);
+    return s.last;
 }
 
 std::uint32_t SceneRenderer::outputTexture() const noexcept { return impl_->output ? impl_->output->colorTexture() : 0u; }

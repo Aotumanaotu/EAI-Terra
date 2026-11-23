@@ -1,6 +1,7 @@
 #include "terra/render/mesh.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 
@@ -14,6 +15,7 @@ constexpr float kPi = 3.14159265358979323846f;
 
 void finish(MeshData& m) {
     if (m.vertices.empty()) return;
+    computeTangents(m);
     m.boundsMin = {m.vertices[0].position[0], m.vertices[0].position[1], m.vertices[0].position[2]};
     m.boundsMax = m.boundsMin;
     for (const MeshVertex& v : m.vertices) {
@@ -47,7 +49,8 @@ MeshData latLong(float radius, int segments, const std::vector<Row>& rows) {
             m.vertices.push_back({{radius * nx, radius * ny, radius * nz + rows[i].zOffset},
                                   {nx, ny, nz},
                                   {static_cast<float>(j) / static_cast<float>(segments),
-                                   static_cast<float>(i) / static_cast<float>(rows.size() - 1)}});
+                                   static_cast<float>(i) / static_cast<float>(rows.size() - 1)},
+                                  {0.0f, 0.0f, 0.0f, 1.0f}});
         }
     }
     const bool topPole = std::sin(rows.front().theta) < 1e-6f;
@@ -72,6 +75,78 @@ MeshData latLong(float radius, int segments, const std::vector<Row>& rows) {
 
 }  // namespace
 
+void computeTangents(MeshData& m) {
+    const std::size_t n = m.vertices.size();
+    std::vector<std::array<double, 3>> su(n, {0.0, 0.0, 0.0});
+    std::vector<std::array<double, 3>> sv(n, {0.0, 0.0, 0.0});
+    for (std::size_t t = 0; t + 2 < m.indices.size(); t += 3) {
+        const std::uint32_t i[3] = {m.indices[t], m.indices[t + 1], m.indices[t + 2]};
+        if (i[0] >= n || i[1] >= n || i[2] >= n) continue;
+        const MeshVertex& a = m.vertices[i[0]];
+        const MeshVertex& b = m.vertices[i[1]];
+        const MeshVertex& c = m.vertices[i[2]];
+        double e1[3];
+        double e2[3];
+        for (std::size_t k = 0; k < 3; ++k) {
+            e1[k] = static_cast<double>(b.position[k]) - a.position[k];
+            e2[k] = static_cast<double>(c.position[k]) - a.position[k];
+        }
+        const double du1 = static_cast<double>(b.uv[0]) - a.uv[0];
+        const double dv1 = static_cast<double>(b.uv[1]) - a.uv[1];
+        const double du2 = static_cast<double>(c.uv[0]) - a.uv[0];
+        const double dv2 = static_cast<double>(c.uv[1]) - a.uv[1];
+        const double det = du1 * dv2 - du2 * dv1;
+        if (std::fabs(det) < 1e-14) continue;
+        const double f = 1.0 / det;
+        for (const std::uint32_t v : i) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                su[v][k] += (e1[k] * dv2 - e2[k] * dv1) * f;
+                sv[v][k] += (e2[k] * du1 - e1[k] * du2) * f;
+            }
+        }
+    }
+    for (std::size_t v = 0; v < n; ++v) {
+        MeshVertex& vert = m.vertices[v];
+        const double nx = vert.normal[0];
+        const double ny = vert.normal[1];
+        const double nz = vert.normal[2];
+        // Gram-Schmidt：去掉沿法线的分量
+        const double d = nx * su[v][0] + ny * su[v][1] + nz * su[v][2];
+        double tx = su[v][0] - nx * d;
+        double ty = su[v][1] - ny * d;
+        double tz = su[v][2] - nz * d;
+        double len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        if (len < 1e-10) {
+            // UV 退化：取与法线正交的任意方向
+            const bool useX = std::fabs(nx) < 0.9;
+            const double ax = useX ? 1.0 : 0.0;
+            const double ay = useX ? 0.0 : 1.0;
+            tx = -nz * ay;  // n × a，a = (ax, ay, 0)
+            ty = nz * ax;
+            tz = nx * ay - ny * ax;
+            len = std::sqrt(tx * tx + ty * ty + tz * tz);
+        }
+        if (len < 1e-10) {
+            tx = 1.0;
+            ty = 0.0;
+            tz = 0.0;
+            len = 1.0;
+        }
+        tx /= len;
+        ty /= len;
+        tz /= len;
+        // 手性：(n × t) 与累加的 v 方向同向为 +1
+        const double bx = ny * tz - nz * ty;
+        const double by = nz * tx - nx * tz;
+        const double bz = nx * ty - ny * tx;
+        const double w = bx * sv[v][0] + by * sv[v][1] + bz * sv[v][2] < 0.0 ? -1.0 : 1.0;
+        vert.tangent[0] = static_cast<float>(tx);
+        vert.tangent[1] = static_cast<float>(ty);
+        vert.tangent[2] = static_cast<float>(tz);
+        vert.tangent[3] = static_cast<float>(w);
+    }
+}
+
 namespace meshes {
 
 MeshData plane(float halfX, float halfY) {
@@ -80,7 +155,7 @@ MeshData plane(float halfX, float halfY) {
     const float xs[4] = {-halfX, halfX, halfX, -halfX};
     const float ys[4] = {-halfY, -halfY, halfY, halfY};
     for (int k = 0; k < 4; ++k) {
-        m.vertices.push_back({{xs[k], ys[k], 0.0f}, {n[0], n[1], n[2]}, {xs[k], ys[k]}});
+        m.vertices.push_back({{xs[k], ys[k], 0.0f}, {n[0], n[1], n[2]}, {xs[k], ys[k]}, {0.0f, 0.0f, 0.0f, 1.0f}});
     }
     m.indices = {0, 1, 2, 0, 2, 3};
     finish(m);
@@ -156,7 +231,8 @@ MeshData cylinder(float radius, float halfLength, int segments) {
             const float s = std::sin(phi);
             m.vertices.push_back({{radius * c, radius * s, z},
                                   {c, s, 0.0f},
-                                  {static_cast<float>(j) / static_cast<float>(segments), static_cast<float>(ring)}});
+                                  {static_cast<float>(j) / static_cast<float>(segments), static_cast<float>(ring)},
+                                  {0.0f, 0.0f, 0.0f, 1.0f}});
         }
     }
     for (std::size_t j = 0; j < n; ++j) {
@@ -171,12 +247,12 @@ MeshData cylinder(float radius, float halfLength, int segments) {
         const float nz = cap == 0 ? 1.0f : -1.0f;
         const float z = nz * halfLength;
         const auto center = idx(m.vertices.size());
-        m.vertices.push_back({{0.0f, 0.0f, z}, {0.0f, 0.0f, nz}, {0.5f, 0.5f}});
+        m.vertices.push_back({{0.0f, 0.0f, z}, {0.0f, 0.0f, nz}, {0.5f, 0.5f}, {0.0f, 0.0f, 0.0f, 1.0f}});
         for (std::size_t j = 0; j <= n; ++j) {
             const float phi = 2.0f * kPi * static_cast<float>(j) / static_cast<float>(segments);
             const float c = std::cos(phi);
             const float s = std::sin(phi);
-            m.vertices.push_back({{radius * c, radius * s, z}, {0.0f, 0.0f, nz}, {0.5f + 0.5f * c, 0.5f + 0.5f * s}});
+            m.vertices.push_back({{radius * c, radius * s, z}, {0.0f, 0.0f, nz}, {0.5f + 0.5f * c, 0.5f + 0.5f * s}, {0.0f, 0.0f, 0.0f, 1.0f}});
         }
         for (std::size_t j = 0; j < n; ++j) {
             const auto p = center + 1 + idx(j);
@@ -203,6 +279,7 @@ GpuMesh GpuMesh::create(const MeshData& data) {
     g.vao_.setFloatAttribute(0, 0, 3, offsetof(MeshVertex, position));
     g.vao_.setFloatAttribute(1, 0, 3, offsetof(MeshVertex, normal));
     g.vao_.setFloatAttribute(2, 0, 2, offsetof(MeshVertex, uv));
+    g.vao_.setFloatAttribute(3, 0, 4, offsetof(MeshVertex, tangent));
     g.vao_.setIndexBuffer(g.indices_);
     g.indexCount_ = static_cast<int>(data.indices.size());
     g.boundsMin_ = data.boundsMin;

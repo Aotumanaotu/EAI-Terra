@@ -46,6 +46,26 @@ struct DebugMessage {
     std::string text;
 };
 
+// 显存（M1-15）：只有驱动提供查询扩展时可用——NVIDIA（GL_NVX_gpu_memory_info：总量与当前可用）、
+// AMD（GL_ATI_meminfo：只有可用量）。以下情况为空，界面显示“不可用”而不是 0 或无意义的数：
+//   - 驱动不提供查询扩展；
+//   - 软件渲染器（llvmpipe 等，没有专用显存）：Mesa 的 llvmpipe 声明了 NVX 扩展，但报告的量不是显存
+//     （基线机器上实测“总量 526344 MB”，LOG-069）；
+//   - 报告的量 ≤ 0，或可用量大于总量。
+struct GpuMemory {
+    std::optional<double> totalMb;  // 专用显存总量
+    double availableMb = 0.0;       // 当前可用
+    std::string source;             // 查询所用的扩展名
+};
+
+// 渲染器名是否为软件光栅化（llvmpipe、softpipe、swrast、SWR）：这些渲染器没有专用显存（M1-15）。
+bool isSoftwareRenderer(const std::string& renderer);
+
+// 由驱动报告的原始值（KB）得出显存（M1-15，纯函数）：软件渲染器、总量 ≤ 0、可用量 < 0 或大于总量时为空。
+// totalKb 为空表示该扩展不报告总量（GL_ATI_meminfo）。gpuMemory() 读取驱动后调用它。
+std::optional<GpuMemory> gpuMemoryFromReport(const std::string& renderer, const std::string& source,
+                                             std::optional<long long> totalKb, long long availableKb);
+
 struct ContextResult;
 
 class RenderContext {
@@ -71,6 +91,9 @@ public:
     void clear(Color color, bool clearDepth = true);  // 清除当前绑定的帧缓冲
     void drawTriangles(int firstVertex, int vertexCount);  // 使用当前绑定的程序与顶点数组
     void drawLines(int firstVertex, int vertexCount);      // 每两个顶点一条线段（M1-07 起，网格与坐标轴）
+    // 当前显存（M1-15）；驱动不提供时为空。
+    std::optional<GpuMemory> gpuMemory() const;
+
     // ---- M1-08：索引绘制与更多状态 ----
     void drawIndexed(int indexCount);  // 32 位索引三角形，使用当前顶点数组上的索引缓冲
     void setCullBackFaces(bool enabled);  // 逆时针为正面

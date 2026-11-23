@@ -10,6 +10,6 @@ target_include_directories(terra_physics_mujoco
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(terra_physics_mujoco
     PUBLIC terra::physics
-    PRIVATE mujoco::mujoco)
+    PRIVATE mujoco::mujoco terra::core)
 
 terra_configure_target(terra_physics_mujoco)

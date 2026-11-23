@@ -16,7 +16,7 @@
 
 1. **“模型重载后旧 ID 明确失效”在原契约下做不到。**实体/关节/执行器 ID 只是数值，重新加载同一模型得到的 ID 数值完全相同，消费者无法区分新旧世界。
    → 新增**世界实例号** `worldInstance`（`ModelDescription` 与 `PhysicsSnapshot`）：每次成功加载分配一个进程内唯一、递增的值，失败的加载不消耗编号。消费者比较实例号即可判定 ID 或快照是否属于当前世界。快照字段只增不改，Headless 输出不变，`contract_revision` 保持 1。
-2. **MuJoCo 的致命错误不可接管。**4.0.1 的 `mju_error` 默认处理（`engine_util_errmem.c`）是打印到 stderr 后 `exit(EXIT_FAILURE)`。Terra 公共接口的合法调用经校验后不会触发它；无法从进程内恢复，因此按技术设计 2.2 节在子进程中固定行为（`physics.backend_fatal`）：退出码 1（与 Headless 内部错误码相同）、stderr 带 MuJoCo 原文、atexit 仍执行、不写 `MUJOCO_LOG.TXT`。
+2. **MuJoCo 的致命错误不可接管。**4.0.1 的 `mju_error` 默认处理（`engine_util_errmem.c`）是打印到 stderr 后 `exit(EXIT_FAILURE)`。Terra 公共接口的合法调用经校验后不会触发它；无法从进程内恢复，因此按技术设计 2.2 节在子进程中固定行为（`physics.backend_fatal`）：退出码 1（与 Headless 内部错误码相同）、stderr 带 MuJoCo 原文、atexit 仍执行、不写 `MUJOCO_LOG.TXT`。**M2-02 更新（2026-11-23）：**Terra 改为登记自己的日志处理函数，退出码改为 70，退出前写崩溃报告并执行紧急保存，见 [M2-02/03 报告](M2-02-03-fatal-geometry.md)。
 3. **加载期的运行内存不足不会终止进程。**原计划用 `<size memory="16"/>` 触发致命错误，但核查编译器源码（`user_model.cc` 中 `compilerLogHandler` 与编译期试跑 `mj_step`）发现：编译时的栈溢出被编译器捕获并转成编译错误。因此该夹具改为验证“加载期内存不足 → 模型错误，退出码 4，消息含 `mj_stackAlloc`”（`headless.arena_too_small`）。运行期才出现的内存不足，触发条件依赖接触规模，没有可靠的固定夹具，M0 不覆盖。
 4. **“初始化前 step”在类型层面不可能发生**（M0-07：加载失败不产生世界对象），无需运行期用例。
 

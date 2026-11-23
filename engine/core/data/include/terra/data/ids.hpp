@@ -22,6 +22,11 @@ struct Id {
 using EntityId = Id<struct EntityTag>;
 using JointId = Id<struct JointTag>;
 using ActuatorId = Id<struct ActuatorTag>;
+// M2（M2-01 设计第 4 节）：模型实例、几何体、视觉部件。与 EntityId 相同，从 1 递增，只在同一个世界实例内有效；
+// 持久化（场景文件）只用名字，不保存数字 ID。
+using ModelInstanceId = Id<struct ModelInstanceTag>;
+using GeomId = Id<struct GeomTag>;
+using VisualId = Id<struct VisualTag>;
 
 }  // namespace terra::data
 

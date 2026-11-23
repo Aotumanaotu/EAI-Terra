@@ -30,6 +30,7 @@
 #include "imgui_internal.h"
 #include "terra/asset/gltf.hpp"
 #include "terra/asset/gpu_asset.hpp"
+#include "terra/core/fatal.hpp"
 #include "terra/core/system_monitor.hpp"
 #include "terra/core/time_series.hpp"
 #include "terra/input/input_system.hpp"
@@ -1172,6 +1173,14 @@ int main(int argc, char** argv) {
     }
     settings.applied = settings.current;
     Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings};
+
+    // 不可恢复错误（M2-02）：退出前把当前设置（含布局）写入设置文件；诊断报告中写出设置文件路径。
+    // 只写文件，不调用 GL 与物理后端（terra/core/fatal.hpp 的要求）。
+    terra::core::setFatalContext("设置文件", settings.path);
+    const terra::core::ScopedEmergencySave emergencySettings("设置", [&settings]() -> std::optional<std::string> {
+        if (!settings.autosave || settings.path.empty()) return std::nullopt;
+        return st::save(settings.current, settings.path);
+    });
 
     // 设置中的全屏模式在窗口创建后进入；失败时退回窗口模式。
     if (settings.current.display.mode != st::WindowMode::Windowed && !options.selfTest) {

@@ -18,12 +18,17 @@
 
 #include <mujoco/mujoco.h>
 
+#include "terra/core/fatal.hpp"
+
 namespace terra::physics::mujoco {
 
 namespace {
 
 using terra::data::ActuatorId;
 using terra::data::EntityId;
+using terra::data::GeomId;
+using terra::data::GeomShape;
+using terra::data::ModelInstanceId;
 using terra::data::JointId;
 using terra::data::JointType;
 
@@ -36,14 +41,70 @@ struct DataDeleter {
 using ModelPtr = std::unique_ptr<mjModel, ModelDeleter>;
 using DataPtr = std::unique_ptr<mjData, DataDeleter>;
 
+// 出错时正在运行的世界（M2-02）：致命错误报告中写出世界实例、模型文件、步序号与仿真时间。
+// 每个线程各自记录；MuJoCo 的致命错误在出错的线程上回调。
+struct ActiveWorld {
+    const terra::data::ModelDescription* description = nullptr;
+    const std::uint64_t* stepIndex = nullptr;
+    const mjData* data = nullptr;
+    const char* phase = nullptr;  // "step"、"reset"
+};
+thread_local ActiveWorld activeWorld;
+
+class ActiveWorldGuard {
+public:
+    ActiveWorldGuard(const terra::data::ModelDescription* description, const std::uint64_t* stepIndex, const mjData* data,
+                     const char* phase)
+        : previous_(activeWorld) {
+        activeWorld = {description, stepIndex, data, phase};
+    }
+    ~ActiveWorldGuard() { activeWorld = previous_; }
+    ActiveWorldGuard(const ActiveWorldGuard&) = delete;
+    ActiveWorldGuard& operator=(const ActiveWorldGuard&) = delete;
+
+private:
+    ActiveWorld previous_;
+};
+
+mjfLogHandler previousLogHandler = nullptr;
+
+// Terra 的 MuJoCo 日志处理（M2-02）：
+//   - 错误（mju_error）：不可恢复，MuJoCo 要求处理函数不返回。交给 terra::core::fatalExit——写诊断、
+//     调用紧急保存、以退出码 70 结束。模型编译期间的错误由 MuJoCo 编译器自己的线程内处理函数截获并作为
+//     编译错误返回，不会到达这里（M0-08 已验证：fault_arena_too_small 报告为模型错误）。
+//   - 其他级别：交给 MuJoCo 的默认处理（只打印到 stderr，不写日志文件）。
+void terraLogHandler(const mjLogMessage* msg) {
+    if (msg != nullptr && msg->level == mjLOG_ERROR) {
+        terra::core::FatalReport report;
+        report.source = "MuJoCo";
+        report.message = msg->func != nullptr ? std::string{msg->func} + ": " + msg->subject : std::string{msg->subject};
+        while (!report.message.empty() && std::isspace(static_cast<unsigned char>(report.message.back()))) {
+            report.message.pop_back();
+        }
+        if (msg->body != nullptr) report.message += "\n" + std::string{msg->body};
+        const ActiveWorld& w = activeWorld;
+        if (w.description != nullptr) {
+            report.details.emplace_back("世界实例", std::to_string(w.description->worldInstance));
+            report.details.emplace_back("模型文件", w.description->sourcePath);
+        }
+        if (w.phase != nullptr) report.details.emplace_back("调用", w.phase);
+        if (w.stepIndex != nullptr) report.details.emplace_back("步序号（出错前已完成）", std::to_string(*w.stepIndex));
+        if (w.data != nullptr) report.details.emplace_back("仿真时间（秒）", std::to_string(w.data->time));
+        terra::core::fatalExit(report);
+    }
+    if (previousLogHandler != nullptr && previousLogHandler != terraLogHandler) previousLogHandler(msg);
+}
+
 // MuJoCo 默认日志会在当前工作目录追加写入 MUJOCO_LOG.TXT。Headless 运行不应在用户目录留下文件，
-// 因此只保留控制台输出（警告与错误写 stderr，不影响 stdout 上的 JSON Lines）。进程级设置，只做一次。
+// 因此只保留控制台输出（警告写 stderr，不影响 stdout 上的 JSON Lines）；错误交给 Terra 处理（M2-02）。
+// 进程级设置，只做一次。
 void configureMujocoLogging() {
     static std::once_flag once;
     std::call_once(once, [] {
         mjLogConfig config = mju_getLogConfig();
         config.logto_file = 0;
         mju_setLogConfig(config);
+        previousLogHandler = mju_setLogHandler(terraLogHandler);
     });
 }
 
@@ -101,6 +162,74 @@ std::string solverName(int solver) {
         case mjSOL_CG: return "CG";
         case mjSOL_NEWTON: return "Newton";
         default: return "unknown(" + std::to_string(solver) + ")";
+    }
+}
+
+GeomShape shapeOf(int type) {
+    switch (type) {
+        case mjGEOM_PLANE: return GeomShape::Plane;
+        case mjGEOM_SPHERE: return GeomShape::Sphere;
+        case mjGEOM_CAPSULE: return GeomShape::Capsule;
+        case mjGEOM_ELLIPSOID: return GeomShape::Ellipsoid;
+        case mjGEOM_CYLINDER: return GeomShape::Cylinder;
+        case mjGEOM_BOX: return GeomShape::Box;
+        case mjGEOM_MESH: return GeomShape::Mesh;
+        default: return GeomShape::Other;
+    }
+}
+
+// 几何体与网格描述（M2-03）。颜色规则与 MuJoCo 自带查看器相同（engine_vis_visualize.c 的 setMaterial）：
+// 用了材质时取材质颜色，但几何体颜色不是默认值（0.5, 0.5, 0.5, 1）时以几何体颜色为准。
+void describeGeometry(const mjModel* m, const std::vector<EntityId>& bodyToEntity, ModelInstanceId instance,
+                      terra::data::ModelDescription& desc) {
+    const int nmesh = static_cast<int>(m->nmesh);
+    desc.meshes.reserve(static_cast<std::size_t>(nmesh));
+    for (int k = 0; k < nmesh; ++k) {
+        terra::data::MeshDescription mesh;
+        mesh.name = nameOf(m, mjOBJ_MESH, k);
+        const int vertadr = m->mesh_vertadr[k];
+        const int vertnum = m->mesh_vertnum[k];
+        mesh.vertices.reserve(static_cast<std::size_t>(vertnum));
+        for (int v = 0; v < vertnum; ++v) {
+            const float* p = m->mesh_vert + 3 * static_cast<std::size_t>(vertadr + v);
+            mesh.vertices.push_back({p[0], p[1], p[2]});
+        }
+        const int faceadr = m->mesh_faceadr[k];
+        const int facenum = m->mesh_facenum[k];
+        mesh.triangles.reserve(static_cast<std::size_t>(facenum));
+        for (int f = 0; f < facenum; ++f) {
+            const int* t = m->mesh_face + 3 * static_cast<std::size_t>(faceadr + f);
+            mesh.triangles.push_back({static_cast<std::uint32_t>(t[0]), static_cast<std::uint32_t>(t[1]),
+                                      static_cast<std::uint32_t>(t[2])});
+        }
+        desc.meshes.push_back(std::move(mesh));
+    }
+
+    const int ngeom = static_cast<int>(m->ngeom);
+    desc.geoms.reserve(static_cast<std::size_t>(ngeom));
+    for (int g = 0; g < ngeom; ++g) {
+        const auto gi = static_cast<std::size_t>(g);
+        terra::data::GeomDescription geom;
+        geom.id = GeomId{static_cast<std::uint32_t>(g + 1)};
+        geom.name = nameOf(m, mjOBJ_GEOM, g);
+        geom.entity = bodyToEntity[static_cast<std::size_t>(m->geom_bodyid[g])];
+        geom.modelInstance = instance;
+        geom.shape = shapeOf(m->geom_type[g]);
+        const mjtNum* size = m->geom_size + 3 * gi;
+        geom.size = {size[0], size[1], size[2]};
+        const mjtNum* pos = m->geom_pos + 3 * gi;
+        const mjtNum* quat = m->geom_quat + 4 * gi;
+        geom.local.position = {pos[0], pos[1], pos[2]};
+        geom.local.orientation = {quat[0], quat[1], quat[2], quat[3]};
+        const float* rgba = m->geom_rgba + 4 * gi;
+        const int matid = m->geom_matid[g];
+        const bool defaultColor = rgba[0] == 0.5f && rgba[1] == 0.5f && rgba[2] == 0.5f && rgba[3] == 1.0f;
+        const float* color = (matid >= 0 && defaultColor) ? m->mat_rgba + 4 * static_cast<std::size_t>(matid) : rgba;
+        geom.rgba = {color[0], color[1], color[2], color[3]};
+        geom.group = m->geom_group[g];
+        geom.collides = m->geom_contype[g] != 0 || m->geom_conaffinity[g] != 0;
+        if (geom.shape == GeomShape::Mesh && m->geom_dataid[g] >= 0) geom.mesh = m->geom_dataid[g];
+        desc.geoms.push_back(std::move(geom));
     }
 }
 
@@ -385,7 +514,7 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         bodyToEntity[static_cast<std::size_t>(b)] = id;
         const int parentBody = model->body_parentid[b];
         desc.entities.push_back({id, nameOf(model.get(), mjOBJ_BODY, b),
-                                 bodyToEntity[static_cast<std::size_t>(parentBody)]});
+                                 bodyToEntity[static_cast<std::size_t>(parentBody)], ModelInstanceId{1}});
         impl->entityToBody.push_back(b);
     }
 
@@ -463,6 +592,10 @@ LoadResult MujocoWorld::load(const terra::data::ModelSource& source) {
         desc.actuators.push_back(std::move(act));
     }
 
+    // 直接加载单个 MJCF：唯一的模型实例，名字为空（不加前缀），放置位姿为单位变换（M2-03）。
+    desc.modelInstances.push_back({ModelInstanceId{1}, std::string{}, desc.sourcePath, terra::data::Pose{}});
+    describeGeometry(model.get(), bodyToEntity, ModelInstanceId{1}, desc);
+
     // 只在加载成功时分配实例号，失败的加载不消耗编号。
     static std::atomic<std::uint64_t> nextWorldInstance{1};
     desc.worldInstance = nextWorldInstance.fetch_add(1, std::memory_order_relaxed);
@@ -490,8 +623,11 @@ std::optional<SimulationError> MujocoWorld::step() {
     // 再调用一次 mj_forward，使发布的位姿与新的时间一致（技术设计 2.3 节）。
     // 已验证：额外的 mj_forward 不改变后续轨迹（见 M0-05 报告）。
     w.cachedSnapshot.reset();
-    mj_step(w.model.get(), w.data.get());
-    mj_forward(w.model.get(), w.data.get());
+    {
+        const ActiveWorldGuard active(&w.description, &w.stepIndex, w.data.get(), "step");
+        mj_step(w.model.get(), w.data.get());
+        mj_forward(w.model.get(), w.data.get());
+    }
 
     if (auto error = w.checkAfterStep(target, previousTime)) {
         w.faulted = true;
@@ -507,8 +643,11 @@ void MujocoWorld::reset() {
     // mj_resetData 恢复 qpos0、零速度、time=0，并通过 mj_resetCtrl 把 ctrl 恢复为中性值
     // （普通输入为 0，四元数输入为单位四元数）。
     w.cachedSnapshot.reset();
-    mj_resetData(w.model.get(), w.data.get());
-    mj_forward(w.model.get(), w.data.get());
+    {
+        const ActiveWorldGuard active(&w.description, &w.stepIndex, w.data.get(), "reset");
+        mj_resetData(w.model.get(), w.data.get());
+        mj_forward(w.model.get(), w.data.get());
+    }
     w.stepIndex = 0;
     ++w.runEpoch;
     w.faulted = false;

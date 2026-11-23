@@ -151,8 +151,8 @@ void testRecords() {
     model.settings.solver = "Newton";
     model.settings.iterations = 50;
     model.settings.tolerance = 1e-8;
-    model.entities.push_back({terra::data::EntityId{1}, "base", terra::data::EntityId{}});
-    model.entities.push_back({terra::data::EntityId{2}, "arm\"x", terra::data::EntityId{1}});
+    model.entities.push_back({terra::data::EntityId{1}, "base", terra::data::EntityId{}, terra::data::ModelInstanceId{1}});
+    model.entities.push_back({terra::data::EntityId{2}, "arm\"x", terra::data::EntityId{1}, terra::data::ModelInstanceId{1}});
     terra::data::JointDescription joint;
     joint.id = terra::data::JointId{1};
     joint.name = "shoulder";

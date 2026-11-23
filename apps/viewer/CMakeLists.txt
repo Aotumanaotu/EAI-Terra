@@ -11,6 +11,6 @@ terra_configure_target(terra_viewer_scene)
 
 add_executable(terra_viewer main.cpp viewer_settings.cpp)
 target_link_libraries(terra_viewer PRIVATE terra::viewer_scene terra::ui terra::render terra::asset terra::view terra::settings
-                                           terra::platform_glfw)
+                                           terra::platform_glfw terra::core)
 target_compile_definitions(terra_viewer PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
 terra_configure_target(terra_viewer)

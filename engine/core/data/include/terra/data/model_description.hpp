@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -19,8 +20,52 @@ enum class JointType { Free, Ball, Slide, Hinge };
 
 struct EntityDescription {
     EntityId id;
-    std::string name;  // 模型中未命名时为空
+    std::string name;  // 模型中未命名时为空；场景组合的世界中为带实例前缀的全名（M2-04）
     EntityId parent;   // 父实体；直接挂在世界上时为无效 ID
+    ModelInstanceId modelInstance;  // 所属模型实例（M2-03 起）
+};
+
+// 模型实例（M2-03）。直接加载单个 MJCF 时只有一个实例：名字为空（不加前缀），放置位姿为单位变换。
+struct ModelInstanceDescription {
+    ModelInstanceId id;
+    std::string name;
+    std::string sourcePath;  // MJCF 文件绝对路径
+    Pose placement;          // 实例在世界中的放置位姿
+};
+
+// 几何体形状（M2-03）。Other：高度场、SDF 等暂不显示的形状。
+enum class GeomShape { Plane, Sphere, Capsule, Ellipsoid, Cylinder, Box, Mesh, Other };
+
+// 几何体描述（M2-03，M2-01 设计第 5 节）。size 的含义（米）：
+//   Plane：x、y 为半边长（0 表示无限大），z 为网格线间距
+//   Sphere：x 为半径
+//   Capsule、Cylinder：x 为半径，y 为沿局部 Z 轴的半长
+//   Ellipsoid：三个半轴；Box：三个半边长
+//   Mesh：不使用（网格顶点已含尺寸）
+// local 为相对所属实体原点（body 坐标系，不是质心）的位姿；静态几何（entity 无效）相对世界。
+// 世界位姿 = 实体位姿 × local；几何体不进入快照，随实体移动。
+struct GeomDescription {
+    GeomId id;
+    std::string name;  // 模型中未命名时为空
+    EntityId entity;   // 无效 ID 表示世界上的静态几何（如地面）
+    ModelInstanceId modelInstance;
+    GeomShape shape = GeomShape::Other;
+    Vec3 size;
+    Pose local;
+    // 颜色：几何体自己的颜色；用了材质且几何体颜色为 MJCF 默认值（0.5, 0.5, 0.5, 1）时取材质颜色
+    // （与 MuJoCo 自带查看器的规则相同）。
+    std::array<float, 4> rgba{0.5f, 0.5f, 0.5f, 1.0f};
+    int group = 0;          // MJCF group；默认显示 0、1、2 组
+    bool collides = false;  // 参与碰撞（contype 或 conaffinity 非 0）
+    int mesh = -1;          // Mesh 形状时为 ModelDescription::meshes 下标，否则 -1
+};
+
+// 网格（M2-03）：编译后的顶点（网格自身坐标，已含缩放）与三角形，供显示。
+// MuJoCo 编译时可能把网格平移、旋转到其惯性主轴，GeomDescription::local 已相应补偿，二者相乘即为原始摆放。
+struct MeshDescription {
+    std::string name;
+    std::vector<Vec3> vertices;
+    std::vector<std::array<std::uint32_t, 3>> triangles;
 };
 
 struct JointDescription {
@@ -64,8 +109,11 @@ struct SimulationSettings {
     double tolerance = 0.0;   // 主求解器收敛容差
 };
 
-// 已加载模型的只读描述。entities[i].id.value == i + 1，joints、actuators 同理。
+// 已加载模型的只读描述。entities[i].id.value == i + 1，joints、actuators、modelInstances、geoms 同理。
 struct ModelDescription {
+    // 描述的修订号：1 为 M0；2 为 M2-03（增加模型实例、几何体与网格，已有字段不变）。
+    static constexpr std::uint32_t kRevision = 2;
+
     // 世界实例号：每次成功加载分配一个新值，进程内唯一、从 1 递增；0 无效。
     // 实体、关节、执行器 ID 只在同一个世界实例内有意义；重新加载后旧 ID 的数值可能相同，
     // 消费者应比较 worldInstance 来判断 ID 或快照是否属于当前世界（M0-08）。
@@ -76,6 +124,9 @@ struct ModelDescription {
     std::vector<EntityDescription> entities;
     std::vector<JointDescription> joints;
     std::vector<ActuatorDescription> actuators;
+    std::vector<ModelInstanceDescription> modelInstances;
+    std::vector<GeomDescription> geoms;  // 按后端编译顺序；含静态几何
+    std::vector<MeshDescription> meshes;
 
     const EntityDescription* entity(EntityId id) const noexcept {
         return id.valid() && id.value <= entities.size() ? &entities[id.value - 1] : nullptr;
@@ -85,6 +136,12 @@ struct ModelDescription {
     }
     const ActuatorDescription* actuator(ActuatorId id) const noexcept {
         return id.valid() && id.value <= actuators.size() ? &actuators[id.value - 1] : nullptr;
+    }
+    const ModelInstanceDescription* modelInstance(ModelInstanceId id) const noexcept {
+        return id.valid() && id.value <= modelInstances.size() ? &modelInstances[id.value - 1] : nullptr;
+    }
+    const GeomDescription* geom(GeomId id) const noexcept {
+        return id.valid() && id.value <= geoms.size() ? &geoms[id.value - 1] : nullptr;
     }
     // 按名称查找；空名称不参与查找。
     const EntityDescription* findEntity(std::string_view name) const noexcept {
@@ -105,6 +162,13 @@ struct ModelDescription {
         if (name.empty()) return nullptr;
         for (const auto& a : actuators) {
             if (a.name == name) return &a;
+        }
+        return nullptr;
+    }
+    const GeomDescription* findGeom(std::string_view name) const noexcept {
+        if (name.empty()) return nullptr;
+        for (const auto& g : geoms) {
+            if (g.name == name) return &g;
         }
         return nullptr;
     }

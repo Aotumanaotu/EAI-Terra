@@ -4,7 +4,7 @@
 变异测试把源码中的一段文字（锚点）替换为已知错误。源码改动后锚点可能不再出现或出现多次，
 此时该变异无法注入，验证脚本会在长时间构建之后才报告“注入失败”。本脚本在构建前一次查完全部脚本。
 
-用法：python3 scripts/verify/check_mutation_anchors.py [脚本 ...]（默认 scripts/verify/m0_*.sh 与 m1_*.sh）
+用法：python3 scripts/verify/check_mutation_anchors.py [脚本 ...]（默认 scripts/verify/m<阶段>_*.sh）
 每个变异打印一行；全部唯一时退出码 0，否则 1。
 """
 import ast
@@ -39,7 +39,7 @@ def mutations_of(script):
 def main():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     os.chdir(root)
-    scripts = sys.argv[1:] or sorted(glob.glob("scripts/verify/m0_*.sh") + glob.glob("scripts/verify/m1_*.sh"))
+    scripts = sys.argv[1:] or sorted(glob.glob("scripts/verify/m[0-9]_*.sh"))
     total = 0
     bad = 0
     for script in scripts:

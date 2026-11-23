@@ -19,6 +19,8 @@
 # M1-10：参考图比较规则（render.image_compare）、三个场景的参考图（graphics.render_reference.*）、渲染基准冒烟。
 # M1-09：glTF 资产加载（asset.gltf）；贴图材质、切线、环境遮蔽、环境贴图中的太阳（render.math、graphics.render_pbr）。
 # M1-14：设置模型与 JSON 读写（settings.store，总是运行）；输入替换绑定与键位名称（input.system）；相机按键改绑（view.camera）。
+# M2-02：致命错误报告与紧急保存（core.fatal）；后端致命错误改为退出码 70（physics.backend_fatal）。
+# M2-03：几何体与网格描述（physics.geometry）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
 add_executable(test_core_build_info core/test_build_info.cpp)
@@ -31,6 +33,12 @@ add_executable(test_system_monitor core/test_system_monitor.cpp)
 target_link_libraries(test_system_monitor PRIVATE terra::core)
 terra_configure_target(test_system_monitor)
 add_test(NAME core.system_monitor COMMAND test_system_monitor)
+
+# 致命错误报告与紧急保存（M2-02）：报告正文、崩溃目录、紧急保存的顺序与异常隔离，总是运行。
+add_executable(test_fatal core/test_fatal.cpp)
+target_link_libraries(test_fatal PRIVATE terra::core)
+terra_configure_target(test_fatal)
+add_test(NAME core.fatal COMMAND test_fatal)
 
 set(_terra_check_exit "${PROJECT_SOURCE_DIR}/cmake/TerraCheckExitCode.cmake")
 
@@ -169,6 +177,14 @@ target_compile_definitions(test_mujoco_state PRIVATE
 terra_configure_target(test_mujoco_state)
 add_test(NAME physics.mujoco_state COMMAND test_mujoco_state)
 
+# 几何体与网格描述（M2-03）：形状、尺寸、局部位姿、颜色、分组、网格、模型实例。
+add_executable(test_mujoco_geometry physics/test_mujoco_geometry.cpp)
+target_link_libraries(test_mujoco_geometry PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_mujoco_geometry PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_mujoco_geometry)
+add_test(NAME physics.geometry COMMAND test_mujoco_geometry)
+
 # 执行器描述与控制输入（M0-07）
 add_executable(test_physics_control physics/test_physics_control.cpp)
 target_link_libraries(test_physics_control PRIVATE terra::physics_mujoco)
@@ -208,17 +224,20 @@ target_compile_definitions(test_physics_continuous PRIVATE
 terra_configure_target(test_physics_continuous)
 add_test(NAME physics.continuous COMMAND test_physics_continuous)
 
-# 后端不可恢复错误（M0-08）：独立子进程中触发 mju_error，判定退出码、stderr 与不写日志文件。
+# 后端不可恢复错误（M0-08 建立，M2-02 改为 Terra 的致命错误处理）：独立子进程中在 step 内触发 mju_error，
+# 判定退出码 70、stderr、崩溃报告（写在构建目录，不写用户目录）、紧急保存与不写 MuJoCo 日志文件。
 # 与 test_mujoco_probe 一样直接链接 MuJoCo（后端测试）。
 add_executable(test_backend_fatal physics/test_backend_fatal.cpp)
-target_link_libraries(test_backend_fatal PRIVATE terra::physics_mujoco mujoco::mujoco)
+target_link_libraries(test_backend_fatal PRIVATE terra::physics_mujoco terra::core mujoco::mujoco)
 terra_configure_target(test_backend_fatal)
 add_test(NAME physics.backend_fatal
-    COMMAND "${CMAKE_COMMAND}" -DEXPECTED=1 -DCOMMAND=$<TARGET_FILE:test_backend_fatal>
-            "-DSTDERR_REGEX=terra fatal probe 42.*probe-atexit: no log file"
+    COMMAND "${CMAKE_COMMAND}" -DEXPECTED=70 -DCOMMAND=$<TARGET_FILE:test_backend_fatal>
+            "-DSTDERR_REGEX=terra fatal probe 42.*探针设置：成功.*崩溃报告：.*probe-atexit: no log file, crash report ok, emergency save ok"
             -P "${_terra_check_exit}"
             "${PROJECT_SOURCE_DIR}/assets/tests/falling_cube.xml"
             "${CMAKE_CURRENT_BINARY_DIR}/work/backend_fatal")
+set_tests_properties(physics.backend_fatal PROPERTIES
+    ENVIRONMENT "TERRA_CRASH_DIR=${CMAKE_CURRENT_BINARY_DIR}/work/backend_fatal/crash")
 
 # 性能基线程序冒烟测试（M0-09）：只确认能运行并输出 BENCH 记录；正式测量由验收脚本执行，不设门槛。
 add_test(NAME bench.smoke

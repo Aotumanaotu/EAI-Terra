@@ -1,7 +1,8 @@
 // EAI Terra Headless 入口。
 //
 // 生命周期：解析参数 → 检查物理后端 → 加载并初始化模型（M0-04）→ 固定步进运行（M0-05）→ 释放。
-// 世界通过后端无关的 PhysicsWorld 接口使用（M0-07）；不设置控制，执行器保持模型的中性值。
+// 世界通过后端无关的 PhysicsWorld 接口使用（M0-07）。不给动作时不设置控制，执行器保持模型的中性值（场景中的 PD 层除外）。
+// M3-05：--motion 时每一步之前按“动作 → PD 层 → setControl”下发控制，与查看器的每步控制器是同一条路径，结果逐位相同。
 // 按步数离线运行，不按墙钟 sleep 或追赶实时；输出采样不影响仿真。
 // 输出格式见 cli.hpp 与 M0-06 报告。
 //
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,8 @@
 #include "terra/physics/mujoco/mujoco_backend.hpp"
 #include "terra/physics/physics_world.hpp"
 #include "terra/scene/scene.hpp"
+#include "terra/simulation/motion.hpp"
+#include "terra/simulation/pd_layer.hpp"
 
 namespace {
 
@@ -77,13 +81,34 @@ std::string sampleState(const physics::PhysicsWorld& world) {
     return stateToJson(*world.snapshot());
 }
 
-int run(const RunOptions& options) {
+int run(const RunOptions& requested) {
     if (!backendUsable()) {
         return kExitUnavailable;
+    }
+    RunOptions options = requested;
+
+    // 动作文件（M3-05）：先解析；没给 --scene 时使用其中的推荐场景
+    std::optional<terra::simulation::MotionDocument> motionDocument;
+    if (!options.motionPath.empty()) {
+        const auto parsed = terra::simulation::readMotionFile(options.motionPath);
+        for (const auto& issue : parsed.issues) {
+            const bool error = issue.severity == terra::simulation::MotionIssue::Severity::Error;
+            diagnose(std::string{error ? "动作错误 " : "动作警告 "} + issue.where + (issue.where.empty() ? "" : "：") + issue.message);
+        }
+        if (!parsed.document) return kExitModel;
+        motionDocument = *parsed.document;
+        if (options.scenePath.empty()) {
+            if (motionDocument->scene.empty()) {
+                diagnose("动作文件没有推荐场景，请用 --scene 指定场景文件");
+                return kExitUsage;
+            }
+            options.scenePath = motionDocument->scene;
+        }
     }
 
     // 唯一与具体后端相关的调用；之后只通过 PhysicsWorld 接口使用世界。
     std::unique_ptr<physics::PhysicsWorld> owned;
+    std::vector<terra::scene::PdAssignment> pdAssignments;
     if (!options.scenePath.empty()) {
         // 场景文件（M2-08）：由 terra_scene 组合模型实例，只跑物理；视觉绑定只检查文件是否存在
         auto scene = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
@@ -93,6 +118,7 @@ int run(const RunOptions& options) {
                      (issue.instance.empty() ? std::string{} : "[" + issue.instance + "] ") + issue.message);
         }
         if (!scene.ok()) return kExitModel;
+        pdAssignments = scene.scene->pd;
         owned = std::move(scene.scene->world);
     } else {
         physics::LoadResult loaded = terra::physics::mujoco::loadWorld(terra::data::ModelSource{options.modelPath});
@@ -107,15 +133,32 @@ int run(const RunOptions& options) {
     }
     physics::PhysicsWorld& world = *owned;
 
+    // PD 层（M3-04b）与动作（M3-05）
+    terra::simulation::PdLayer pd(world.description(), pdAssignments);
+    std::optional<terra::simulation::MotionPlayer> player;
+    if (motionDocument) {
+        const auto bound = terra::simulation::bindMotion(*motionDocument, world.description(), pd.targetRangeFunction());
+        for (const auto& issue : bound.issues) {
+            const bool error = issue.severity == terra::simulation::MotionIssue::Severity::Error;
+            diagnose(std::string{error ? "动作错误 " : "动作警告 "} + issue.where + (issue.where.empty() ? "" : "：") + issue.message);
+        }
+        if (!bound.motion) return kExitModel;
+        if (const auto key = bound.motion->startKeyframe) world.resetToKeyframe(*key);
+        player.emplace(*bound.motion);
+        player->start(world.stepIndex());
+    }
+
     ResolvedRun resolved;
     resolved.modelPath = world.description().sourcePath;
     resolved.timestep = world.description().timestep;
     if (options.steps) {
         resolved.totalSteps = *options.steps;
     } else {
-        const auto steps = stepsForDuration(*options.durationSeconds, resolved.timestep);
+        // 没给步数与时长时（只有 --motion 才允许）：运行到动作结束后 1 秒
+        const double duration = options.durationSeconds ? *options.durationSeconds : player->motion().duration + 1.0;
+        const auto steps = stepsForDuration(duration, resolved.timestep);
         if (!steps) {
-            diagnose("--duration 换算为步数时超出范围（步长 " + std::to_string(resolved.timestep) + " 秒）");
+            diagnose("运行时长换算为步数时超出范围（步长 " + std::to_string(resolved.timestep) + " 秒）");
             return kExitUsage;
         }
         resolved.totalSteps = *steps;
@@ -128,8 +171,22 @@ int run(const RunOptions& options) {
 
     ok = ok && emit(modelToJson(world.description()));
     const terra::RunSchedule schedule{resolved.totalSteps, options.sampleEvery};
+    const double dt = resolved.timestep;
     ok = ok && emit(sampleState(world));  // 第 0 步：初始状态
     for (std::uint64_t i = 0; ok && i < resolved.totalSteps; ++i) {
+        // 每步控制：动作给出的命令 → PD 层（与查看器的每步控制器相同）
+        if (player || !pd.empty()) {
+            auto commands = player ? player->commands(world.stepIndex(), dt) : std::vector<physics::ActuatorCommand>{};
+            if (!pd.empty()) commands = pd.process(std::move(commands), *world.snapshot());
+            if (!commands.empty()) {
+                if (const auto error = world.setControl(commands)) {
+                    emit(errorToJson("control_rejected", world.runEpoch(), world.stepIndex(), world.simulationTime(), error->message));
+                    std::fflush(stdout);
+                    diagnose("第 " + std::to_string(world.stepIndex()) + " 步的控制被拒绝：" + error->message);
+                    return kExitSimulation;
+                }
+            }
+        }
         if (const auto error = world.step()) {
             emit(errorToJson(errorKindName(error->kind), world.runEpoch(), error->step, world.simulationTime(),
                              error->message));

@@ -29,6 +29,7 @@
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
+# M3-05：Headless --motion（headless.run_motion 等）；Headless 与查看器路径逐位一致（motion.consistency、motion.consistency_go2）。
 # M3-03：显示用描述（physics.visual_description）；MJCF 显示换算（render.mjcf_visual）；参考图 mjcf_materials 与三台机器人。
 # M3-02：关节限位与执行器类别、关键帧（physics.robot_description）；场景初始关键帧（scene.file、scene.instance、simulation.runner 扩充；graphics.viewer_keyframe_selftest）。
 # M2-08：查看器场景模式自检（graphics.viewer_scene_selftest）；Headless 场景（headless.run_scene 等）；文件浏览（ui.text 扩充）。
@@ -77,6 +78,21 @@ target_link_libraries(test_headless_cli PRIVATE terra_headless_cli)
 terra_configure_target(test_headless_cli)
 add_test(NAME headless.cli_parser COMMAND test_headless_cli)
 
+# Headless 与查看器执行同一动作逐位相同（M3-05）：机械臂（不需要下载）；Go2（PD 层，需要参考机器人，否则跳过）
+add_executable(test_motion_consistency apps/test_motion_consistency.cpp)
+target_link_libraries(test_motion_consistency PRIVATE terra_headless_cli terra::scene terra::simulation terra::physics_mujoco)
+terra_configure_target(test_motion_consistency)
+add_dependencies(test_motion_consistency terra_headless)
+add_test(NAME motion.consistency
+    COMMAND test_motion_consistency $<TARGET_FILE:terra_headless>
+            "${PROJECT_SOURCE_DIR}/assets/tests/scene/keyframe_arm.terra-scene.json"
+            "${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json" 900)
+add_test(NAME motion.consistency_go2
+    COMMAND test_motion_consistency $<TARGET_FILE:terra_headless>
+            "${PROJECT_SOURCE_DIR}/assets/scenes/robots/go2.terra-scene.json"
+            "${PROJECT_SOURCE_DIR}/assets/motions/go2/lie_stand_sit.terra-motion.json" 3000 --optional)
+set_tests_properties(motion.consistency_go2 PROPERTIES SKIP_RETURN_CODE 77)
+
 set(_terra_cube_model "${PROJECT_SOURCE_DIR}/assets/tests/falling_cube.xml")
 # 占位文件：存在且可读，但不是合法 MJCF。用于参数错误用例（不会读到模型）和模型编译失败用例。
 set(_terra_placeholder_model "${CMAKE_CURRENT_BINARY_DIR}/fixtures/placeholder.xml")
@@ -114,6 +130,19 @@ terra_add_cli_test(scene_invalid EXPECT 4 STDERR "场景错误 /models/0/positon
     ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/invalid.terra-scene.json --steps 10)
 terra_add_cli_test(scene_and_model EXPECT 2 STDERR "只能二选一"
     ARGS --scene a.json --model ${_terra_cube_model} --steps 10)
+# M3-05：--motion（不给 --scene 时用推荐场景；不给步数时运行到动作结束后 1 秒：1.5 + 1 = 2.5 s = 1250 步；
+# 初始关键帧与起始关键帧各重置一次，运行代次为 2）
+terra_add_cli_test(run_motion EXPECT 0
+    STDOUT "[{].type.:.config.[^\n]*.scene.:[^\n]*keyframe_arm[^\n]*.motion.:[^\n]*arm_swing.*[{].type.:.summary.,.run_epoch.:2,.steps.:1250,"
+    ARGS --motion ${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json --sample-every 1000)
+terra_add_cli_test(motion_invalid EXPECT 4 STDERR "动作错误 /interpolation"
+    ARGS --motion ${PROJECT_SOURCE_DIR}/assets/tests/motion/invalid.terra-motion.json --steps 10)
+terra_add_cli_test(motion_wrong_scene EXPECT 4 STDERR "动作错误 /poses/0/targets/arm~1shoulder_pos：找不到执行器"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json
+         --motion ${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json --steps 10)
+terra_add_cli_test(motion_and_model EXPECT 2 STDERR "不能与 --model 同用"
+    ARGS --model ${_terra_cube_model} --motion a.json)
+
 terra_add_cli_test(run_duration EXPECT 0
     STDOUT "[{].type.:.summary.,.run_epoch.:0,.steps.:10,"
     ARGS --model ${_terra_cube_model} --duration 0.01 --sample-every 1000)

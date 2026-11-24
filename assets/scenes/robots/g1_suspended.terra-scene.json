@@ -32,5 +32,8 @@
         1.0
       ]
     }
+  },
+  "physics": {
+    "integrator": "implicitfast"
   }
 }

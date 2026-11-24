@@ -24,6 +24,7 @@ enum ExitCode : int {
     kExitUnavailable = 3,  // 物理后端不可用，或所需功能尚未接入
     kExitModel = 4,        // 模型文件不可用或加载失败
     kExitSimulation = 5,   // 仿真过程中出现非有限值、意外重置等严重错误（M0-05 起使用）
+    kExitRerunMismatch = 6,  // M3-07：--rerun 复现的结果超出容差
 };
 
 enum class Command { Help, Version, Run };
@@ -32,6 +33,10 @@ struct RunOptions {
     std::string modelPath;
     std::string scenePath;                  // M2-08：场景文件（与 modelPath 二选一）
     std::string motionPath;                 // M3-05：动作文件；不给 --scene 时使用动作文件中的推荐场景；不能与 --model 同用
+    std::string recordPath;                 // M3-07：把本次运行写成实验记录（*.terra-record.jsonl）；需要场景（--scene 或 --motion）
+    std::string rerunPath;                  // M3-07：按实验记录重新仿真并比较；不能与其他运行参数同用
+    double positionTolerance = 1e-6;        // M3-07：--tolerance 位置,姿态（m,rad），只用于 --rerun
+    double rotationTolerance = 1e-6;
     std::optional<std::uint64_t> steps;     // 与 duration 二选一
     std::optional<double> durationSeconds;  // 仿真时长（秒）；换算为步数需要模型步长，在 M0-04 后完成
     std::uint64_t sampleEvery = 1;          // 每 N 步输出一次状态

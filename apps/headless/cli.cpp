@@ -87,6 +87,9 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     bool seenModel = false;
     bool seenScene = false;
     bool seenMotion = false;
+    bool seenRecord = false;
+    bool seenRerun = false;
+    bool seenTolerance = false;
     bool seenSampleEvery = false;
     RunOptions& options = result.options;
 
@@ -111,7 +114,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         }
 
         const bool takesValue = name == "--model" || name == "--scene" || name == "--motion" || name == "--steps" ||
-                                name == "--duration" || name == "--sample-every";
+                                name == "--duration" || name == "--sample-every" || name == "--record" || name == "--rerun" ||
+                                name == "--tolerance";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
             return result;
@@ -130,7 +134,34 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             ++i;
         }
 
-        if (name == "--motion") {
+        if (name == "--record" || name == "--rerun") {
+            bool& seen = name == "--record" ? seenRecord : seenRerun;
+            if (seen) {
+                result.error = "重复的参数 " + std::string{name};
+                return result;
+            }
+            if (value->empty()) {
+                result.error = std::string{name} + " 的值不能为空";
+                return result;
+            }
+            seen = true;
+            (name == "--record" ? options.recordPath : options.rerunPath) = std::string{*value};
+        } else if (name == "--tolerance") {
+            if (seenTolerance) {
+                result.error = "重复的参数 --tolerance";
+                return result;
+            }
+            const auto comma = value->find(',');
+            const auto position = comma == std::string_view::npos ? std::nullopt : parsePositiveFinite(value->substr(0, comma));
+            const auto rotation = comma == std::string_view::npos ? std::nullopt : parsePositiveFinite(value->substr(comma + 1));
+            if (!position || !rotation) {
+                result.error = "--tolerance 需要“位置,姿态”两个正数（m,rad），如 1e-6,1e-6，实际为 " + quoted(*value);
+                return result;
+            }
+            seenTolerance = true;
+            options.positionTolerance = *position;
+            options.rotationTolerance = *rotation;
+        } else if (name == "--motion") {
             if (seenMotion) {
                 result.error = "重复的参数 --motion";
                 return result;
@@ -198,8 +229,22 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         }
     }
 
+    if (seenRerun) {
+        // 复现：一切由记录给出，不能再指定运行参数
+        if (seenModel || seenScene || seenMotion || seenRecord || options.steps || options.durationSeconds || options.dryRun ||
+            seenSampleEvery) {
+            result.error = "--rerun 不能与 --model、--scene、--motion、--record、--steps、--duration、--sample-every、--dry-run 同用";
+        }
+        return result;
+    }
     if (seenModel && seenScene) {
         result.error = "--model 与 --scene 只能二选一";
+    } else if (seenTolerance) {
+        result.error = "--tolerance 只用于 --rerun";
+    } else if (seenRecord && seenModel) {
+        result.error = "--record 需要场景文件（--scene 或 --motion），不能与 --model 同用";
+    } else if (seenRecord && options.dryRun) {
+        result.error = "--record 不能与 --dry-run 同用";
     } else if (seenModel && seenMotion) {
         result.error = "--motion 需要场景文件（--scene，或动作文件中的推荐场景），不能与 --model 同用";
     } else if (!seenModel && !seenScene && !seenMotion) {
@@ -216,6 +261,8 @@ std::string usageText() {
     return "用法:\n"
            "  terra_headless (--model <MJCF> | --scene <场景文件>) (--steps N | --duration 秒) [--sample-every N] [--dry-run]\n"
            "  terra_headless [--scene <场景文件>] --motion <动作文件> [--steps N | --duration 秒] [--sample-every N]\n"
+           "  terra_headless ... [--record <记录文件>]          （与 --scene 或 --motion 组合：写出实验记录）\n"
+           "  terra_headless --rerun <记录文件> [--tolerance 位置,姿态]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
@@ -224,6 +271,11 @@ std::string usageText() {
            "                       不读取视觉资源；实体名带实例前缀（如 cart_a/chassis）。场景中的 PD 层（controllers）同样生效\n"
            "  --motion <路径>      动作文件（M3-05，*.terra-motion.json）：从起始关键帧开始按步执行，与查看器逐位相同；\n"
            "                       不给 --scene 时使用动作文件中的推荐场景；不给步数时运行到动作结束后 1 秒\n"
+           "  --record <路径>      实验记录（M3-07，*.terra-record.jsonl）：记录头、每步实际下发的控制量（变化时）、\n"
+           "                       按 --sample-every 采样的状态与摘要；stdout 的输出不变\n"
+           "  --rerun <路径>       按实验记录重新仿真：加载记录中的场景，下发记录的控制量，在每个采样点比较位姿；\n"
+           "                       输出一行 {\"type\":\"rerun\",...}；超出容差时退出码 6\n"
+           "  --tolerance p,r      复现容差：位置（m）与姿态（rad），默认 1e-6,1e-6\n"
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
@@ -232,7 +284,7 @@ std::string usageText() {
            "      --version        显示版本与构建信息\n"
            "\n"
            "输出: stdout 为 JSON Lines（每行一个对象，带 \"type\" 字段）；诊断信息写 stderr。\n"
-           "退出码: 0 成功；1 内部错误；2 参数错误；3 后端不可用或功能未接入；4 模型错误；5 仿真错误；\n"
+           "退出码: 0 成功；1 内部错误；2 参数错误；3 后端不可用或功能未接入；4 模型错误；5 仿真错误；6 复现超出容差；\n"
            "        70 物理后端致命错误（不可恢复；诊断写入 stderr 与 ~/.local/state/terra/crash-*.txt）。\n"
            "\n"
            "\n"

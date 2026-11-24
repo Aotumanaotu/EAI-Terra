@@ -10,7 +10,9 @@
 
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <memory>
+#include <ctime>
 #include <optional>
 #include <string>
 #include <vector>
@@ -24,6 +26,8 @@
 #include "terra/scene/scene.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/pd_layer.hpp"
+#include "terra/simulation/record.hpp"
+#include "terra/core/sha256.hpp"
 
 namespace {
 
@@ -81,7 +85,68 @@ std::string sampleState(const physics::PhysicsWorld& world) {
     return stateToJson(*world.snapshot());
 }
 
+// 实验记录头中的运行环境（M3-07）
+void fillEnvironment(terra::simulation::RecordHeader& h) {
+    const terra::BuildInfo& info = terra::buildInfo();
+    h.terraVersion = std::string{info.version};
+    h.compiler = std::string{info.compilerId} + " " + std::string{info.compilerVersion};
+    const terra::physics::mujoco::BackendInfo backend = terra::physics::mujoco::backendInfo();
+    h.physicsBackend = std::string{backend.name} + " " + std::string{backend.libraryVersionString};
+#if defined(__linux__)
+    h.platform = "linux";
+#elif defined(_WIN32)
+    h.platform = "windows";
+#elif defined(__APPLE__)
+    h.platform = "macos";
+#else
+    h.platform = "unknown";
+#endif
+#if defined(__x86_64__) || defined(_M_X64)
+    h.platform += " x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    h.platform += " aarch64";
+#endif
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+    gmtime_r(&now, &utc);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &utc);
+    h.created = buf;
+}
+
+// --rerun（M3-07）：按记录重新仿真并比较，输出一行 rerun
+int rerun(const RunOptions& options) {
+    if (!backendUsable()) return kExitUnavailable;
+    const auto read = terra::simulation::readRecord(options.rerunPath);
+    for (const auto& w : read.warnings) diagnose("记录警告：" + w);
+    for (const auto& e : read.errors) diagnose("记录错误：" + e);
+    if (!read.record) return kExitModel;
+    terra::simulation::RerunOptions ro;
+    ro.positionTolerance = options.positionTolerance;
+    ro.rotationTolerance = options.rotationTolerance;
+    const auto result = terra::simulation::rerunRecord(*read.record, terra::physics::mujoco::composeWorld, ro);
+    for (const auto& w : result.warnings) diagnose("复现警告：" + w);
+    if (!result.ran) {
+        diagnose("复现失败：" + result.error);
+        return kExitModel;
+    }
+    std::string json = "{\"type\":\"rerun\",\"record\":\"" + jsonEscape(options.rerunPath) + "\",\"steps\":" +
+                       std::to_string(result.steps) + ",\"compared\":" + std::to_string(result.compared) +
+                       ",\"bitwise\":" + (result.bitwise ? "true" : "false") + ",\"max_position_error\":" +
+                       formatNumber(result.maxPositionError) + ",\"max_rotation_error\":" + formatNumber(result.maxRotationError) +
+                       ",\"position_tolerance\":" + formatNumber(ro.positionTolerance) + ",\"rotation_tolerance\":" +
+                       formatNumber(ro.rotationTolerance) + ",\"first_exceed_step\":" +
+                       (result.firstExceedStep ? std::to_string(*result.firstExceedStep) : std::string{"null"}) +
+                       ",\"within_tolerance\":" + (result.withinTolerance() ? "true" : "false") + "}";
+    if (result.firstDifferenceStep) {
+        diagnose("复现诊断：第一个不逐位相同的采样点在第 " + std::to_string(*result.firstDifferenceStep) + " 步：" + result.firstDifference);
+    }
+    if (!emit(json) || std::fflush(stdout) != 0) return kExitInternal;
+    return result.withinTolerance() ? kExitOk : kExitRerunMismatch;
+}
+
 int run(const RunOptions& requested) {
+    if (!requested.rerunPath.empty()) return rerun(requested);
     if (!backendUsable()) {
         return kExitUnavailable;
     }
@@ -169,20 +234,47 @@ int run(const RunOptions& requested) {
         return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
     }
 
+    // 实验记录（M3-07）：记录头在起始关键帧之后写，与复现时的起始状态一致
+    std::unique_ptr<terra::simulation::RecordWriter> recorder;
+    if (!options.recordPath.empty()) {
+        auto header = terra::simulation::makeRecordHeader(world.description(), options.sampleEvery);
+        fillEnvironment(header);
+        std::error_code ec;
+        header.scenePath = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
+        header.sceneSha256 = terra::sha256File(header.scenePath).value_or("");
+        if (motionDocument) {
+            header.motionPath = motionDocument->path;
+            header.motionSha256 = terra::sha256File(header.motionPath).value_or("");
+            header.startKeyframe = motionDocument->startKeyframe;
+        }
+        std::string error;
+        recorder = terra::simulation::RecordWriter::create(options.recordPath, header, error);
+        if (!recorder) {
+            diagnose(error);
+            return kExitInternal;
+        }
+    }
+
     ok = ok && emit(modelToJson(world.description()));
     const terra::RunSchedule schedule{resolved.totalSteps, options.sampleEvery};
     const double dt = resolved.timestep;
     ok = ok && emit(sampleState(world));  // 第 0 步：初始状态
+    if (recorder) recorder->state(*world.snapshot());
     for (std::uint64_t i = 0; ok && i < resolved.totalSteps; ++i) {
         // 每步控制：动作给出的命令 → PD 层（与查看器的每步控制器相同）
         if (player || !pd.empty()) {
             auto commands = player ? player->commands(world.stepIndex(), dt) : std::vector<physics::ActuatorCommand>{};
             if (!pd.empty()) commands = pd.process(std::move(commands), *world.snapshot());
             if (!commands.empty()) {
+                if (recorder) recorder->control(world.stepIndex(), commands);
                 if (const auto error = world.setControl(commands)) {
                     emit(errorToJson("control_rejected", world.runEpoch(), world.stepIndex(), world.simulationTime(), error->message));
                     std::fflush(stdout);
                     diagnose("第 " + std::to_string(world.stepIndex()) + " 步的控制被拒绝：" + error->message);
+                    if (recorder) {
+                        recorder->event(world.stepIndex(), "error", error->message);
+                        recorder->finish(world.stepIndex(), world.simulationTime(), "error");
+                    }
                     return kExitSimulation;
                 }
             }
@@ -192,11 +284,20 @@ int run(const RunOptions& requested) {
                              error->message));
             std::fflush(stdout);
             diagnose("仿真在第 " + std::to_string(error->step) + " 步出错：" + error->message);
+            if (recorder) {
+                recorder->event(error->step, "error", error->message);
+                recorder->finish(world.stepIndex(), world.simulationTime(), "error");
+            }
             return kExitSimulation;
         }
         if (schedule.shouldSample(world.stepIndex())) {
             ok = emit(sampleState(world));
+            if (recorder) recorder->state(*world.snapshot());
         }
+    }
+    if (recorder && !recorder->finish(world.stepIndex(), world.simulationTime(), "completed")) {
+        diagnose("写入实验记录失败：" + options.recordPath);
+        return kExitInternal;
     }
     ok = ok && emit(summaryToJson(world.runEpoch(), world.stepIndex(), world.simulationTime()));
 

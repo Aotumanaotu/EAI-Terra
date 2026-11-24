@@ -109,6 +109,34 @@ void testMotion() {
     check(usageText().find("--motion") != std::string::npos, "帮助中有 --motion");
 }
 
+// M3-07a：--record / --rerun / --tolerance
+void testRecord() {
+    {
+        const ParseResult r = parse({"--motion", "m.json", "--record", "out/r.jsonl"});
+        check(r.ok() && r.options.recordPath == "out/r.jsonl", "--motion + --record：" + r.error);
+    }
+    {
+        const ParseResult r = parse({"--rerun", "r.jsonl"});
+        check(r.ok() && r.options.rerunPath == "r.jsonl" && r.options.positionTolerance == 1e-6 && r.options.rotationTolerance == 1e-6,
+              "--rerun 单独使用，默认容差 1e-6：" + r.error);
+    }
+    {
+        const ParseResult r = parse({"--rerun", "r.jsonl", "--tolerance", "1e-3,2e-3"});
+        check(r.ok() && r.options.positionTolerance == 1e-3 && r.options.rotationTolerance == 2e-3, "--tolerance 位置,姿态：" + r.error);
+    }
+    expectError({"--rerun", "r.jsonl", "--scene", "s.json"}, "--rerun 不能与");
+    expectError({"--rerun", "r.jsonl", "--steps", "10"}, "--rerun 不能与");
+    expectError({"--rerun", "r.jsonl", "--tolerance", "1e-3"}, "--tolerance 需要");
+    expectError({"--rerun", "r.jsonl", "--tolerance", "0,1"}, "--tolerance 需要");
+    expectError({"--scene", "s.json", "--steps", "1", "--tolerance", "1,1"}, "只用于 --rerun");
+    expectError({"--model", "a.xml", "--steps", "1", "--record", "r.jsonl"}, "不能与 --model 同用");
+    expectError({"--scene", "s.json", "--steps", "1", "--record", "r.jsonl", "--dry-run"}, "不能与 --dry-run 同用");
+    expectError({"--rerun", "a", "--rerun", "b"}, "重复的参数 --rerun");
+    expectError({"--record="}, "不能为空");
+    check(usageText().find("--rerun") != std::string::npos && usageText().find("6 复现超出容差") != std::string::npos,
+          "帮助中有 --rerun 与退出码 6");
+}
+
 void testUsageErrors() {
     expectError({}, "缺少参数");
     expectError({"--bogus"}, "未知参数");
@@ -287,6 +315,7 @@ int main() {
     testUsageErrors();
     testScene();
     testMotion();
+    testRecord();
     testJson();
     testStepsForDuration();
     testRecords();

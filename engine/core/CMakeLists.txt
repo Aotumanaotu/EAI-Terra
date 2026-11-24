@@ -15,6 +15,7 @@ configure_file(
 add_library(terra_core STATIC
     src/build_info.cpp
     src/fatal.cpp
+    src/sha256.cpp
     src/system_monitor.cpp)
 add_library(terra::core ALIAS terra_core)
 

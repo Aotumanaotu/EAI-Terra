@@ -29,6 +29,7 @@
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
+# M3-07a：SHA-256（core.sha256）；实验记录（record.file、record.rerun）；Headless --record / --rerun（headless.record_motion 等）。
 # M3-06：关节与接触验证（robots.validation）；实体质量（模型描述修订 5）。
 # M3-05：Headless --motion（headless.run_motion 等）；Headless 与查看器路径逐位一致（motion.consistency、motion.consistency_go2）。
 # M3-03：显示用描述（physics.visual_description）；MJCF 显示换算（render.mjcf_visual）；参考图 mjcf_materials 与三台机器人。
@@ -52,6 +53,12 @@ add_executable(test_fatal core/test_fatal.cpp)
 target_link_libraries(test_fatal PRIVATE terra::core)
 terra_configure_target(test_fatal)
 add_test(NAME core.fatal COMMAND test_fatal)
+
+# SHA-256（M3-07）：实验记录中的文件摘要
+add_executable(test_sha256 core/test_sha256.cpp)
+target_link_libraries(test_sha256 PRIVATE terra::core)
+terra_configure_target(test_sha256)
+add_test(NAME core.sha256 COMMAND test_sha256 "${CMAKE_CURRENT_BINARY_DIR}")
 
 set(_terra_check_exit "${PROJECT_SOURCE_DIR}/cmake/TerraCheckExitCode.cmake")
 
@@ -143,6 +150,21 @@ terra_add_cli_test(motion_wrong_scene EXPECT 4 STDERR "动作错误 /poses/0/tar
          --motion ${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json --steps 10)
 terra_add_cli_test(motion_and_model EXPECT 2 STDERR "不能与 --model 同用"
     ARGS --model ${_terra_cube_model} --motion a.json)
+
+# M3-07a：--record 写出实验记录，--rerun 复现（同一机器逐位相同）；两个测试按顺序执行（FIXTURES）
+terra_add_cli_test(record_motion EXPECT 0
+    STDOUT "[{].type.:.summary.,.run_epoch.:2,.steps.:1250,"
+    ARGS --motion ${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json --sample-every 10
+         --record ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl)
+set_tests_properties(headless.record_motion PROPERTIES FIXTURES_SETUP headless_record)
+terra_add_cli_test(rerun_motion EXPECT 0
+    STDOUT "[{].type.:.rerun.,[^\n]*.steps.:1250,.compared.:126,.bitwise.:true,.max_position_error.:0,.max_rotation_error.:0,[^\n]*.within_tolerance.:true"
+    ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl)
+set_tests_properties(headless.rerun_motion PROPERTIES FIXTURES_REQUIRED headless_record)
+terra_add_cli_test(rerun_missing EXPECT 4 STDERR "记录文件不存在"
+    ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/no_such.terra-record.jsonl)
+terra_add_cli_test(rerun_with_scene EXPECT 2 STDERR "--rerun 不能与"
+    ARGS --rerun a.jsonl --scene b.json)
 
 terra_add_cli_test(run_duration EXPECT 0
     STDOUT "[{].type.:.summary.,.run_epoch.:0,.steps.:10,"
@@ -298,6 +320,18 @@ target_link_libraries(test_motion_player PRIVATE terra::simulation terra::scene 
 target_compile_definitions(test_motion_player PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
 terra_configure_target(test_motion_player)
 add_test(NAME motion.player COMMAND test_motion_player)
+
+# 实验记录（M3-07a）：写入与读取（纯逻辑）；复现（MuJoCo）
+add_executable(test_record_file simulation/test_record.cpp)
+target_link_libraries(test_record_file PRIVATE terra::simulation terra::core)
+target_compile_definitions(test_record_file PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_record_file)
+add_test(NAME record.file COMMAND test_record_file file "${CMAKE_CURRENT_BINARY_DIR}/record_file_tmp")
+add_executable(test_record_rerun simulation/test_record.cpp)
+target_link_libraries(test_record_rerun PRIVATE terra::simulation terra::core terra::scene terra::physics_mujoco)
+target_compile_definitions(test_record_rerun PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests" TERRA_RECORD_RERUN=1)
+terra_configure_target(test_record_rerun)
+add_test(NAME record.rerun COMMAND test_record_rerun rerun "${CMAKE_CURRENT_BINARY_DIR}/record_rerun_tmp")
 
 # PD 控制层与快照的执行器状态（M3-04b）
 add_executable(test_pd_layer simulation/test_pd_layer.cpp)

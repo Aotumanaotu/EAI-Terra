@@ -7,6 +7,9 @@
 //   outdoor     室外环境贴图（太阳由贴图提取）+ 三个 glTF 资产（同上）
 //   carts       （M2-07）场景文件 assets/tests/scene/two_carts.terra-scene.json：物理世界推进 300 步（两车各施加恒定推力）后，
 //               由快照驱动渲染 MJCF 几何体与 glTF 节点绑定（node / assembly 对齐、showGeoms、静态装饰）；半球光；不需要下载素材
+//   mjcf_materials（M3-03）场景文件 assets/tests/scene/materials.terra-scene.json：MJCF 材质、二维贴图、平滑法线；半球光
+//   robot_g1 / robot_go2 / robot_stretch3（M3-03）参考机器人场景，处于初始关键帧；摄影棚环境
+//               （需要 Menagerie 模型与 HDRI，缺失时以返回码 77 表示跳过）
 // 每个场景渲染两次，先检查两次逐字节相同（确定性），再与参考图比较；失败时在输出目录写出实际图与差异图。
 //
 // 用法：test_render_reference <参考图目录> <输出目录> --scene <名称> [--update] [--expect-renderer 子串]
@@ -49,17 +52,33 @@ struct SceneSpec {
     st::EnvironmentSetting environment = st::EnvironmentSetting::Hemisphere;
     r::Vec3f eye;
     r::Vec3f target;
+    std::string scenePath;   // M3-03：场景文件（相对 assets/）；空表示 carts 的 tests/scene/two_carts.terra-scene.json
+    std::string robotCheck;  // M3-03：需要的参考机器人文件（相对 assets/），缺失时跳过；空表示不需要
 };
 
 bool spec(const std::string& name, SceneSpec& out) {
     if (name == "procedural") {
-        out = {name, false, false, st::EnvironmentSetting::Hemisphere, {-5.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 0.0f}};
+        out = {name, false, false, st::EnvironmentSetting::Hemisphere, {-5.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 0.0f}, {}, {}};
     } else if (name == "studio") {
-        out = {name, true, false, st::EnvironmentSetting::Studio, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}};
+        out = {name, true, false, st::EnvironmentSetting::Studio, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}, {}, {}};
     } else if (name == "outdoor") {
-        out = {name, true, false, st::EnvironmentSetting::Outdoor, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}};
+        out = {name, true, false, st::EnvironmentSetting::Outdoor, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}, {}, {}};
     } else if (name == "carts") {
-        out = {name, false, true, st::EnvironmentSetting::Hemisphere, {-2.2f, -2.4f, 1.5f}, {0.25f, 0.0f, 0.1f}};
+        out = {name, false, true, st::EnvironmentSetting::Hemisphere, {-2.2f, -2.4f, 1.5f}, {0.25f, 0.0f, 0.1f}, {}, {}};
+    } else if (name == "mjcf_materials") {
+        // M3-03：材质、二维贴图（平面 texuniform、长方体、带纹理坐标的网格）、平滑法线与平直着色、不支持的立方体贴图
+        out = {name, false, true, st::EnvironmentSetting::Hemisphere, {1.05f, -1.25f, 0.75f}, {0.05f, 0.15f, 0.05f},
+               "tests/scene/materials.terra-scene.json", {}};
+    } else if (name == "robot_g1") {
+        // M3-03：三台参考机器人，处于场景的初始关键帧；摄影棚环境（需要 HDRI 与 Menagerie 模型）
+        out = {name, true, true, st::EnvironmentSetting::Studio, {2.2f, -1.6f, 1.3f}, {0.0f, 0.0f, 0.75f},
+               "scenes/robots/g1.terra-scene.json", "robots/unitree_g1/g1.xml"};
+    } else if (name == "robot_go2") {
+        out = {name, true, true, st::EnvironmentSetting::Studio, {1.4f, -1.1f, 0.7f}, {0.0f, 0.0f, 0.25f},
+               "scenes/robots/go2.terra-scene.json", "robots/unitree_go2/go2.xml"};
+    } else if (name == "robot_stretch3") {
+        out = {name, true, true, st::EnvironmentSetting::Studio, {1.8f, 1.4f, 1.4f}, {0.0f, -0.3f, 0.6f},
+               "scenes/robots/stretch3.terra-scene.json", "robots/hello_robot_stretch_3/stretch.xml"};
     } else {
         return false;
     }
@@ -70,7 +89,7 @@ bool spec(const std::string& name, SceneSpec& out) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "用法：test_render_reference <参考图目录> <输出目录> --scene <procedural|studio|outdoor|carts> [--update]\n");
+        std::fprintf(stderr, "用法：test_render_reference <参考图目录> <输出目录> --scene <procedural|studio|outdoor|carts|mjcf_materials|robot_g1|robot_go2|robot_stretch3> [--update]\n");
         return 2;
     }
     const fs::path referenceDir{argv[1]};
@@ -97,6 +116,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (!s.robotCheck.empty() && !fs::exists(std::string{TERRA_ASSETS_DIR} + "/" + s.robotCheck)) {
+        std::printf("INFO 场景 %s 需要参考机器人（scripts/assets/fetch_robots.sh），跳过\n", s.name.c_str());
+        return kSkipped;
+    }
     if (s.assets) {
         const std::string toolbox = std::string{TERRA_ASSETS_DIR} + "/models/metal_toolbox/metal_toolbox_2k.gltf";
         if (!fs::exists(toolbox) || !vw::EnvironmentLibrary(TERRA_ASSETS_DIR).available(s.environment)) {
@@ -153,29 +176,33 @@ int main(int argc, char** argv) {
         vw::DemoScene scene;
         scene.create();
         std::vector<vw::SceneMessage> messages;
-        if (s.assets) scene.loadAssets(TERRA_ASSETS_DIR, messages);
+        if (s.assets && !s.sceneFile) scene.loadAssets(TERRA_ASSETS_DIR, messages);
         // M2-07：场景文件 → 物理世界推进固定步数 → 视觉部件位姿 → 渲染项
         std::optional<terra::scene::SceneInstance> simulated;
         std::unique_ptr<vw::SceneView> sceneView;
         std::vector<r::RenderItem> sceneItems;
         if (s.sceneFile) {
-            auto loaded = terra::scene::loadScene(std::string{TERRA_ASSETS_DIR} + "/tests/scene/two_carts.terra-scene.json",
-                                                  terra::physics::mujoco::composeWorld);
+            const std::string scenePath = s.scenePath.empty() ? "tests/scene/two_carts.terra-scene.json" : s.scenePath;
+            auto loaded = terra::scene::loadScene(std::string{TERRA_ASSETS_DIR} + "/" + scenePath, terra::physics::mujoco::composeWorld);
             for (const auto& i : loaded.issues) check(false, "场景：" + i.where + " " + i.message);
             if (loaded.ok()) {
                 simulated = std::move(*loaded.scene);
-                const auto& d = simulated->world->description();
-                const auto* driveA = d.findActuator("cart_a/drive");
-                const auto* driveB = d.findActuator("cart_b/drive");
-                check(driveA != nullptr && driveB != nullptr, "执行器 cart_a/drive、cart_b/drive");
-                if (driveA != nullptr && driveB != nullptr) {
-                    (void)simulated->world->setControl({{driveA->id, {3.0}}, {driveB->id, {-2.0}}});
+                if (s.name == "carts") {
+                    const auto& d = simulated->world->description();
+                    const auto* driveA = d.findActuator("cart_a/drive");
+                    const auto* driveB = d.findActuator("cart_b/drive");
+                    check(driveA != nullptr && driveB != nullptr, "执行器 cart_a/drive、cart_b/drive");
+                    if (driveA != nullptr && driveB != nullptr) {
+                        (void)simulated->world->setControl({{driveA->id, {3.0}}, {driveB->id, {-2.0}}});
+                    }
+                    for (int k = 0; k < 300; ++k) check(!simulated->world->step(), "物理推进");
                 }
-                for (int k = 0; k < 300; ++k) check(!simulated->world->step(), "物理推进");
+                // 其他场景文件：不推进，渲染打开时的姿态（机器人处于场景的初始关键帧）
                 sceneView = vw::SceneView::create(*simulated, messages);
                 const auto poses = terra::scene::visualPoses(*simulated, terra::scene::entityPoses(*simulated->world->snapshot()));
                 sceneItems = sceneView->items(*simulated, poses);
-                check(sceneView->liveBindings() == 4, "4 个 glTF 绑定全部可用（节点 Chassis、Mast 存在）");
+                if (s.name == "carts") check(sceneView->liveBindings() == 4, "4 个 glTF 绑定全部可用（节点 Chassis、Mast 存在）");
+                for (const auto& m : messages) std::printf("INFO 场景提示：%s\n", m.text.c_str());
                 std::printf("INFO 场景：%zu 个渲染项，%zu 个网格，仿真时间 %.3f 秒\n", sceneItems.size(), sceneView->meshCount(),
                             simulated->world->simulationTime());
             }
@@ -195,7 +222,7 @@ int main(int argc, char** argv) {
                 check(false, "场景准备：" + m.text);
             }
         }
-        if (s.assets) check(scene.assets().size() == 3, "三个 glTF 资产已加载");
+        if (s.assets && !s.sceneFile) check(scene.assets().size() == 3, "三个 glTF 资产已加载");
         if (s.environment != st::EnvironmentSetting::Hemisphere) check(lit.image.environment != nullptr, "环境贴图已加载");
         for (r::ImageRgba8* out : {&first, &second}) {
             made.renderer->render(kWidth, kHeight, view, s.sceneFile ? sceneItems : scene.items(rs.assetArmOcclusion), lit.sun,

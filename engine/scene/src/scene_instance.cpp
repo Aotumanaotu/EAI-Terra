@@ -49,6 +49,66 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
     if (!composed.ok()) return out;
 
     const td::ModelDescription& d = composed.world->description();
+    // 初始关键帧（M3-02）：先于 assembly 对齐的计算应用，使“初始姿态”即关键帧姿态
+    std::optional<std::size_t> home;
+    if (!document.initialKeyframe.empty()) {
+        const int k = d.findKeyframe(document.initialKeyframe);
+        if (k < 0) {
+            std::string names;
+            for (const auto& key : d.keyframes) names += (names.empty() ? "" : "、") + (key.name.empty() ? std::string{"（无名）"} : key.name);
+            out.issues.push_back({Severity::Error, {}, "/initialKeyframe",
+                                  "找不到关键帧“" + document.initialKeyframe + "”" +
+                                      (names.empty() ? "；场景中没有关键帧" : "；场景中的关键帧：" + names)});
+            return out;
+        }
+        home = static_cast<std::size_t>(k);
+        composed.world->resetToKeyframe(*home);
+    }
+    // PD 控制层（M3-04）：展开 "<实例>/*"，只接受作用于单个转动 / 滑动关节的力矩执行器，同一执行器不能出现两次
+    std::map<std::uint32_t, PdAssignment> pd;
+    bool pdFailed = false;
+    for (const PdControllerSpec& c : document.controllers) {
+        for (std::size_t k = 0; k < c.actuators.size(); ++k) {
+            const std::string& name = c.actuators[k];
+            const std::string where = c.where + "/actuators/" + std::to_string(k);
+            std::vector<const td::ActuatorDescription*> matched;
+            if (name.size() >= 2 && name.compare(name.size() - 2, 2, "/*") == 0) {
+                const std::string prefix = name.substr(0, name.size() - 1);
+                for (const auto& a : d.actuators) {
+                    if (a.name.rfind(prefix, 0) == 0) matched.push_back(&a);
+                }
+                if (matched.empty()) {
+                    out.issues.push_back({Severity::Error, {}, where, "没有前缀为 “" + prefix + "” 的执行器"});
+                    pdFailed = true;
+                }
+            } else if (const td::ActuatorDescription* a = d.findActuator(name)) {
+                matched.push_back(a);
+            } else {
+                out.issues.push_back({Severity::Error, {}, where, "找不到执行器“" + name + "”（执行器名需要带实例前缀，或写 “<实例名>/*”）"});
+                pdFailed = true;
+            }
+            for (const td::ActuatorDescription* a : matched) {
+                const td::JointDescription* j = a->joint.valid() ? d.joint(a->joint) : nullptr;
+                const bool usable = a->kind == td::ActuatorKind::Motor && a->transmission == td::ActuatorTransmission::Joint &&
+                                    a->inputs.size() == 1 && j != nullptr &&
+                                    (j->type == td::JointType::Hinge || j->type == td::JointType::Slide);
+                if (!usable) {
+                    out.issues.push_back({Severity::Error, {}, where,
+                                          "执行器“" + a->name + "”不能由 PD 层接管：只接受作用于单个转动或滑动关节的力矩执行器"});
+                    pdFailed = true;
+                    continue;
+                }
+                if (pd.count(a->id.value) != 0) {
+                    out.issues.push_back({Severity::Error, {}, where, "执行器“" + a->name + "”已由前面的 PD 层接管"});
+                    pdFailed = true;
+                    continue;
+                }
+                pd[a->id.value] = PdAssignment{a->id, c.kp, c.kd};
+            }
+        }
+    }
+    if (pdFailed) return out;
+
     const std::vector<td::Pose> initial = entityPoses(*composed.world->snapshot());
 
     SceneInstance scene;
@@ -121,6 +181,8 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
 
     scene.document = std::move(document);
     scene.world = std::move(composed.world);
+    scene.homeKeyframe = home;
+    for (const auto& entry : pd) scene.pd.push_back(entry.second);
     out.scene = std::move(scene);
     return out;
 }

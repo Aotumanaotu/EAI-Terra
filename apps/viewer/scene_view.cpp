@@ -22,52 +22,7 @@ std::string key(const char* shape, const td::Vec3& s) {
     return buf;
 }
 
-// MJCF 网格 → 渲染网格：每个三角形单独的顶点与面法线（平直着色，与 MuJoCo 显示一致）
-r::MeshData flatMesh(const td::MeshDescription& m) {
-    r::MeshData out;
-    out.vertices.reserve(m.triangles.size() * 3);
-    out.indices.reserve(m.triangles.size() * 3);
-    bool first = true;
-    for (const auto& t : m.triangles) {
-        if (t[0] >= m.vertices.size() || t[1] >= m.vertices.size() || t[2] >= m.vertices.size()) continue;
-        const td::Vec3& a = m.vertices[t[0]];
-        const td::Vec3& b = m.vertices[t[1]];
-        const td::Vec3& c = m.vertices[t[2]];
-        const double e1[3] = {b.x - a.x, b.y - a.y, b.z - a.z};
-        const double e2[3] = {c.x - a.x, c.y - a.y, c.z - a.z};
-        double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
-        const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-        if (len > 0) {
-            for (double& x : n) x /= len;
-        } else {
-            n[0] = 0;
-            n[1] = 0;
-            n[2] = 1;
-        }
-        for (const td::Vec3* v : {&a, &b, &c}) {
-            r::MeshVertex mv{};
-            mv.position[0] = static_cast<float>(v->x);
-            mv.position[1] = static_cast<float>(v->y);
-            mv.position[2] = static_cast<float>(v->z);
-            for (std::size_t k = 0; k < 3; ++k) mv.normal[k] = static_cast<float>(n[k]);
-            out.indices.push_back(static_cast<std::uint32_t>(out.vertices.size()));
-            out.vertices.push_back(mv);
-            for (std::size_t k = 0; k < 3; ++k) {
-                out.boundsMin[k] = first ? mv.position[k] : std::min(out.boundsMin[k], mv.position[k]);
-                out.boundsMax[k] = first ? mv.position[k] : std::max(out.boundsMax[k], mv.position[k]);
-            }
-            first = false;
-        }
-    }
-    r::computeTangents(out);
-    return out;
-}
-
 }  // namespace
-
-float srgbToLinear(float c) {
-    return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
-}
 
 r::Matrix4 poseMatrix(const td::Pose& pose, double scale) {
     const td::Quaternion& q = pose.orientation;
@@ -91,6 +46,16 @@ r::Matrix4 poseMatrix(const td::Pose& pose, double scale) {
     return out;
 }
 
+std::uint32_t SceneView::texture(const td::ModelDescription& d, int index) {
+    auto it = textures_.find(index);
+    if (it == textures_.end()) {
+        const td::TextureDescription& t = d.textures[static_cast<std::size_t>(index)];
+        // MJCF 的颜色与贴图都是显示用的 sRGB 值（MuJoCo 经典渲染器不做伽马换算），按 sRGB 解码
+        it = textures_.emplace(index, r::Texture2D::create(t.width, t.height, t.rgba.data(), true)).first;
+    }
+    return it->second.name();
+}
+
 const r::GpuMesh* SceneView::mesh(const std::string& meshKey, const r::MeshData& data) {
     auto it = meshes_.find(meshKey);
     if (it == meshes_.end()) {
@@ -103,18 +68,29 @@ std::unique_ptr<SceneView> SceneView::create(const sc::SceneInstance& scene, std
     auto view = std::unique_ptr<SceneView>(new SceneView());
     const td::ModelDescription& d = scene.world->description();
 
-    // MJCF 几何体
+    // MJCF 几何体（M3-03：平滑法线、材质与二维贴图，换算规则见 mjcf_visual.hpp）
     view->geoms_.resize(d.geoms.size());
     std::size_t unsupported = 0;
+    std::size_t untextured = 0;
     for (const td::GeomDescription& g : d.geoms) {
         GeomDraw& draw = view->geoms_[g.id.value - 1];
         draw.group = g.group;
         draw.collides = g.collides;
         draw.shape = r::identityMatrix();
-        draw.material.baseColor = {srgbToLinear(g.rgba[0]), srgbToLinear(g.rgba[1]), srgbToLinear(g.rgba[2])};
-        draw.material.metallic = 0.0f;
-        draw.material.roughness = 0.55f;
+        const MjcfSurface surface = mjcfSurface(g, d);
+        draw.material = surface.material;
+        untextured += surface.textureUnsupported ? 1u : 0u;
         if (g.rgba[3] < kHiddenAlpha) continue;  // MJCF 用 alpha = 0 隐藏
+        const bool textured = surface.texture >= 0;
+        if (textured) draw.material.baseColorTexture = view->texture(d, surface.texture);
+        char uvKey[64];
+        std::snprintf(uvKey, sizeof uvKey, ":uv:%.9g:%.9g", surface.uvScale[0], surface.uvScale[1]);
+        const std::string uv = textured ? uvKey : "";
+        // 基本形状：有贴图时按重复次数缩放生成器的纹理坐标（网格键带上缩放，避免与无贴图的同形状共用）
+        const auto primitive = [&](const std::string& meshKey, r::MeshData data) {
+            if (textured) scaleUv(data, surface.uvScale);
+            return view->mesh(meshKey + uv, data);
+        };
         const auto hx = static_cast<float>(g.size.x);
         const auto hy = static_cast<float>(g.size.y);
         const auto hz = static_cast<float>(g.size.z);
@@ -122,22 +98,27 @@ std::unique_ptr<SceneView> SceneView::create(const sc::SceneInstance& scene, std
             case td::GeomShape::Plane: {
                 const float px = hx > 0 ? hx : kInfinitePlaneHalf;
                 const float py = hy > 0 ? hy : kInfinitePlaneHalf;
-                draw.mesh = view->mesh(key("plane", {px, py, 0}), r::meshes::plane(px, py));
+                draw.mesh = primitive(key("plane", {px, py, 0}), r::meshes::plane(px, py));
                 draw.castsShadow = false;
                 break;
             }
-            case td::GeomShape::Sphere: draw.mesh = view->mesh(key("sphere", g.size), r::meshes::sphere(hx)); break;
+            case td::GeomShape::Sphere: draw.mesh = primitive(key("sphere", g.size), r::meshes::sphere(hx)); break;
             case td::GeomShape::Ellipsoid:
-                draw.mesh = view->mesh("sphere:unit", r::meshes::sphere(1.0f));
+                draw.mesh = primitive("sphere:unit", r::meshes::sphere(1.0f));
                 draw.shape = r::translationScale({0, 0, 0}, {hx, hy, hz});
                 break;
-            case td::GeomShape::Box: draw.mesh = view->mesh(key("box", g.size), r::meshes::box(hx, hy, hz)); break;
-            case td::GeomShape::Cylinder: draw.mesh = view->mesh(key("cylinder", g.size), r::meshes::cylinder(hx, hy)); break;
-            case td::GeomShape::Capsule: draw.mesh = view->mesh(key("capsule", g.size), r::meshes::capsule(hx, hy)); break;
+            case td::GeomShape::Box: draw.mesh = primitive(key("box", g.size), r::meshes::box(hx, hy, hz)); break;
+            case td::GeomShape::Cylinder: draw.mesh = primitive(key("cylinder", g.size), r::meshes::cylinder(hx, hy)); break;
+            case td::GeomShape::Capsule: draw.mesh = primitive(key("capsule", g.size), r::meshes::capsule(hx, hy)); break;
             case td::GeomShape::Mesh:
                 if (g.mesh >= 0 && static_cast<std::size_t>(g.mesh) < d.meshes.size()) {
                     const td::MeshDescription& m = d.meshes[static_cast<std::size_t>(g.mesh)];
-                    draw.mesh = view->mesh("mesh:" + std::to_string(g.mesh), flatMesh(m));
+                    const std::string meshKey = "mesh:" + std::to_string(g.mesh) + uv;
+                    if (view->meshes_.find(meshKey) == view->meshes_.end()) {
+                        draw.mesh = view->mesh(meshKey, mjcfMesh(m, textured ? surface.uvScale : std::array<float, 2>{1.0f, 1.0f}));
+                    } else {
+                        draw.mesh = view->meshes_.at(meshKey).get();
+                    }
                 }
                 break;
             case td::GeomShape::Other: ++unsupported; break;
@@ -146,6 +127,10 @@ std::unique_ptr<SceneView> SceneView::create(const sc::SceneInstance& scene, std
     if (unsupported > 0) {
         messages.push_back({SceneMessage::Kind::AssetInfo,
                             std::to_string(unsupported) + " 个几何体的形状（高度场、SDF 等）暂不显示"});
+    }
+    if (untextured > 0) {
+        messages.push_back({SceneMessage::Kind::AssetInfo,
+                            std::to_string(untextured) + " 个几何体的贴图暂不支持（立方体贴图，或网格没有纹理坐标），只显示颜色"});
     }
 
     // glTF 绑定

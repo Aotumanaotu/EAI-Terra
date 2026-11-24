@@ -168,7 +168,7 @@ void testWorldPose(terra::physics::PhysicsWorld& world) {
 }
 
 void testInstances(const td::ModelDescription& d) {
-    check(td::ModelDescription::kRevision == 2, "模型描述修订号 2");
+    check(td::ModelDescription::kRevision >= 2, "模型描述修订号 ≥ 2（M3-02 起为 3）");
     check(d.modelInstances.size() == 1, "直接加载单个 MJCF：一个模型实例");
     if (d.modelInstances.size() != 1) return;
     const auto& inst = d.modelInstances[0];

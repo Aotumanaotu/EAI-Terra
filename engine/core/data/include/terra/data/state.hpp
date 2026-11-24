@@ -59,13 +59,21 @@ struct ContactSummary {
     std::vector<ContactPair> pairs;    // 按 (entityA, entityB) 排序，entityA <= entityB
 };
 
+// 执行器状态（M3-04，快照修订 2）：controls 为本观测时刻的控制量（与 ActuatorDescription::inputs 一一对应；
+// 步进之后即为这一步所用的控制量），force 为执行器输出（乘传动比之前，单位同控制量所对应的力或力矩）。
+struct ActuatorState {
+    ActuatorId id;
+    std::vector<double> controls;
+    double force = 0.0;
+};
+
 struct Diagnostics {
     bool finite = true;          // 位姿、速度、关节状态均为有限值
     int solverIterations = 0;    // 本观测时刻约束求解的最大迭代次数（各约束岛取最大）
 };
 
 struct PhysicsSnapshot {
-    static constexpr std::uint32_t kContractRevision = 1;  // 快照格式修订号
+    static constexpr std::uint32_t kContractRevision = 2;  // 快照格式修订号（M3-04：增加 actuators）
 
     std::uint64_t worldInstance = 0;  // 与 ModelDescription::worldInstance 相同，区分不同的加载
     std::uint64_t runEpoch = 0;
@@ -75,6 +83,7 @@ struct PhysicsSnapshot {
 
     std::vector<EntityState> entities;  // 与 ModelDescription::entities 顺序相同
     std::vector<JointState> joints;     // 与 ModelDescription::joints 顺序相同
+    std::vector<ActuatorState> actuators;  // 与 ModelDescription::actuators 顺序相同（M3-04）
     ContactSummary contacts;
     Diagnostics diagnostics;
 };

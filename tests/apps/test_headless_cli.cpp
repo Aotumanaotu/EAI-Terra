@@ -89,6 +89,26 @@ void testScene() {
     check(usageText().find("--scene") != std::string::npos, "帮助中有 --scene");
 }
 
+// M3-05：--motion（可不带 --scene 与步数；不能与 --model 同用）
+void testMotion() {
+    {
+        const ParseResult r = parse({"--motion", "m/wave.terra-motion.json"});
+        check(r.ok() && r.options.motionPath == "m/wave.terra-motion.json" && r.options.scenePath.empty() && !r.options.steps &&
+                  !r.options.durationSeconds,
+              "--motion 单独使用：场景取推荐场景，步数取动作时长 + 1 s：" + r.error);
+    }
+    {
+        const ParseResult r = parse({"--scene", "s.json", "--motion=m.json", "--steps", "50"});
+        check(r.ok() && r.options.scenePath == "s.json" && r.options.motionPath == "m.json" && r.options.steps && *r.options.steps == 50,
+              "--scene + --motion + --steps：" + r.error);
+    }
+    expectError({"--model", "a.xml", "--motion", "m.json"}, "不能与 --model 同用");
+    expectError({"--motion", "a.json", "--motion", "b.json"}, "重复的参数 --motion");
+    expectError({"--motion="}, "不能为空");
+    expectError({"--motion", "m.json", "--steps", "1", "--duration", "1"}, "不能同时使用");
+    check(usageText().find("--motion") != std::string::npos, "帮助中有 --motion");
+}
+
 void testUsageErrors() {
     expectError({}, "缺少参数");
     expectError({"--bogus"}, "未知参数");
@@ -266,6 +286,7 @@ int main() {
     testValidRuns();
     testUsageErrors();
     testScene();
+    testMotion();
     testJson();
     testStepsForDuration();
     testRecords();

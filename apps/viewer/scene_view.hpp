@@ -1,8 +1,9 @@
 #pragma once
 
 // 场景的渲染适配（M2-07，M2-01 设计第 5、6 节）：把 terra_scene 的视觉部件与其世界位姿转换为 terra_render 的渲染项。
-//   - MJCF 几何体：按形状生成程序网格（同形状同尺寸共用一个网格）；颜色取几何体颜色（按 sRGB 换算为线性），
-//     透明度近 0 的几何体不显示（MJCF 常用 rgba 的 alpha = 0 表示隐藏）；平面只接收阴影。
+//   - MJCF 几何体：按形状生成程序网格（同形状同尺寸共用一个网格）；网格用 MuJoCo 编译后的法线平滑着色；
+//     颜色、材质参数与二维贴图按 mjcf_visual.hpp 换算（M3-03）；透明度近 0 的几何体不显示
+//     （MJCF 常用 rgba 的 alpha = 0 表示隐藏）；平面只接收阴影。
 //   - glTF 绑定：每个文件加载一次；按节点（或 "#下标"）取子树，node / assembly 两种对齐（terra::asset::subtreeItems）。
 //     文件读不出或节点不存在时给出提示并放弃该绑定，所属实体改为显示 MJCF 几何体。
 //   - 显示规则：默认显示 group 0、1、2（与 MuJoCo 自带查看器一致）；实体有可用的 glTF 绑定且都没有要求 showGeoms 时，
@@ -10,15 +11,18 @@
 // 需要当前 OpenGL 上下文。不依赖界面库；查看器、参考图测试共用，保证画面一致。
 
 #include <array>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "demo_scene.hpp"
+#include "mjcf_visual.hpp"
 #include "terra/asset/gltf.hpp"
 #include "terra/asset/gpu_asset.hpp"
 #include "terra/render/mesh.hpp"
+#include "terra/render/resources.hpp"
 #include "terra/render/scene_renderer.hpp"
 #include "terra/scene/scene.hpp"
 
@@ -36,8 +40,6 @@ constexpr terra::render::Vec3f kHighlightEmissive{0.30f, 0.17f, 0.02f};
 
 // 位姿与缩放 → 模型矩阵（列主序，单精度）
 terra::render::Matrix4 poseMatrix(const terra::data::Pose& pose, double scale = 1.0);
-// MJCF 颜色（sRGB 0–1）→ 线性
-float srgbToLinear(float c);
 
 class SceneView {
 public:
@@ -67,9 +69,11 @@ private:
     };
 
     const terra::render::GpuMesh* mesh(const std::string& key, const terra::render::MeshData& data);
+    std::uint32_t texture(const terra::data::ModelDescription& model, int index);  // 二维贴图的 GL 名称（按下标缓存）
 
     std::map<std::string, std::unique_ptr<terra::render::GpuMesh>> meshes_;
     std::map<std::string, std::unique_ptr<terra::asset::GpuAsset>> assets_;
+    std::map<int, terra::render::Texture2D> textures_;  // M3-03：按 TextureDescription 下标
     std::vector<GeomDraw> geoms_;        // 按 GeomId − 1
     std::vector<BindingDraw> bindings_;  // 按 SceneInstance::bindings 下标
     std::vector<bool> hideGeomsOf_;      // 按 EntityId − 1：有可用绑定且都不要求 showGeoms

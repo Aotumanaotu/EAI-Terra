@@ -213,7 +213,7 @@ void readModels(Reader& r, const Json& v, std::vector<SceneModel>& out) {
     for (std::size_t i = 0; i < v.size(); ++i) {
         const std::string where = "/models/" + std::to_string(i);
         const Json& item = v[i];
-        if (!r.object(item, where, {"name", "mjcf", "position", "rotation"})) continue;
+        if (!r.object(item, where, {"name", "mjcf", "position", "rotation", "fixedBase"})) continue;
         SceneModel m;
         m.where = where;
         if (!item.contains("name")) r.error(where, "缺少 name（实例名）");
@@ -221,7 +221,54 @@ void readModels(Reader& r, const Json& v, std::vector<SceneModel>& out) {
         if (!item.contains("mjcf")) r.error(where, "缺少 mjcf（MJCF 文件路径）", m.name);
         else if (const auto s = r.string(item["mjcf"], where + "/mjcf")) m.mjcf = s->empty() ? std::string{} : r.path(*s);
         r.pose(item, where, m.placement);
+        if (item.contains("fixedBase")) {
+            if (const auto b = r.boolean(item["fixedBase"], where + "/fixedBase")) m.fixedBase = *b;
+        }
         out.push_back(std::move(m));
+    }
+}
+
+void readControllers(Reader& r, const Json& v, std::vector<PdControllerSpec>& out) {
+    if (!v.is_array()) {
+        r.error("/controllers", "controllers 应为数组");
+        return;
+    }
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        const std::string where = "/controllers/" + std::to_string(i);
+        const Json& item = v[i];
+        if (!r.object(item, where, {"type", "actuators", "kp", "kd"})) continue;
+        PdControllerSpec c;
+        c.where = where;
+        if (!item.contains("type")) {
+            r.error(where, "缺少 type（目前只支持 “pd”）");
+        } else if (const auto s = r.string(item["type"], where + "/type"); s && *s != "pd") {
+            r.error(where + "/type", "未知的控制层类型“" + *s + "”（目前只支持 “pd”）");
+        }
+        if (!item.contains("actuators")) {
+            r.error(where, "缺少 actuators（执行器全名的数组，或 “<实例名>/*”）");
+        } else if (!item["actuators"].is_array() || item["actuators"].empty()) {
+            r.error(where + "/actuators", "应为至少有一个执行器名的数组");
+        } else {
+            for (std::size_t k = 0; k < item["actuators"].size(); ++k) {
+                if (const auto s = r.string(item["actuators"][k], where + "/actuators/" + std::to_string(k))) {
+                    if (s->empty()) r.error(where + "/actuators/" + std::to_string(k), "执行器名为空");
+                    else c.actuators.push_back(*s);
+                }
+            }
+        }
+        if (!item.contains("kp")) {
+            r.error(where, "缺少 kp（位置增益，N·m/rad 或 N/m）");
+        } else if (const auto d = r.number(item["kp"], where + "/kp")) {
+            if (*d <= 0) r.error(where + "/kp", "kp 应大于 0");
+            c.kp = *d;
+        }
+        if (item.contains("kd")) {
+            if (const auto d = r.number(item["kd"], where + "/kd")) {
+                if (*d < 0) r.error(where + "/kd", "kd 不能为负");
+                c.kd = *d;
+            }
+        }
+        out.push_back(std::move(c));
     }
 }
 
@@ -304,7 +351,7 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     SceneDocument doc;
     doc.path = path.string();
     doc.directory = path.parent_path().string();
-    if (r.object(root, "", {"format", "version", "name", "physics", "models", "visuals", "view"})) {
+    if (r.object(root, "", {"format", "version", "name", "physics", "models", "visuals", "view", "initialKeyframe", "controllers"})) {
         if (!root.contains("format")) {
             r.error("", "缺少 format（应为 “terra.scene”）");
         } else if (const auto s = r.string(root["format"], "/format"); s && *s != "terra.scene") {
@@ -328,6 +375,13 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
         else readModels(r, root["models"], doc.models);
         if (root.contains("visuals")) readVisuals(r, root["visuals"], doc.visuals);
         if (root.contains("view")) readView(r, root["view"], doc.view);
+        if (root.contains("controllers")) readControllers(r, root["controllers"], doc.controllers);
+        if (root.contains("initialKeyframe")) {
+            if (const auto k = r.string(root["initialKeyframe"], "/initialKeyframe")) {
+                if (k->empty()) r.error("/initialKeyframe", "关键帧名为空（从模型初值开始时省略此字段）");
+                doc.initialKeyframe = *k;
+            }
+        }
     }
     if (!r.hasErrors()) result.document = std::move(doc);
     result.issues = std::move(r.issues);

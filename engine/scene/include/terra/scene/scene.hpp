@@ -45,6 +45,23 @@ struct ViewSpec {
     std::optional<terra::data::Vec3> cameraTarget;
 };
 
+// PD 控制层（M3-04，设计稿第 3 节）：把动作与面板给出的目标位置换算成力矩执行器的控制量
+//   τ = kp (q* − q) − kd q̇，控制量 = τ / (增益 × 传动比)，再截断到控制范围
+// actuators 为执行器全名；"<实例名>/*" 表示该实例的全部执行器。只接受作用于单个转动 / 滑动关节的力矩执行器。
+struct PdControllerSpec {
+    std::vector<std::string> actuators;
+    double kp = 0.0;
+    double kd = 0.0;
+    std::string where;  // "/controllers/<i>"
+};
+
+// 解析后的 PD 通道（instantiate 中按模型描述校验并展开通配）
+struct PdAssignment {
+    terra::data::ActuatorId actuator;
+    double kp = 0.0;
+    double kd = 0.0;
+};
+
 struct SceneDocument {
     std::string path;       // 场景文件（绝对路径；从文本解析时为调用方给出的路径）
     std::string directory;  // 相对路径的基准目录
@@ -53,6 +70,9 @@ struct SceneDocument {
     std::vector<SceneModel> models;  // mjcf 已展开为相对场景目录的路径
     std::vector<VisualBindingSpec> visuals;
     ViewSpec view;
+    // M3-02：载入后从这个关键帧开始（全名，如 "g1/stand"），重置时也回到它；空表示模型初值
+    std::string initialKeyframe;
+    std::vector<PdControllerSpec> controllers;  // M3-04
 };
 
 struct ParseResult {
@@ -88,6 +108,8 @@ struct SceneInstance {
     std::unique_ptr<terra::physics::PhysicsWorld> world;
     std::vector<BoundVisual> bindings;
     std::vector<VisualPart> visuals;
+    std::optional<std::size_t> homeKeyframe;  // 场景的初始关键帧（已应用）；重置时回到它
+    std::vector<PdAssignment> pd;             // M3-04：PD 层接管的执行器（按 ActuatorId 排序）
 
     const VisualPart* visual(terra::data::VisualId id) const noexcept {
         return id.valid() && id.value <= visuals.size() ? &visuals[id.value - 1] : nullptr;

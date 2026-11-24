@@ -1,0 +1,75 @@
+{
+  "format": "terra.motion",
+  "version": 1,
+  "name": "G1 下蹲再站起（悬挂）",
+  "scene": "../../scenes/robots/g1_suspended.terra-scene.json",
+  "startKeyframe": "g1/stand",
+  "interpolation": "smooth",
+  "poses": [
+    {
+      "time": 0.0,
+      "targets": {
+        "g1/left_hip_pitch_joint": 0.0,
+        "g1/left_knee_joint": 0.0,
+        "g1/left_ankle_pitch_joint": 0.0,
+        "g1/right_hip_pitch_joint": 0.0,
+        "g1/right_knee_joint": 0.0,
+        "g1/right_ankle_pitch_joint": 0.0,
+        "g1/left_shoulder_pitch_joint": 0.2,
+        "g1/right_shoulder_pitch_joint": 0.2
+      }
+    },
+    {
+      "time": 1.5,
+      "targets": {
+        "g1/left_hip_pitch_joint": -0.9,
+        "g1/left_knee_joint": 1.7,
+        "g1/left_ankle_pitch_joint": -0.8,
+        "g1/right_hip_pitch_joint": -0.9,
+        "g1/right_knee_joint": 1.7,
+        "g1/right_ankle_pitch_joint": -0.8,
+        "g1/left_shoulder_pitch_joint": -0.8,
+        "g1/right_shoulder_pitch_joint": -0.8
+      }
+    },
+    {
+      "time": 3.0,
+      "targets": {
+        "g1/left_hip_pitch_joint": -0.9,
+        "g1/left_knee_joint": 1.7,
+        "g1/left_ankle_pitch_joint": -0.8,
+        "g1/right_hip_pitch_joint": -0.9,
+        "g1/right_knee_joint": 1.7,
+        "g1/right_ankle_pitch_joint": -0.8,
+        "g1/left_shoulder_pitch_joint": -0.8,
+        "g1/right_shoulder_pitch_joint": -0.8
+      }
+    },
+    {
+      "time": 4.5,
+      "targets": {
+        "g1/left_hip_pitch_joint": 0.0,
+        "g1/left_knee_joint": 0.0,
+        "g1/left_ankle_pitch_joint": 0.0,
+        "g1/right_hip_pitch_joint": 0.0,
+        "g1/right_knee_joint": 0.0,
+        "g1/right_ankle_pitch_joint": 0.0,
+        "g1/left_shoulder_pitch_joint": 0.2,
+        "g1/right_shoulder_pitch_joint": 0.2
+      }
+    },
+    {
+      "time": 5.5,
+      "targets": {
+        "g1/left_hip_pitch_joint": 0.0,
+        "g1/left_knee_joint": 0.0,
+        "g1/left_ankle_pitch_joint": 0.0,
+        "g1/right_hip_pitch_joint": 0.0,
+        "g1/right_knee_joint": 0.0,
+        "g1/right_ankle_pitch_joint": 0.0,
+        "g1/left_shoulder_pitch_joint": 0.2,
+        "g1/right_shoulder_pitch_joint": 0.2
+      }
+    }
+  ]
+}

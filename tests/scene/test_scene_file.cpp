@@ -102,6 +102,29 @@ void testRotation() {
     if (r.document) check(r.document->models[0].placement.orientation.w == 1.0, "归一化后 w = 1");
 }
 
+void testInitialKeyframe() {
+    const auto none = sc::parseScene(scene(""), kScenePath);
+    check(none.document && none.document->initialKeyframe.empty(), "没写 initialKeyframe 时为空（从模型初值开始）" + dump(none));
+    const auto r = sc::parseScene(scene(R"(, "initialKeyframe": "cart/offset")"), kScenePath);
+    check(r.document && r.issues.empty() && r.document->initialKeyframe == "cart/offset", "读取 initialKeyframe" + dump(r));
+}
+
+void testControllersAndFixedBase() {
+    const auto r = sc::parseScene(scene(R"(, "controllers": [{"type": "pd", "actuators": ["cart/*", "cart/drive"], "kp": 50, "kd": 0.5}])",
+                                        R"([{"name": "cart", "mjcf": "cart.xml", "fixedBase": true}])"),
+                                  kScenePath);
+    check(r.document && r.issues.empty(), "读取 controllers 与 fixedBase" + dump(r));
+    if (r.document) {
+        const auto& d = *r.document;
+        check(d.models[0].fixedBase, "fixedBase = true");
+        check(d.controllers.size() == 1 && d.controllers[0].actuators.size() == 2 && d.controllers[0].kp == 50 &&
+                  d.controllers[0].kd == 0.5 && d.controllers[0].where == "/controllers/0",
+              "PD 层的执行器、增益与位置");
+    }
+    const auto noKd = sc::parseScene(scene(R"(, "controllers": [{"type": "pd", "actuators": ["a/x"], "kp": 1}])"), kScenePath);
+    check(noKd.document && noKd.document->controllers[0].kd == 0.0, "kd 可省略（为 0）" + dump(noKd));
+}
+
 void testErrors() {
     expectError("{ not json", "", "JSON 语法错误", "JSON 语法错误");
     expectError("[1, 2]", "", "应为对象", "根不是对象");
@@ -143,6 +166,23 @@ void testErrors() {
                 "true 或 false", "showGeoms 不是布尔值");
     expectError(scene(R"(, "view": {"camera": {"position": [0, 0, 1], "fov": 60}})"), "/view/camera/fov", "未知字段", "相机中的未知字段");
 
+    expectError(scene(R"(, "initialKeyframe": 1)"), "/initialKeyframe", "应为字符串", "初始关键帧不是字符串");
+    expectError(scene(R"(, "initialKeyframe": "")"), "/initialKeyframe", "关键帧名为空", "初始关键帧为空");
+
+    expectError(scene("", R"([{"name": "c", "mjcf": "cart.xml", "fixedBase": 1}])"), "/models/0/fixedBase", "true 或 false",
+                "fixedBase 不是布尔值");
+    expectError(scene(R"(, "controllers": {})"), "/controllers", "应为数组", "controllers 不是数组");
+    expectError(scene(R"(, "controllers": [{"type": "pid", "actuators": ["a/x"], "kp": 1}])"), "/controllers/0/type", "只支持 “pd”",
+                "未知的控制层类型");
+    expectError(scene(R"(, "controllers": [{"type": "pd", "actuators": [], "kp": 1}])"), "/controllers/0/actuators", "至少有一个",
+                "执行器列表为空");
+    expectError(scene(R"(, "controllers": [{"type": "pd", "actuators": ["a/x"], "kp": 0}])"), "/controllers/0/kp", "大于 0", "kp 为 0");
+    expectError(scene(R"(, "controllers": [{"type": "pd", "actuators": ["a/x"], "kp": 1, "kd": -1}])"), "/controllers/0/kd", "不能为负",
+                "kd 为负");
+    expectError(scene(R"(, "controllers": [{"type": "pd", "actuators": ["a/x"]}])"), "/controllers/0", "缺少 kp", "缺少 kp");
+    expectError(scene(R"(, "controllers": [{"type": "pd", "actuators": ["a/x"], "kp": 1, "ki": 2}])"), "/controllers/0/ki", "未知字段",
+                "PD 层中的未知字段");
+
     // 多个错误一次报全
     const auto many = sc::parseScene(scene(R"(, "physics": {"timestep": 0, "solver": "X"}, "bogus": true)"), kScenePath);
     check(!many.document && many.issues.size() == 3, "一次报出全部 3 个错误" + dump(many));
@@ -163,6 +203,8 @@ int main(int argc, char** argv) {
     }
     testFixture();
     testRotation();
+    testInitialKeyframe();
+    testControllersAndFixedBase();
     testErrors();
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;

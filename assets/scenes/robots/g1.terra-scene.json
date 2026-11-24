@@ -1,0 +1,26 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 G1 人形机器人（Menagerie，29 自由度）",
+  "models": [
+    {
+      "name": "g1",
+      "mjcf": "../../robots/unitree_g1/scene.xml"
+    }
+  ],
+  "view": {
+    "camera": {
+      "position": [
+        2.2,
+        -1.6,
+        1.3
+      ],
+      "target": [
+        0,
+        0,
+        0.75
+      ]
+    }
+  },
+  "initialKeyframe": "g1/stand"
+}

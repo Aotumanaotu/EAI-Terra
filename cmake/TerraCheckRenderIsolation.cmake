@@ -4,7 +4,7 @@
 #   glad/、GL/、KHR/  只允许在 engine/render/、engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
 #   X11/、wayland-、SDL、vulkan/  engine/ 与 apps/ 中一律不允许（将来的适配器另行登记）
 #   imgui   只允许在 engine/ui/、apps/viewer/ 与 tests/（M1-13，D-024：ImGui 是应用层界面 API）
-#   nlohmann/  只允许在 engine/settings/src/、engine/scene/src/ 与 tests/（M1-14、M2-05：JSON 库不进入任何公共头文件）
+#   nlohmann/  只允许在 engine/settings/src/、engine/scene/src/、engine/simulation/src/ 与 tests/（M1-14、M2-05、M3-04：JSON 库不进入任何公共头文件）
 #   stb_    只允许在 engine/render/src/ 与 tests/（M1-08b）
 #   cgltf   只允许在 engine/asset/src/ 与 tests/（M1-09）
 #   mujoco/ 在 engine/ 中只允许在 MuJoCo 后端 engine/physics/backends/mujoco/src/（M2-04：terra_scene 等不得直接使用 MuJoCo）
@@ -19,7 +19,7 @@ file(GLOB_RECURSE files
 set(glfw_allowed "/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(gl_allowed "/engine/render/|/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(imgui_allowed "/engine/ui/|/apps/viewer/|/tests/")
-set(json_allowed "/engine/settings/src/|/engine/scene/src/|/tests/")
+set(json_allowed "/engine/settings/src/|/engine/scene/src/|/engine/simulation/src/|/tests/")
 set(stb_allowed "/engine/render/src/|/tests/")
 set(cgltf_allowed "/engine/asset/src/|/tests/")
 set(mujoco_allowed "/engine/physics/backends/mujoco/src/")

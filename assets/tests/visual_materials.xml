@@ -1,0 +1,34 @@
+<!--
+  显示夹具（M3-03）：材质、贴图、网格法线与纹理坐标。全部为静态几何，物理上不做任何事。
+    - 二维贴图 checker（内置棋盘格，64 × 64）：用于平面（texuniform，每米 4 次）、长方体与带纹理坐标的网格（重复 2 × 3）
+    - 天空盒与立方体贴图：只记录尺寸；立方体贴图显示时不支持，只显示颜色
+    - 材质参数：shiny（specular 0.9、shininess 0.95、emission 0.5）、pbr（metallic 1、roughness 0.3）
+    - 网格：textured_cube.obj（每面法线与纹理坐标）、smooth_ball.obj（无法线，由 MuJoCo 计算平滑法线）、
+      tetra（内联顶点，无纹理坐标，配二维贴图 → 不支持）
+-->
+<mujoco model="visual_materials">
+  <compiler meshdir="visual"/>
+  <asset>
+    <texture name="checker" type="2d" builtin="checker" rgb1="0.9 0.9 0.9" rgb2="0.1 0.3 0.6" width="64" height="64"/>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="32" height="192"/>
+    <texture name="cubetex" type="cube" builtin="flat" rgb1="0.8 0.2 0.2" width="16" height="16"/>
+    <material name="floor" texture="checker" texuniform="true" texrepeat="4 4" reflectance="0.2"/>
+    <material name="decal" texture="checker" texrepeat="2 3"/>
+    <material name="shiny" rgba="0.8 0.6 0.2 1" specular="0.9" shininess="0.95" emission="0.5"/>
+    <material name="pbr" rgba="0.6 0.6 0.65 1" metallic="1" roughness="0.3"/>
+    <material name="cubed" texture="cubetex"/>
+    <mesh name="cube" file="textured_cube.obj"/>
+    <mesh name="ball" file="smooth_ball.obj"/>
+    <mesh name="tetra" vertex="0 0 0  0.2 0 0  0 0.2 0  0 0 0.2"/>
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 0.05" material="floor"/>
+    <geom name="crate" type="box" size="0.1 0.1 0.1" pos="-0.4 0 0.1" material="decal"/>
+    <geom name="cube" type="mesh" mesh="cube" pos="-0.1 0 0.1" material="decal"/>
+    <geom name="ball" type="mesh" mesh="ball" pos="0.2 0 0.1" material="shiny"/>
+    <geom name="rod" type="capsule" size="0.04 0.08" pos="0.5 0 0.12" material="pbr"/>
+    <geom name="tetra" type="mesh" mesh="tetra" pos="-0.1 0.35 0" material="decal"/>
+    <geom name="cubed" type="box" size="0.06 0.06 0.06" pos="0.2 0.35 0.06" material="cubed"/>
+    <geom name="plain" type="sphere" size="0.06" pos="0.5 0.35 0.06" rgba="0.2 0.7 0.3 1"/>
+  </worldbody>
+</mujoco>

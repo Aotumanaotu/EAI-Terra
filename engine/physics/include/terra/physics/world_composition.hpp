@@ -37,6 +37,8 @@ struct ModelPlacement {
     std::string prefix;        // 加在该实例所有元素名字前，如 "cart_a/"
     std::string mjcfPath;      // 绝对路径或相对当前目录
     terra::data::Pose placement;
+    // M3-04：删掉该实例根部 body 的自由关节（悬挂模式）。没有自由关节时给出警告。
+    bool fixedBase = false;
 };
 
 struct WorldComposition {

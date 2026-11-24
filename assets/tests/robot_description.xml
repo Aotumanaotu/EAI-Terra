@@ -1,0 +1,42 @@
+<!--
+  机器人描述夹具（M3-02）：浮动基座 + 有限位的转动关节 + 无限位的滑动关节 + 轮子；四类执行器；两个关键帧。
+  无重力、不参与碰撞，关键帧重置后的状态只由关键帧决定。角度单位为弧度。
+  关键帧 raised：基座位于 (0.2, 0, 0.5)、偏航 90°、线速度 (1, 0, 0)；肩关节 0.5 rad、滑动 0.05 m；
+  肩关节位置执行器的目标为 0.8 rad。
+-->
+<mujoco model="robot_description">
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 0" integrator="implicitfast"/>
+  <worldbody>
+    <body name="base" pos="0 0 0.4">
+      <freejoint name="root"/>
+      <geom type="box" size="0.1 0.1 0.05" mass="2" contype="0" conaffinity="0"/>
+      <body name="arm" pos="0.1 0 0">
+        <joint name="shoulder" type="hinge" axis="0 1 0" pos="0.05 0 0" limited="true" range="-1 1"
+               damping="0.3" armature="0.01" frictionloss="0.05"/>
+        <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.02" mass="0.5" contype="0" conaffinity="0"/>
+        <body name="slider" pos="0.3 0 0">
+          <joint name="extend" type="slide" axis="1 0 0" damping="2"/>
+          <geom type="box" size="0.03 0.03 0.03" mass="0.2" contype="0" conaffinity="0"/>
+        </body>
+      </body>
+      <body name="wheel" pos="0 0.12 0">
+        <joint name="spin" type="hinge" axis="0 1 0"/>
+        <geom type="cylinder" size="0.05 0.01" zaxis="0 1 0" mass="0.3" contype="0" conaffinity="0"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="extend_motor" joint="extend" gear="2" forcelimited="true" forcerange="-5 5" ctrlrange="-1 1"/>
+    <position name="shoulder_pos" joint="shoulder" kp="50" kv="5" ctrlrange="-1 1"/>
+    <velocity name="spin_vel" joint="spin" kv="3" ctrlrange="-10 10"/>
+    <general name="filtered" joint="extend" dyntype="filter" dynprm="0.1" gainprm="1"/>
+  </actuator>
+  <keyframe>
+    <key name="rest"/>
+    <key name="raised" time="1.5"
+         qpos="0.2 0 0.5 0.7071067811865476 0 0 0.7071067811865476 0.5 0.05 0"
+         qvel="1 0 0 0 0 0 0 0 0"
+         ctrl="0 0.8 0 0"/>
+  </keyframe>
+</mujoco>

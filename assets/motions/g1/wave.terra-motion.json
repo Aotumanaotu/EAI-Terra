@@ -1,0 +1,88 @@
+{
+  "format": "terra.motion",
+  "version": 1,
+  "name": "G1 挥手（悬挂）",
+  "scene": "../../scenes/robots/g1_suspended.terra-scene.json",
+  "startKeyframe": "g1/stand",
+  "interpolation": "smooth",
+  "poses": [
+    {
+      "time": 0.0,
+      "targets": {
+        "g1/right_shoulder_pitch_joint": 0.2,
+        "g1/right_shoulder_roll_joint": -0.2,
+        "g1/right_shoulder_yaw_joint": 0.0,
+        "g1/right_elbow_joint": 1.28,
+        "g1/right_wrist_roll_joint": 0.0
+      }
+    },
+    {
+      "time": 1.2,
+      "targets": {
+        "g1/right_shoulder_pitch_joint": -0.3,
+        "g1/right_shoulder_roll_joint": -1.5,
+        "g1/right_elbow_joint": 1.2,
+        "g1/right_wrist_roll_joint": 0.0
+      }
+    },
+    {
+      "time": 1.6,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": 0.5,
+        "g1/right_wrist_roll_joint": 0.4
+      }
+    },
+    {
+      "time": 2.0,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": -0.3,
+        "g1/right_wrist_roll_joint": -0.4
+      }
+    },
+    {
+      "time": 2.4,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": 0.5,
+        "g1/right_wrist_roll_joint": 0.4
+      }
+    },
+    {
+      "time": 2.8,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": -0.3,
+        "g1/right_wrist_roll_joint": -0.4
+      }
+    },
+    {
+      "time": 3.2,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": 0.5,
+        "g1/right_wrist_roll_joint": 0.4
+      }
+    },
+    {
+      "time": 3.6,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": -0.3,
+        "g1/right_wrist_roll_joint": -0.4
+      }
+    },
+    {
+      "time": 4.0,
+      "targets": {
+        "g1/right_shoulder_yaw_joint": 0.0,
+        "g1/right_wrist_roll_joint": 0.0
+      }
+    },
+    {
+      "time": 5.2,
+      "targets": {
+        "g1/right_shoulder_pitch_joint": 0.2,
+        "g1/right_shoulder_roll_joint": -0.2,
+        "g1/right_shoulder_yaw_joint": 0.0,
+        "g1/right_elbow_joint": 1.28,
+        "g1/right_wrist_roll_joint": 0.0
+      }
+    }
+  ]
+}

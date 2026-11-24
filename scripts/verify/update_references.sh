@@ -3,7 +3,7 @@
 # 使用 build/render-release（不存在时先配置），只构建 test_render_reference；对各场景先与现有参考图比较并打印差异，
 # 再写入新的参考图到 tests/render/reference/。带资产的场景在素材缺失时跳过。
 # 生成后请人工查看图片，确认无误再提交。验证脚本只在参考图缺失时调用本脚本（只更新缺失的场景）。
-# 用法：bash scripts/verify/update_references.sh [场景 ...]（默认全部：procedural studio outdoor carts）
+# 用法：bash scripts/verify/update_references.sh [场景 ...]（默认全部：procedural studio outdoor carts mjcf_materials robot_g1 robot_go2 robot_stretch3）
 set -uo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -22,7 +22,7 @@ run() {
 }
 status=0
 scenes=("$@")
-[ ${#scenes[@]} -gt 0 ] || scenes=(procedural studio outdoor carts)
+[ ${#scenes[@]} -gt 0 ] || scenes=(procedural studio outdoor carts mjcf_materials robot_g1 robot_go2 robot_stretch3)
 for scene in "${scenes[@]}"; do
     if [ -f "$refs/$scene.png" ]; then
         echo "---- $scene：与现有参考图比较"
@@ -32,7 +32,7 @@ for scene in "${scenes[@]}"; do
     run --scene "$scene" --expect-renderer llvmpipe --update >"$out/update_$scene.txt" 2>&1
     rc=$?
     if [ $rc = 77 ]; then
-        echo "  跳过（需要 HDRI 与 glTF 资产）"
+        echo "  跳过（需要 HDRI、glTF 资产或参考机器人）"
     elif [ $rc = 0 ]; then
         grep -E "INFO" "$out/update_$scene.txt" | sed 's/^/  /'
     else

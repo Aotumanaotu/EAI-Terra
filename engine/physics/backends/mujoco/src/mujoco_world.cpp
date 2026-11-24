@@ -233,7 +233,97 @@ void describeGeometry(const mjModel* m, const std::vector<EntityId>& bodyToEntit
             mesh.triangles.push_back({static_cast<std::uint32_t>(t[0]), static_cast<std::uint32_t>(t[1]),
                                       static_cast<std::uint32_t>(t[2])});
         }
+        // M3-03：法线与纹理坐标（索引相对本网格的 normaladr / texcoordadr，与 MuJoCo 渲染器 render_context.c 相同）
+        const int normaladr = m->mesh_normaladr[k];
+        const int normalnum = m->mesh_normalnum[k];
+        if (normalnum > 0) {
+            mesh.normals.reserve(static_cast<std::size_t>(normalnum));
+            for (int v = 0; v < normalnum; ++v) {
+                const float* n = m->mesh_normal + 3 * static_cast<std::size_t>(normaladr + v);
+                mesh.normals.push_back({n[0], n[1], n[2]});
+            }
+            mesh.triangleNormals.reserve(static_cast<std::size_t>(facenum));
+            for (int f = 0; f < facenum; ++f) {
+                const int* t = m->mesh_facenormal + 3 * static_cast<std::size_t>(faceadr + f);
+                mesh.triangleNormals.push_back({static_cast<std::uint32_t>(t[0]), static_cast<std::uint32_t>(t[1]),
+                                                static_cast<std::uint32_t>(t[2])});
+            }
+        }
+        const int texcoordadr = m->mesh_texcoordadr[k];
+        const int texcoordnum = m->mesh_texcoordnum[k];
+        if (texcoordadr >= 0 && texcoordnum > 0) {
+            mesh.texcoords.reserve(static_cast<std::size_t>(texcoordnum));
+            for (int v = 0; v < texcoordnum; ++v) {
+                const float* uv = m->mesh_texcoord + 2 * static_cast<std::size_t>(texcoordadr + v);
+                mesh.texcoords.push_back({uv[0], uv[1]});
+            }
+            mesh.triangleTexcoords.reserve(static_cast<std::size_t>(facenum));
+            for (int f = 0; f < facenum; ++f) {
+                const int* t = m->mesh_facetexcoord + 3 * static_cast<std::size_t>(faceadr + f);
+                mesh.triangleTexcoords.push_back({static_cast<std::uint32_t>(t[0]), static_cast<std::uint32_t>(t[1]),
+                                                  static_cast<std::uint32_t>(t[2])});
+            }
+        }
         desc.meshes.push_back(std::move(mesh));
+    }
+
+    // M3-03：贴图与材质
+    const int ntex = static_cast<int>(m->ntex);
+    desc.textures.reserve(static_cast<std::size_t>(ntex));
+    for (int t = 0; t < ntex; ++t) {
+        terra::data::TextureDescription tex;
+        tex.name = nameOf(m, mjOBJ_TEXTURE, t);
+        tex.kind = m->tex_type[t] == mjTEXTURE_2D     ? terra::data::TextureKind::TwoD
+                   : m->tex_type[t] == mjTEXTURE_CUBE ? terra::data::TextureKind::Cube
+                                                      : terra::data::TextureKind::Skybox;
+        tex.width = m->tex_width[t];
+        tex.height = m->tex_height[t];
+        const int channels = m->tex_nchannel[t];
+        if (tex.kind == terra::data::TextureKind::TwoD && tex.width > 0 && tex.height > 0 && channels >= 1 && channels <= 4) {
+            const auto pixels = static_cast<std::size_t>(tex.width) * static_cast<std::size_t>(tex.height);
+            const mjtByte* src = m->tex_data + m->tex_adr[t];
+            tex.rgba.resize(pixels * 4);
+            for (std::size_t p = 0; p < pixels; ++p) {
+                const mjtByte* px = src + p * static_cast<std::size_t>(channels);
+                std::uint8_t* out = tex.rgba.data() + 4 * p;
+                if (channels <= 2) {  // 灰度（第二通道为透明度）
+                    out[0] = out[1] = out[2] = px[0];
+                    out[3] = channels == 2 ? px[1] : std::uint8_t{255};
+                } else {
+                    out[0] = px[0];
+                    out[1] = px[1];
+                    out[2] = px[2];
+                    out[3] = channels == 4 ? px[3] : std::uint8_t{255};
+                }
+            }
+        }
+        desc.textures.push_back(std::move(tex));
+    }
+    const int nmat = static_cast<int>(m->nmat);
+    desc.materials.reserve(static_cast<std::size_t>(nmat));
+    for (int i = 0; i < nmat; ++i) {
+        const auto mi = static_cast<std::size_t>(i);
+        terra::data::MaterialDescription mat;
+        mat.name = nameOf(m, mjOBJ_MATERIAL, i);
+        const float* rgba = m->mat_rgba + 4 * mi;
+        mat.rgba = {rgba[0], rgba[1], rgba[2], rgba[3]};
+        mat.emission = m->mat_emission[i];
+        mat.specular = m->mat_specular[i];
+        mat.shininess = m->mat_shininess[i];
+        mat.reflectance = m->mat_reflectance[i];
+        mat.metallic = m->mat_metallic[i];
+        mat.roughness = m->mat_roughness[i];
+        // <material texture="…"> 写入 RGB 角色；也接受 RGBA 角色与未指定角色
+        const int* texid = m->mat_texid + static_cast<std::size_t>(mjNTEXROLE) * mi;
+        for (const int role : {static_cast<int>(mjTEXROLE_RGB), static_cast<int>(mjTEXROLE_RGBA), static_cast<int>(mjTEXROLE_USER)}) {
+            if (texid[role] >= 0) {
+                mat.texture = texid[role];
+                break;
+            }
+        }
+        mat.texRepeat = {m->mat_texrepeat[2 * mi], m->mat_texrepeat[2 * mi + 1]};
+        mat.texUniform = m->mat_texuniform[i] != 0;
+        desc.materials.push_back(std::move(mat));
     }
 
     const int ngeom = static_cast<int>(m->ngeom);
@@ -261,8 +351,39 @@ void describeGeometry(const mjModel* m, const std::vector<EntityId>& bodyToEntit
         geom.group = m->geom_group[g];
         geom.collides = m->geom_contype[g] != 0 || m->geom_conaffinity[g] != 0;
         if (geom.shape == GeomShape::Mesh && m->geom_dataid[g] >= 0) geom.mesh = m->geom_dataid[g];
+        geom.material = matid;
         desc.geoms.push_back(std::move(geom));
     }
+}
+
+// 执行器类别与参数（M3-02）。MuJoCo 的 <motor>、<position>、<velocity> 都是 <general> 的简写，编译后只留下增益与偏置：
+//   motor：增益固定，无偏置；position：偏置 = [0, −kp, −kv]；velocity：偏置 = [0, 0, −kv]（增益分别为 kp、kv）。
+// 带动力学（dyntype ≠ none）或不符合以上形式的记为 Other。
+void describeActuatorKind(const mjModel* m, int a, terra::data::ActuatorDescription& act) {
+    const auto ai = static_cast<std::size_t>(a);
+    const mjtNum* gain = m->actuator_gainprm + mjNGAIN * ai;
+    const mjtNum* bias = m->actuator_biasprm + mjNBIAS * ai;
+    const auto close = [](mjtNum x, mjtNum y) { return std::fabs(x - y) <= 1e-12 * std::max<mjtNum>(1.0, std::fabs(y)); };
+    act.kind = terra::data::ActuatorKind::Other;
+    if (m->actuator_dyntype[a] == mjDYN_NONE && m->actuator_gaintype[a] == mjGAIN_FIXED) {
+        if (m->actuator_biastype[a] == mjBIAS_NONE) {
+            act.kind = terra::data::ActuatorKind::Motor;
+            act.gain = gain[0];
+        } else if (m->actuator_biastype[a] == mjBIAS_AFFINE && close(bias[0], 0.0)) {
+            if (close(bias[1], -gain[0]) && !close(gain[0], 0.0)) {
+                act.kind = terra::data::ActuatorKind::Position;
+                act.gain = gain[0];
+                act.damping = -bias[2];
+            } else if (close(bias[1], 0.0) && close(bias[2], -gain[0]) && !close(gain[0], 0.0)) {
+                act.kind = terra::data::ActuatorKind::Velocity;
+                act.gain = gain[0];
+            }
+        }
+    }
+    act.gear = m->actuator_gear[6 * static_cast<std::size_t>(m->actuator_outadr[a])];
+    act.forceLimited = m->actuator_forcelimited[a] != 0;
+    act.forceMin = m->actuator_forcerange[2 * ai];
+    act.forceMax = m->actuator_forcerange[2 * ai + 1];
 }
 
 LoadResult failure(LoadErrorKind kind, std::string message) {
@@ -380,6 +501,18 @@ std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::Impl::buildSnap
         for (int k = 0; k < js.velocitySize; ++k) js.velocity[static_cast<std::size_t>(k)] = qvel[k];
         finite = finite && allFinite(qpos, js.positionSize) && allFinite(qvel, js.velocitySize);
         snap->joints.push_back(js);
+    }
+
+    // 执行器（M3-04）：控制量与输出力
+    snap->actuators.reserve(description.actuators.size());
+    for (std::size_t a = 0; a < description.actuators.size(); ++a) {
+        terra::data::ActuatorState as;
+        as.id = description.actuators[a].id;
+        const mjtNum* ctrl = d->ctrl + m->actuator_ctrladr[a];
+        for (int k = 0; k < m->actuator_ctrlnum[a]; ++k) as.controls.push_back(ctrl[k]);
+        as.force = d->actuator_force[a];
+        finite = finite && allFinite(ctrl, m->actuator_ctrlnum[a]) && std::isfinite(as.force);
+        snap->actuators.push_back(std::move(as));
     }
 
     // 接触：只统计参与约束求解（exclude==0 且 efc_address>=0）且法向力 > 0 的接触点。
@@ -596,6 +729,19 @@ LoadResult MujocoWorld::build(mjModel* rawModel, const BuildInput& inputs, LoadR
                                "不支持的关节类型 " + std::to_string(model->jnt_type[j]) + "（关节 '" +
                                    joint.name + "'）");
         }
+        // M3-02：限位、轴向、位置与第一个自由度的被动参数
+        const auto ji = static_cast<std::size_t>(j);
+        joint.limited = model->jnt_limited[j] != 0 && (joint.type == JointType::Hinge || joint.type == JointType::Slide);
+        joint.rangeMin = model->jnt_range[2 * ji];
+        joint.rangeMax = model->jnt_range[2 * ji + 1];
+        if (joint.type == JointType::Hinge || joint.type == JointType::Slide) {
+            joint.axis = {model->jnt_axis[3 * ji], model->jnt_axis[3 * ji + 1], model->jnt_axis[3 * ji + 2]};
+        }
+        joint.anchor = {model->jnt_pos[3 * ji], model->jnt_pos[3 * ji + 1], model->jnt_pos[3 * ji + 2]};
+        const auto dof = static_cast<std::size_t>(model->jnt_dofadr[j]);
+        joint.damping = model->dof_damping[dof];
+        joint.armature = model->dof_armature[dof];
+        joint.frictionLoss = model->dof_frictionloss[dof];
         desc.joints.push_back(std::move(joint));
     }
 
@@ -634,10 +780,14 @@ LoadResult MujocoWorld::build(mjModel* rawModel, const BuildInput& inputs, LoadR
             input.max = model->actuator_ctrlrange[2 * u + 1];
             act.inputs.push_back(std::move(input));
         }
+        describeActuatorKind(model.get(), a, act);
         desc.actuators.push_back(std::move(act));
     }
 
     describeGeometry(model.get(), bodyToEntity, names, desc);
+    for (int k = 0; k < static_cast<int>(model->nkey); ++k) {
+        desc.keyframes.push_back({nameOf(model.get(), mjOBJ_KEY, k), model->key_time[k]});
+    }
 
     // 只在加载成功时分配实例号，失败的加载不消耗编号。
     static std::atomic<std::uint64_t> nextWorldInstance{1};
@@ -695,6 +845,24 @@ void MujocoWorld::reset() {
     ++w.runEpoch;
     w.faulted = false;
     w.captureWarningBaseline();
+}
+
+bool MujocoWorld::resetToKeyframe(std::size_t index) {
+    Impl& w = *impl_;
+    if (index >= static_cast<std::size_t>(w.model->nkey)) return false;
+    w.cachedSnapshot.reset();
+    {
+        const ActiveWorldGuard active(&w.description, &w.stepIndex, w.data.get(), "reset");
+        mj_resetDataKeyframe(w.model.get(), w.data.get(), static_cast<int>(index));
+        // Terra 的仿真时间从重置起算（第 0 步 ⇔ 时间 0，与 reset 相同）；关键帧自带的时间只记录在描述中
+        w.data->time = 0;
+        mj_forward(w.model.get(), w.data.get());
+    }
+    w.stepIndex = 0;
+    w.runEpoch += 1;
+    w.faulted = false;
+    w.captureWarningBaseline();
+    return true;
 }
 
 std::optional<ControlError> MujocoWorld::setControl(const std::vector<ActuatorCommand>& commands) {
@@ -903,6 +1071,40 @@ void nameUnnamed(mjSpec* spec, mjtObj type, const char* kind) {
     }
 }
 
+// 关键帧中的自由关节位姿相对实例的放置框架（M3-02）。MuJoCo 把关键帧里自由关节的值当作世界位姿，组合时不随
+// mjs_attach 的框架变换，放在别处的机器人按关键帧重置后会回到原点附近。这里把属于实例 i 的关键帧（名字以其前缀开头）
+// 中、属于实例 i 的自由关节的位置与姿态乘上放置位姿，线速度一并旋转（角速度在 body 坐标系中，不变）。
+// 关键帧没有给出该关节时 MuJoCo 以 qpos0 补齐，而 qpos0 已含放置位姿：与 qpos0 逐位相同的值不再变换。
+void placeKeyframes(mjModel* m, const std::vector<ModelPlacement>& models) {
+    for (int k = 0; k < static_cast<int>(m->nkey); ++k) {
+        const std::string key = nameOf(m, mjOBJ_KEY, k);
+        for (const ModelPlacement& placed : models) {
+            const terra::data::Pose& p = placed.placement;
+            if (placed.prefix.empty() || key.rfind(placed.prefix, 0) != 0) continue;
+            const mjtNum t[3] = {p.position.x, p.position.y, p.position.z};
+            const mjtNum r[4] = {p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z};
+            for (int j = 0; j < static_cast<int>(m->njnt); ++j) {
+                if (m->jnt_type[j] != mjJNT_FREE) continue;
+                if (nameOf(m, mjOBJ_BODY, m->jnt_bodyid[j]).rfind(placed.prefix, 0) != 0) continue;
+                const auto q0 = static_cast<std::size_t>(m->jnt_qposadr[j]);
+                mjtNum* qpos = m->key_qpos + static_cast<std::size_t>(k) * static_cast<std::size_t>(m->nq) + q0;
+                if (std::equal(qpos, qpos + 7, m->qpos0 + q0)) continue;
+                mjtNum pos[3];
+                mju_rotVecQuat(pos, qpos, r);
+                mjtNum quat[4];
+                mju_mulQuat(quat, r, qpos + 3);
+                for (int c = 0; c < 3; ++c) qpos[c] = pos[c] + t[c];
+                for (int c = 0; c < 4; ++c) qpos[3 + c] = quat[c];
+                mjtNum* qvel = m->key_qvel + static_cast<std::size_t>(k) * static_cast<std::size_t>(m->nv) +
+                               static_cast<std::size_t>(m->jnt_dofadr[j]);
+                mjtNum lin[3];
+                mju_rotVecQuat(lin, qvel, r);
+                for (int c = 0; c < 3; ++c) qvel[c] = lin[c];
+            }
+        }
+    }
+}
+
 }  // namespace
 
 ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
@@ -998,6 +1200,43 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
         copyGlobals(*children[i], *parent);
     }
 
+    // 2b. 悬挂模式（M3-04）：删掉根部 body 的自由关节。MuJoCo 只有在模型编译过之后，删除元素时才会把关键帧的值
+    //     按元素保存、在下次编译时重新排列（user_model.cc）；未编译时关键帧仍按旧的 qpos 长度，会编译失败。
+    //     因此先编译一次、删除、再编译一次（第二次编译使关键帧不再处于待定状态，组合时才能正确加上实例前缀）。
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        if (!models[i].fixedBase) continue;
+        const int index = static_cast<int>(i);
+        ModelPtr before{mj_compile(children[i].get(), nullptr)};
+        if (!before) {
+            error(index, LoadErrorKind::InvalidModel, "悬挂模式：模型编译失败（" + paths[i] + "）：" + trimmed(mjs_getError(children[i].get())));
+            return out;
+        }
+        mjsBody* root = mjs_findBody(children[i].get(), "world");
+        std::vector<mjsElement*> freeJoints;
+        for (mjsElement* b = root ? mjs_firstChild(root, mjOBJ_BODY, 0) : nullptr; b != nullptr; b = mjs_nextChild(root, b, 0)) {
+            mjsBody* body = mjs_asBody(b);
+            for (mjsElement* j = mjs_firstChild(body, mjOBJ_JOINT, 0); j != nullptr; j = mjs_nextChild(body, j, 0)) {
+                if (mjs_asJoint(j)->type == mjJNT_FREE) freeJoints.push_back(j);
+            }
+        }
+        if (freeJoints.empty()) {
+            warning(index, "fixedBase：模型根部没有自由关节，悬挂模式不起作用");
+            continue;
+        }
+        for (mjsElement* j : freeJoints) {
+            if (mjs_delete(children[i].get(), j) != 0) {
+                error(index, LoadErrorKind::InvalidModel, "悬挂模式：删除自由关节失败：" + trimmed(mjs_getError(children[i].get())));
+                return out;
+            }
+        }
+        ModelPtr after{mj_compile(children[i].get(), nullptr)};
+        if (!after) {
+            error(index, LoadErrorKind::InvalidModel,
+                  "悬挂模式：删除自由关节后编译失败（" + paths[i] + "）：" + trimmed(mjs_getError(children[i].get())));
+            return out;
+        }
+    }
+
     // 3. 组合：每个实例放在世界中的一个框架上
     mjsBody* world = mjs_findBody(parent.get(), "world");
     for (std::size_t i = 0; i < children.size(); ++i) {
@@ -1028,6 +1267,7 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
     for (int k = 0; k < mjs_numWarnings(parent.get()); ++k) {
         if (const char* text = mjs_getWarning(parent.get(), k)) warning(-1, "编译警告：" + trimmed(text));
     }
+    placeKeyframes(model.get(), models);
 
     BuildInput input;
     input.sourcePath = composition.sourceLabel;

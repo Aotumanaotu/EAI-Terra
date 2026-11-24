@@ -14,16 +14,21 @@
 //   --scene      （M2-07）打开场景文件（JSON）：组合物理世界、运行仿真，视口显示由快照驱动的场景（代替演示场景）；
 //                场景有错误时打印诊断并返回 4。场景文件中的 view.camera 作为初始相机
 //   --demo-drive （M2-07）演示：给场景中的所有执行器施加正弦控制（幅度为控制范围的 60%），用于观看运动
+//   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
+//                自检时在第 3 帧打开（代替按播放），并与“动作 → PD 层 → setControl → step”的纯物理对照逐位比较
 
 #include <algorithm>
 #include <array>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,6 +42,8 @@
 #include "terra/core/fatal.hpp"
 #include "terra/physics/mujoco/mujoco_backend.hpp"
 #include "terra/scene/scene.hpp"
+#include "terra/simulation/motion.hpp"
+#include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/runner.hpp"
 #include "terra/core/system_monitor.hpp"
 #include "terra/core/time_series.hpp"
@@ -83,6 +90,7 @@ struct Options {
     std::string settingsPath;
     std::optional<ui::Language> language;
     std::string scenePath;
+    std::string motionPath;  // M3-04c：动作文件（需要同时给出场景，或动作文件自带推荐场景）
     bool demoDrive = false;
 };
 
@@ -105,6 +113,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.selfTest = true;
         } else if (a == "--scene" && hasValue) {
             o.scenePath = argv[++i];
+        } else if (a == "--motion" && hasValue) {
+            o.motionPath = argv[++i];
         } else if (a == "--demo-drive") {
             o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -265,6 +275,11 @@ struct AppState {
     std::vector<std::string> sceneErrors;    // 最近一次打开失败的诊断（弹窗显示）
     bool showSceneErrors = false;
     std::optional<std::string> openRequest;  // 菜单或文件窗口请求打开的场景（在帧末处理，避免在绘制界面时替换 GPU 资源）
+    // M3-04c：动作文件与执行器面板
+    ui::FileBrowser motionBrowser;
+    std::optional<std::string> motionRequest;  // 请求打开的动作文件（帧末处理：可能需要先打开推荐场景）
+    bool showActuators = true;
+    std::string errorTitle;  // 错误弹窗的标题（场景或动作）
     bool closeRequest = false;
     bool demoAssetsLoaded = false;
     std::optional<st::EnvironmentSetting> sceneEnvironment;  // 场景文件 view.environment：只影响本次会话，不写入设置
@@ -292,6 +307,7 @@ void buildDefaultLayout(ImGuiID dockspace) {
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.24f, nullptr, &center);
     ImGui::DockBuilderDockWindow("###Outliner", left);
     ImGui::DockBuilderDockWindow("###Details", right);
+    ImGui::DockBuilderDockWindow("###Actuators", right);
     ImGui::DockBuilderDockWindow("###Log", bottom);
     ImGui::DockBuilderDockWindow("###Stats", bottom);
     ImGui::DockBuilderDockWindow("###Viewport", center);
@@ -313,11 +329,20 @@ struct SettingsRuntime {
 struct SimulatedScene {
     terra::scene::SceneInstance instance;
     std::unique_ptr<terra::simulation::SimulationRunner> runner;
+    terra::simulation::PdLayer pd;  // M3-04b：场景文件 controllers 中的 PD 层（为空表示没有）
+    // M3-04c：动作播放与执行器面板
+    std::optional<terra::simulation::MotionPlayer> motion;
+    std::string motionPath;
+    std::map<std::uint32_t, double> panelTargets;  // 面板设置过、但还没有出现在快照中的目标（暂停时也能立即显示）
+    std::vector<terra::simulation::MotionCatalogEntry> motionCatalog;  // assets/motions/ 中推荐场景为本场景的动作
     std::unique_ptr<vw::SceneView> view;
     bool demoDrive = false;
     std::string path;               // 场景文件（绝对路径）
     double realtimeFactor = 0.0;    // 仿真时间 / 墙钟时间（平滑）
     int speedIndex = 2;             // kSimSpeeds 下标
+    // M3-03：显示哪些 MJCF 几何体分组（默认 0–2，Menagerie 的可见几何在 2、碰撞几何在 3），是否叠加碰撞几何体
+    std::array<bool, 6> groups{true, true, true, false, false, false};
+    bool collision = false;
 
     static constexpr double kSimSpeeds[] = {0.25, 0.5, 1.0, 2.0, 4.0};
 
@@ -348,10 +373,20 @@ struct SimulatedScene {
         if (!commands.empty()) runner->scheduleNext(std::move(commands));
     }
 
+    // 每步控制器：动作给出的命令（播放中）→ PD 层（有时）。查看器与 Headless、自检中的纯物理对照走同一条路径。
+    std::vector<terra::physics::ActuatorCommand> control(std::uint64_t step) {
+        std::vector<terra::physics::ActuatorCommand> commands;
+        if (motion && motion->playing()) commands = motion->commands(step, instance.world->description().timestep);
+        if (pd.empty()) return commands;
+        return pd.process(std::move(commands), *instance.world->snapshot());
+    }
+
     std::vector<r::RenderItem> items(const st::RenderSettings& rs, terra::data::EntityId highlight) const {
         vw::SceneViewOptions options;
         options.armOcclusion = rs.assetArmOcclusion;
         options.highlight = highlight;
+        options.groups = groups;
+        options.collision = collision;
         return view->items(instance, terra::scene::visualPoses(instance, runner->displayPoses()), options);
     }
 };
@@ -427,6 +462,7 @@ bool openScene(Frame& f, const std::string& requested) {
         f.state.log.push_back(std::string{tr(TextId::LogSceneFailed)} + path);
         f.state.sceneErrors = lines;
         if (f.state.sceneErrors.empty()) f.state.sceneErrors.push_back(path);
+        f.state.errorTitle = "scene";
         f.state.showSceneErrors = true;
         return false;
     }
@@ -436,6 +472,16 @@ bool openScene(Frame& f, const std::string& requested) {
     sim.instance = std::move(*result.scene);
     sim.path = path;
     sim.runner = std::make_unique<terra::simulation::SimulationRunner>(*sim.instance.world);
+    sim.runner->setHomeKeyframe(sim.instance.homeKeyframe);
+    sim.pd = terra::simulation::PdLayer(sim.instance.world->description(), sim.instance.pd);
+    sim.motionCatalog = terra::simulation::findMotionsForScene({std::string{TERRA_ASSETS_DIR} + "/motions"}, path);
+    if (!sim.pd.empty()) std::printf("INFO 场景：PD 层接管 %zu 个执行器\n", sim.pd.size());
+    if (!sim.motionCatalog.empty()) std::printf("INFO 场景：%zu 个预定义动作（菜单 动作 → 本场景的预定义动作）\n", sim.motionCatalog.size());
+    {
+        // 每步控制器：动作与 PD 层（没有时返回空，等同于没有控制器）
+        SimulatedScene* self = &sim;
+        sim.runner->setController([self](std::uint64_t step) { return self->control(step); });
+    }
     sim.runner->pause();
     std::vector<vw::SceneMessage> messages;
     sim.view = vw::SceneView::create(sim.instance, messages);
@@ -466,7 +512,86 @@ bool openScene(Frame& f, const std::string& requested) {
 void simReset(Frame& f) {
     if (!f.simulated) return;
     f.simulated->runner->reset();
+    f.simulated->pd.clearTargets();
+    f.simulated->panelTargets.clear();
+    if (f.simulated->motion) f.simulated->motion->stop();
     f.simulated->realtimeFactor = 0.0;
+}
+
+void simResetToKeyframe(Frame& f, std::size_t index) {
+    if (!f.simulated || !f.simulated->runner->resetToKeyframe(index)) return;
+    f.simulated->pd.clearTargets();
+    f.simulated->panelTargets.clear();
+    if (f.simulated->motion) f.simulated->motion->stop();
+    f.simulated->realtimeFactor = 0.0;
+    f.state.log.push_back(std::string{tr(TextId::LogKeyframeReset)} + f.simulated->instance.world->description().keyframes[index].name);
+}
+
+// ---- 动作（M3-04c）----
+
+constexpr const char* kMotionSuffix = ".terra-motion.json";
+
+std::string motionIssueText(const terra::simulation::MotionIssue& issue) {
+    std::string text = std::string{tr(issue.severity == terra::simulation::MotionIssue::Severity::Error ? TextId::IssueError
+                                                                                                        : TextId::IssueWarning)} + " ";
+    if (!issue.where.empty()) text += issue.where + "：";
+    return text + issue.message;
+}
+
+// 从头播放：按起始关键帧重置（没有时从当前状态开始），清除 PD 与面板目标，从当前步开始并运行
+void startMotion(Frame& f) {
+    if (!f.simulated || !f.simulated->motion) return;
+    SimulatedScene& sim = *f.simulated;
+    if (const auto key = sim.motion->motion().startKeyframe) sim.runner->resetToKeyframe(*key);
+    sim.pd.clearTargets();
+    sim.panelTargets.clear();
+    sim.motion->start(sim.instance.world->stepIndex());
+    sim.realtimeFactor = 0.0;
+    sim.runner->resume();
+}
+
+// 打开动作文件：先解析；推荐场景与当前场景不同时切换到推荐场景；再按当前场景绑定（PD 层接管的执行器按关节范围校验）。
+// 成功时从头播放；失败时保留当前状态，弹窗列出诊断。
+bool openMotion(Frame& f, const std::string& requested) {
+    std::error_code ec;
+    const std::string path = std::filesystem::absolute(requested, ec).lexically_normal().string();
+    std::vector<std::string> lines;
+    const auto fail = [&](const std::string& extra) {
+        if (!extra.empty()) lines.push_back(extra);
+        for (const auto& line : lines) std::printf("INFO 动作诊断：%s\n", line.c_str());
+        f.state.log.push_back(std::string{tr(TextId::LogMotionFailed)} + path);
+        f.state.sceneErrors = lines;
+        if (f.state.sceneErrors.empty()) f.state.sceneErrors.push_back(path);
+        f.state.errorTitle = "motion";
+        f.state.showSceneErrors = true;
+        return false;
+    };
+    const auto parsed = terra::simulation::readMotionFile(path);
+    for (const auto& issue : parsed.issues) lines.push_back(motionIssueText(issue));
+    if (!parsed.document) return fail({});
+    // 动作文件写了推荐场景、且与当前场景不同（或当前没有场景）时，先打开推荐场景；没写时绑定到当前场景
+    const std::string& wanted = parsed.document->scene;
+    if (!f.simulated && wanted.empty()) return fail(tr(TextId::MotionNeedsScene));
+    if (!wanted.empty() && (!f.simulated || f.simulated->path != wanted)) {
+        if (!openScene(f, wanted)) return false;
+    }
+    SimulatedScene& sim = *f.simulated;
+    const auto bound = terra::simulation::bindMotion(*parsed.document, sim.instance.world->description(), sim.pd.targetRangeFunction());
+    for (const auto& issue : bound.issues) lines.push_back(motionIssueText(issue));
+    if (!bound.motion) return fail({});
+    for (const auto& line : lines) {
+        std::printf("INFO 动作诊断：%s\n", line.c_str());
+        f.state.log.push_back(line);
+    }
+    const bool loop = sim.motion && sim.motion->loop();
+    sim.motion = terra::simulation::MotionPlayer(*bound.motion);
+    sim.motion->setLoop(loop);
+    sim.motionPath = path;
+    f.state.log.push_back(std::string{tr(TextId::LogMotionOpened)} + path);
+    std::printf("INFO 动作 %s：%zu 条轨道，时长 %.3f 秒\n", bound.motion->name.c_str(), bound.motion->tracks.size(),
+                bound.motion->duration);
+    startMotion(f);
+    return true;
 }
 
 const char* shapeText(terra::data::GeomShape shape) {
@@ -516,7 +641,9 @@ void simulationToolbar(Frame& f) {
 }
 
 void sceneErrorWindow(Frame& f) {
-    const std::string title = label(TextId::SceneErrorTitle, "SceneErrors");
+    // 场景与动作共用一个弹窗；标题按最近一次失败的来源
+    const std::string title = f.state.errorTitle == "motion" ? label(TextId::MotionErrorTitle, "SceneErrors")
+                                                              : label(TextId::SceneErrorTitle, "SceneErrors");
     if (f.state.showSceneErrors) {
         ImGui::OpenPopup(title.c_str());
         f.state.showSceneErrors = false;
@@ -687,6 +814,16 @@ void menuBar(Frame& f) {
         }
         if (ImGui::MenuItem(tr(TextId::SimStep), key(st::Command::SimStep), false, sim.runner->paused())) sim.runner->stepOnce();
         if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
+        const auto& keyframes = sim.instance.world->description().keyframes;
+        if (ImGui::BeginMenu(tr(TextId::SimResetToKeyframe), !keyframes.empty())) {
+            for (std::size_t k = 0; k < keyframes.size(); ++k) {
+                const bool home = sim.runner->homeKeyframe() == k;
+                const std::string label = (keyframes[k].name.empty() ? "#" + std::to_string(k) : keyframes[k].name) +
+                                          (home ? tr(TextId::SimKeyframeInitial) : "") + "##key" + std::to_string(k);
+                if (ImGui::MenuItem(label.c_str())) simResetToKeyframe(f, k);
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu(tr(TextId::SimSpeed))) {
             for (int i = 0; i < static_cast<int>(sizeof(SimulatedScene::kSimSpeeds) / sizeof(SimulatedScene::kSimSpeeds[0])); ++i) {
                 char option[16];
@@ -694,6 +831,31 @@ void menuBar(Frame& f) {
                 if (ImGui::MenuItem(option, nullptr, i == sim.speedIndex)) sim.setSpeed(i);
             }
             ImGui::EndMenu();
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu(tr(TextId::MenuMotion))) {
+        if (ImGui::MenuItem(tr(TextId::MenuMotionOpen))) {
+            const std::string start = f.simulated && !f.simulated->motionPath.empty() ? f.simulated->motionPath
+                                      : f.simulated                                    ? f.simulated->path
+                                                                                       : std::string{};
+            f.state.motionBrowser.open(start, kMotionSuffix);
+        }
+        const bool hasMotion = f.simulated && f.simulated->motion;
+        if (ImGui::MenuItem(tr(TextId::MenuMotionPlay), nullptr, false, hasMotion)) startMotion(f);
+        if (ImGui::MenuItem(tr(TextId::MenuMotionStop), nullptr, false, hasMotion && f.simulated->motion->playing())) {
+            f.simulated->motion->stop();
+        }
+        bool loop = hasMotion && f.simulated->motion->loop();
+        if (ImGui::MenuItem(tr(TextId::MenuMotionLoop), nullptr, &loop, hasMotion)) f.simulated->motion->setLoop(loop);
+        // 本场景的预定义动作（assets/motions/ 中推荐场景为当前场景的动作文件）
+        ImGui::SeparatorText(tr(TextId::MenuMotionForScene));
+        if (!f.simulated || f.simulated->motionCatalog.empty()) ImGui::TextDisabled("%s", tr(TextId::MenuMotionNone));
+        if (f.simulated) {
+            for (const auto& entry : f.simulated->motionCatalog) {
+                const bool current = entry.path == f.simulated->motionPath;
+                if (ImGui::MenuItem((entry.name + "###" + entry.path).c_str(), nullptr, current)) f.state.motionRequest = entry.path;
+            }
         }
         ImGui::EndMenu();
     }
@@ -712,6 +874,17 @@ void menuBar(Frame& f) {
             if (ImGui::MenuItem(tr(TextId::MenuViewZoomReset), "Ctrl+0")) f.settings.current.ui.uiScale.reset();
             ImGui::EndMenu();
         }
+        // M3-03：几何体分组与碰撞几何体（只作用于当前场景，不保存）
+        ImGui::Separator();
+        if (ImGui::BeginMenu(tr(TextId::MenuViewGeomGroups), f.simulated.has_value())) {
+            for (std::size_t g = 0; g < f.simulated->groups.size(); ++g) {
+                const std::string label = std::string{tr(TextId::MenuViewGeomGroup)} + std::to_string(g);
+                ImGui::MenuItem(label.c_str(), nullptr, &f.simulated->groups[g]);
+            }
+            ImGui::EndMenu();
+        }
+        if (f.simulated) ImGui::MenuItem(tr(TextId::MenuViewCollision), nullptr, &f.simulated->collision);
+        else ImGui::MenuItem(tr(TextId::MenuViewCollision), nullptr, false, false);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(tr(TextId::MenuWindow))) {
@@ -720,6 +893,7 @@ void menuBar(Frame& f) {
         ImGui::MenuItem(tr(TextId::PanelDetails), nullptr, &panels.showDetails);
         ImGui::MenuItem(tr(TextId::PanelLog), nullptr, &panels.showLog);
         ImGui::MenuItem(tr(TextId::PanelStats), nullptr, &panels.showStats);
+        ImGui::MenuItem(tr(TextId::PanelActuators), nullptr, &f.state.showActuators);
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuWindowResetLayout))) {
             f.settings.current.ui.layout.clear();
@@ -768,6 +942,16 @@ void statusBar(Frame& f) {
                             static_cast<unsigned long long>(sim.instance.world->stepIndex()), tr(TextId::StatusRealtime),
                             sim.realtimeFactor, tr(TextId::StatusOverload),
                             static_cast<unsigned long long>(sim.runner->clock().overloadCount()));
+                if (sim.motion) {
+                    const auto step = sim.instance.world->stepIndex();
+                    const double dt = sim.instance.world->description().timestep;
+                    const auto& m = sim.motion->motion();
+                    ImGui::SameLine();
+                    ImGui::Text("  |  %s %s  %.2f / %.2f s%s", tr(TextId::StatusMotion), m.name.c_str(),
+                                sim.motion->playing() ? std::min(sim.motion->timeAt(step, dt), m.duration) : 0.0, m.duration,
+                                sim.motion->playing() ? (sim.motion->finished(step, dt) ? tr(TextId::StatusMotionEnded) : "")
+                                                      : tr(TextId::StatusMotionStopped));
+                }
             }
             ImGui::EndMenuBar();
         }
@@ -1099,6 +1283,109 @@ void detailsPanel(Frame& f) {
     ImGui::End();
 }
 
+// 执行器面板（M3-04c）：每个执行器一行——名字、类别与单位、滑块（范围为控制范围；PD 层接管的为关节限位）、输出。
+// 动作播放时只读。拖动即修改目标：PD 层接管的交给 PD 层，其余在下一步之前下发。
+const char* actuatorUnit(const terra::data::ActuatorDescription& a, const terra::data::ModelDescription& d, bool pd) {
+    const terra::data::JointDescription* j = a.joint.valid() ? d.joint(a.joint) : nullptr;
+    const bool slide = j != nullptr && j->type == terra::data::JointType::Slide;
+    if (j == nullptr && !pd) return "";
+    if (pd || a.kind == terra::data::ActuatorKind::Position) return slide ? "m" : "rad";
+    if (a.kind == terra::data::ActuatorKind::Velocity) return slide ? "m/s" : "rad/s";
+    if (a.kind == terra::data::ActuatorKind::Motor) return slide ? "N" : "N·m";
+    return "";
+}
+
+const char* actuatorKindText(terra::data::ActuatorKind kind, bool pd) {
+    if (pd) return tr(TextId::ActuatorKindPd);
+    switch (kind) {
+        case terra::data::ActuatorKind::Motor: return tr(TextId::ActuatorKindMotor);
+        case terra::data::ActuatorKind::Position: return tr(TextId::ActuatorKindPosition);
+        case terra::data::ActuatorKind::Velocity: return tr(TextId::ActuatorKindVelocity);
+        case terra::data::ActuatorKind::Other: return tr(TextId::ActuatorKindOther);
+    }
+    return "";
+}
+
+void actuatorPanel(Frame& f) {
+    if (!f.state.showActuators) return;
+    bool visible = true;
+    if (ImGui::Begin(label(TextId::PanelActuators, "Actuators").c_str(), &visible)) {
+        if (!f.simulated) {
+            ImGui::TextDisabled("%s", tr(TextId::OutlinerNoScene));
+        } else {
+            SimulatedScene& sim = *f.simulated;
+            const auto& d = sim.instance.world->description();
+            const auto snap = sim.instance.world->snapshot();
+            const bool locked = sim.motion && sim.motion->playing();
+            if (locked) ImGui::TextWrapped("%s", tr(TextId::ActuatorsLocked));
+            ImGui::BeginDisabled(locked);
+            std::string instance;
+            for (std::size_t i = 0; i < d.actuators.size(); ++i) {
+                const auto& a = d.actuators[i];
+                const auto slash = a.name.find('/');
+                const std::string prefix = slash == std::string::npos ? std::string{} : a.name.substr(0, slash);
+                if (i == 0 || prefix != instance) {
+                    instance = prefix;
+                    ImGui::SeparatorText(instance.empty() ? "-" : instance.c_str());
+                }
+                const std::string shortName = slash == std::string::npos ? a.name : a.name.substr(slash + 1);
+                ImGui::PushID(static_cast<int>(a.id.value));
+                if (a.inputs.size() != 1) {
+                    ImGui::TextDisabled("%s  %s", shortName.c_str(), tr(TextId::ActuatorsMultiInput));
+                    ImGui::PopID();
+                    continue;
+                }
+                const bool pd = sim.pd.manages(a.id);
+                double value = 0.0;
+                if (const auto pending = sim.panelTargets.find(a.id.value); pending != sim.panelTargets.end()) {
+                    value = pending->second;
+                } else if (pd) {
+                    const auto* j = d.joint(a.joint);
+                    value = sim.pd.target(a.id).value_or(j ? snap->joints[a.joint.value - 1].position[0] : 0.0);
+                } else if (i < snap->actuators.size() && !snap->actuators[i].controls.empty()) {
+                    value = snap->actuators[i].controls[0];
+                }
+                ImGui::TextUnformatted(shortName.c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s %s", actuatorKindText(a.kind, pd), actuatorUnit(a, d, pd));
+                const auto range = pd ? sim.pd.targetRange(a) : terra::simulation::controlRange(a);
+                ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 5.0f);
+                bool changed = false;
+                if (range) {
+                    double lo = range->first;
+                    double hi = range->second;
+                    changed = ImGui::SliderScalar("##target", ImGuiDataType_Double, &value, &lo, &hi, "%.3f",
+                                                  ImGuiSliderFlags_AlwaysClamp);
+                } else {
+                    changed = ImGui::DragScalar("##target", ImGuiDataType_Double, &value, 0.01f, nullptr, nullptr, "%.3f");
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s %.2f", tr(TextId::ActuatorForce), i < snap->actuators.size() ? snap->actuators[i].force : 0.0);
+                if (changed && !locked) {
+                    sim.panelTargets[a.id.value] = value;
+                    if (pd) {
+                        sim.pd.setTarget(a.id, value);
+                    } else {
+                        sim.runner->scheduleNext({{a.id, {value}}});
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndDisabled();
+            // 已经出现在快照中的面板目标不再单独保存（PD 层的目标始终由 PD 层保存）
+            for (auto it = sim.panelTargets.begin(); it != sim.panelTargets.end();) {
+                const auto index = static_cast<std::size_t>(it->first - 1);
+                const bool pd = sim.pd.manages(terra::data::ActuatorId{it->first});
+                const bool applied = pd || (index < snap->actuators.size() && !snap->actuators[index].controls.empty() &&
+                                            snap->actuators[index].controls[0] == it->second);
+                it = applied ? sim.panelTargets.erase(it) : std::next(it);
+            }
+        }
+    }
+    ImGui::End();
+    if (!visible) f.state.showActuators = false;
+}
+
 void logPanel(Frame& f) {
     bool& visible = f.settings.current.ui.showLog;
     if (!visible) return;
@@ -1225,12 +1512,14 @@ void buildUi(Frame& f) {
     viewportPanel(f);
     outlinerPanel(f);
     detailsPanel(f);
+    actuatorPanel(f);
     logPanel(f);
     statsPanel(f);
     helpWindows(f);
     vw::drawSettingsWindow(f.state.settingsWindow, f.settings.current, f.state.monitors, f.uiCtx.scale(), f.settings.path,
                            f.state.log);
     if (auto chosen = f.state.fileBrowser.draw(label(TextId::FileBrowserTitle, "OpenScene").c_str())) f.state.openRequest = *chosen;
+    if (auto chosen = f.state.motionBrowser.draw(label(TextId::MotionBrowserTitle, "OpenMotion").c_str())) f.state.motionRequest = *chosen;
     sceneErrorWindow(f);
 }
 
@@ -1468,6 +1757,9 @@ int selfTest(Frame& f, const ui::UiContext& uiContext, const Options& options) {
 // 同一场景逐位比较全部实体位姿（查看器的仿真与纯物理一致）；最后检查重置。
 struct SceneSelfTestRecord {
     std::uint64_t stepsAtStart = 1;
+    std::shared_ptr<const terra::data::PhysicsSnapshot> initial;  // 第 2 帧（尚未推进）的快照
+    std::string motionPath;  // M3-04c：给出时第 3 帧打开动作文件（代替按播放）
+    std::string openedScene;  // 第 2 帧时打开的场景（检查打开动作时是否切换到推荐场景）
     std::uint64_t stepAtPause = 0;
     double timeAtPause = -1.0;
     bool stepRequested = false;
@@ -1476,8 +1768,15 @@ SceneSelfTestRecord sceneRecord;
 
 void sceneSelfTestScript(Frame& f, int frame, int total) {
     SimulatedScene& sim = *f.simulated;
-    if (frame == 2) sceneRecord.stepsAtStart = sim.instance.world->stepIndex();
-    if (frame == 3) sim.togglePlay();
+    if (frame == 2) {
+        sceneRecord.stepsAtStart = sim.instance.world->stepIndex();
+        sceneRecord.initial = sim.instance.world->snapshot();
+        sceneRecord.openedScene = sim.path;
+    }
+    if (frame == 3) {
+        if (sceneRecord.motionPath.empty()) sim.togglePlay();
+        else openMotion(f, sceneRecord.motionPath);
+    }
     if (frame == total / 2) {
         if (const auto* e = sim.instance.world->description().findEntity("cart_a/chassis")) f.state.selectedEntity = e->id;
     }
@@ -1526,14 +1825,36 @@ int sceneSelfTest(Frame& f, const Options& options) {
         check(glowing > plainGlowing, "选中实体的视觉部件高亮（" + std::to_string(glowing - plainGlowing) + " 个渲染项）");
     }
 
-    // 与纯物理一致：同一场景不经过界面，推进同样的步数，全部实体位姿逐位相同
+    // 与纯物理一致：同一场景不经过界面，推进同样的步数，全部实体位姿逐位相同。
+    // M3-04c：有动作或 PD 层时，对照也走同一条控制路径（动作的命令 → PD 层 → setControl → step）。
+    if (sim.motion) {
+        check(sim.motion->playing(), "动作已开始播放（" + sim.motion->motion().name + "）");
+        std::printf("INFO 动作自检：动作时间 %.3f s / %.3f s\n", sim.motion->timeAt(world.stepIndex(), world.description().timestep),
+                    sim.motion->motion().duration);
+    }
     {
         auto fresh = terra::scene::loadScene(sim.path, terra::physics::mujoco::composeWorld);
         check(fresh.ok(), "独立加载同一场景");
         if (fresh.ok()) {
             auto& other = *fresh.scene->world;
+            terra::simulation::PdLayer pd(other.description(), fresh.scene->pd);
+            terra::simulation::MotionPlayer player;
+            std::uint64_t from = 0;
+            if (sim.motion) {
+                player = *sim.motion;
+                if (const auto key = player.motion().startKeyframe) other.resetToKeyframe(*key);
+                // 动作从重置后的当前步开始（查看器在第 3 帧打开动作时世界处于第 0 步）
+                player.start(other.stepIndex());
+                from = other.stepIndex();
+            }
+            const double dt = other.description().timestep;
             bool stepped = true;
-            for (std::uint64_t k = 0; k < world.stepIndex() && stepped; ++k) stepped = !other.step();
+            for (std::uint64_t k = 0; k < world.stepIndex() && stepped; ++k) {
+                auto commands = k >= from ? player.commands(k, dt) : std::vector<terra::physics::ActuatorCommand>{};
+                if (!pd.empty()) commands = pd.process(std::move(commands), *other.snapshot());
+                if (!commands.empty() && other.setControl(commands)) stepped = false;
+                stepped = stepped && !other.step();
+            }
             const auto a = world.snapshot();
             const auto b = other.snapshot();
             bool same = stepped && a->entities.size() == b->entities.size();
@@ -1544,12 +1865,40 @@ int sceneSelfTest(Frame& f, const Options& options) {
                        p.orientation.w == q.orientation.w && p.orientation.x == q.orientation.x && p.orientation.y == q.orientation.y &&
                        p.orientation.z == q.orientation.z;
             }
-            check(same, "查看器中的仿真与直接推进的纯物理逐位相同（" + std::to_string(world.stepIndex()) + " 步）");
+            check(same, std::string{"查看器中的仿真与直接推进的纯物理逐位相同（"} + std::to_string(world.stepIndex()) + " 步" +
+                            (sim.motion ? "，含动作" : "") + (pd.empty() ? "" : "，含 PD 层") + "）");
         }
     }
 
     simReset(f);
     check(world.stepIndex() == 0 && world.runEpoch() >= 1 && world.simulationTime() == 0.0, "重置后回到第 0 步");
+    // 打开动作时切换了场景：重置后的对照改为重新加载的同一场景的初值（场景的初始关键帧）
+    std::shared_ptr<const terra::data::PhysicsSnapshot> reference = sceneRecord.initial;
+    if (sim.path != sceneRecord.openedScene) {
+        auto again = terra::scene::loadScene(sim.path, terra::physics::mujoco::composeWorld);
+        reference = again.ok() ? again.scene->world->snapshot() : nullptr;
+        check(reference != nullptr, "重新加载切换后的场景");
+    }
+    if (!sim.motionPath.empty()) {
+        const auto doc = terra::simulation::readMotionFile(sim.motionPath);
+        if (doc.document && !doc.document->scene.empty()) {
+            check(sim.path == doc.document->scene, "打开动作文件时切换到了它的推荐场景：" + doc.document->scene);
+        }
+    }
+    if (reference) {
+        const auto now = world.snapshot();
+        bool same = now->entities.size() == reference->entities.size();
+        for (std::size_t e = 0; same && e < now->entities.size(); ++e) {
+            const auto& p = now->entities[e].pose;
+            const auto& q = reference->entities[e].pose;
+            same = p.position.x == q.position.x && p.position.y == q.position.y && p.position.z == q.position.z &&
+                   p.orientation.w == q.orientation.w && p.orientation.x == q.orientation.x &&
+                   p.orientation.y == q.orientation.y && p.orientation.z == q.orientation.z;
+        }
+        const auto& keys = world.description().keyframes;
+        const std::string home = sim.instance.homeKeyframe ? "关键帧 " + keys[*sim.instance.homeKeyframe].name : "模型初值";
+        check(same, "重置后回到打开时的姿态（" + home + "），全部实体位姿逐位相同");
+    }
     check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
     std::printf("INFO 场景自检：暂停于第 %llu 步，渲染项 %zu 个\n", static_cast<unsigned long long>(sceneRecord.stepAtPause),
                 sim.items(f.settings.current.render, {}).size());
@@ -1563,7 +1912,7 @@ int main(int argc, char** argv) {
     if (!parseOptions(argc, argv, options)) {
         std::fprintf(stderr,
                      "用法：terra_viewer [--seconds N] [--frames N] [--language zh|en] [--settings 文件] [--self-test] "
-                     "[--expect-renderer 子串]\n");
+                     "[--expect-renderer 子串] [--scene 场景文件] [--motion 动作文件] [--demo-drive]\n");
         return 2;
     }
 
@@ -1709,8 +2058,17 @@ int main(int argc, char** argv) {
         }
         simulated->demoDrive = options.demoDrive;
         if (options.demoDrive) simulated->runner->resume();
-    } else {
+    } else if (options.motionPath.empty()) {
         ensureDemoAssets(frame);
+    }
+    // 动作文件（M3-04c）：自检时在第 3 帧打开（代替按播放），否则启动时打开并开始播放
+    if (options.selfTest && simulated) sceneRecord.motionPath = options.motionPath;
+    if (!options.motionPath.empty() && !(options.selfTest && simulated)) {
+        if (!openMotion(frame, options.motionPath)) {
+            for (const auto& line : state.sceneErrors) std::fprintf(stderr, "%s\n", line.c_str());
+            std::fprintf(stderr, "错误：动作文件不能使用：%s\n", options.motionPath.c_str());
+            return 4;
+        }
     }
 
     // 不可恢复错误（M2-02）：退出前把当前设置（含布局）写入设置文件；诊断报告中写出设置文件路径。
@@ -1794,7 +2152,9 @@ int main(int argc, char** argv) {
             if (frames == 8) state.settingsWindow.capture.reset();
             if (frames == 9) openSettingsWindow(frame, false);
             if (frames == options.frames / 2) settings.current.ui.language = "en";
-            // 前 30 帧使用默认的室外环境贴图（检查 IBL 管线），之后切到半球光，使结束时的视口像素可与 C++ 参考精确比较
+            // 前 3/4 的帧使用室外环境贴图（检查 IBL 管线；2026-11-24 起默认是半球光，这里显式切换），
+            // 之后切到半球光，使结束时的视口像素可与 C++ 参考精确比较
+            if (frames == 0 && !simulated) settings.current.render.environment = st::EnvironmentSetting::Outdoor;
             if (frames == options.frames * 3 / 4) settings.current.render.environment = st::EnvironmentSetting::Hemisphere;
         }
         buildUi(frame);
@@ -1818,6 +2178,11 @@ int main(int argc, char** argv) {
         if (state.closeRequest) {
             state.closeRequest = false;
             closeScene(frame);
+        }
+        if (state.motionRequest) {
+            const std::string path = *state.motionRequest;
+            state.motionRequest.reset();
+            openMotion(frame, path);
         }
 
         ++frames;

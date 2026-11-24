@@ -25,6 +25,7 @@ struct SceneModel {
     std::string mjcf;   // MJCF 路径
     terra::data::Pose placement;
     std::string where;  // 诊断中的位置（M2-05 起为场景文件中的 JSON 指针，如 "/models/1"）
+    bool fixedBase = false;  // M3-04：悬挂模式，组合时删掉该实例根部的自由关节，基座固定在放置位姿上
 };
 
 // 场景文件中写了的全局物理配置；没写的项取第一个实例的值（M2-01 设计 3.4 节）。

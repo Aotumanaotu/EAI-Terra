@@ -239,7 +239,7 @@ void readCamera(Reader& r, const Json& j, CameraSettings& s) {
     r.real(j, "fovDegrees", path, ranges::kFov, s.fovDegrees);
 }
 
-void readRender(Reader& r, const Json& j, RenderSettings& s) {
+void readRender(Reader& r, const Json& j, RenderSettings& s, int fileVersion) {
     const std::string path = "render";
     r.unknownFields(j, path, {"sunAzimuthDegrees", "sunElevationDegrees", "sunIntensity", "ambientIntensity", "exposureEv",
                               "toneMapper", "msaa", "shadows", "grid", "environment", "environmentIntensity",
@@ -289,6 +289,12 @@ void readRender(Reader& r, const Json& j, RenderSettings& s) {
             r.warn("render.environment：应为 \"hemisphere\"、\"outdoor\" 或 \"studio\"，已使用默认值 \"" +
                    std::string{environmentName(s.environment)} + "\"");
         }
+    }
+    // 版本 2 → 3 的迁移（2026-11-24，用户要求默认不用环境贴图）：版本 2 及以前的默认值是室外贴图，
+    // 文件里的 "outdoor" 与用户自己选的无法区分，按旧默认值处理，改为半球光；用户可在偏好设置中改回。
+    if (fileVersion < 3 && s.environment == EnvironmentSetting::Outdoor) {
+        s.environment = EnvironmentSetting::Hemisphere;
+        r.warn("设置文件版本 " + std::to_string(fileVersion) + "：默认环境改为半球光（不用环境贴图），如需室外贴图请在偏好设置中重新选择");
     }
     r.real(j, "environmentIntensity", path, ranges::kEnvironmentIntensity, s.environmentIntensity);
     r.real(j, "environmentRotationDegrees", path, ranges::kEnvironmentRotation, s.environmentRotationDegrees);
@@ -631,7 +637,7 @@ ParseResult fromJson(std::string_view text) {
     if (const Json* j = r.object(root, "interface", "")) readInterface(r, *j, s.ui);
     if (const Json* j = r.object(root, "display", "")) readDisplay(r, *j, s.display);
     if (const Json* j = r.object(root, "camera", "")) readCamera(r, *j, s.camera);
-    if (const Json* j = r.object(root, "render", "")) readRender(r, *j, s.render);
+    if (const Json* j = r.object(root, "render", "")) readRender(r, *j, s.render, fileVersion);
     if (const Json* j = r.object(root, "keys", "")) readKeys(r, *j, s.keys, fileVersion);
     result.settings = std::move(s);
     return result;

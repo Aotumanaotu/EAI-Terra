@@ -216,6 +216,47 @@ void testFault() {
     check(!runner.faulted() && runner.update(1.0).steps == 1, "reset 后恢复推进");
 }
 
+// 起始关键帧（M3-02）：设置后 reset 回到关键帧；resetToKeyframe 同样形成屏障；越界下标不做任何事
+void testHomeKeyframe() {
+    auto r = tp::mujoco::loadWorld(td::ModelSource{(fs::path{TERRA_TEST_ASSETS_DIR} / "robot_description.xml").string()});
+    check(r.world != nullptr, "加载 robot_description.xml");
+    if (!r.world) return;
+    tp::PhysicsWorld& world = *r.world;
+    const auto& d = world.description();
+    const auto* base = d.findEntity("base");
+    const int raised = d.findKeyframe("raised");
+    if (base == nullptr || raised < 0) {
+        check(false, "夹具中有实体 base 与关键帧 raised");
+        return;
+    }
+    sim::SimulationRunner runner(world);
+    check(!runner.homeKeyframe(), "默认没有起始关键帧");
+    runner.setHomeKeyframe(static_cast<std::size_t>(raised));
+    for (int i = 0; i < 10; ++i) runner.update(1.0 / 60);
+    const auto* motor = d.findActuator("extend_motor");
+    if (motor != nullptr) runner.schedule(world.stepIndex() + 3, {{motor->id, {0.5}}});
+    runner.reset();
+    const auto& pose = runner.latest()->entities[base->id.value - 1].pose;
+    check(std::fabs(pose.position.z - 0.5) < 1e-9 && std::fabs(pose.position.x - 0.2) < 1e-9,
+          "设置起始关键帧后 reset 回到关键帧（基座 z = 0.5），实际 z = " + std::to_string(pose.position.z));
+    check(world.stepIndex() == 0 && runner.pendingCommands() == 0 && !runner.previous(), "按关键帧 reset 同样形成屏障");
+
+    for (int i = 0; i < 10; ++i) runner.update(1.0 / 60);
+    runner.scheduleNext({});
+    check(runner.resetToKeyframe(0), "按关键帧 rest 重置");
+    check(std::fabs(runner.latest()->entities[base->id.value - 1].pose.position.z - 0.4) < 1e-9 && runner.pendingCommands() == 0 &&
+              !runner.previous() && world.stepIndex() == 0,
+          "resetToKeyframe：回到关键帧 rest（z = 0.4），清空队列与快照历史");
+    const std::uint64_t epoch = world.runEpoch();
+    check(!runner.resetToKeyframe(99) && world.runEpoch() == epoch, "越界的关键帧下标：返回 false，不重置");
+
+    runner.setHomeKeyframe(std::nullopt);
+    runner.resetToKeyframe(static_cast<std::size_t>(raised));
+    runner.reset();
+    check(std::fabs(runner.latest()->entities[base->id.value - 1].pose.position.z - 0.4) < 1e-9,
+          "取消起始关键帧后 reset 回到模型初值");
+}
+
 }  // namespace
 
 int main() {
@@ -223,6 +264,7 @@ int main() {
     testFrameRateIndependence("下落立方体", cubeWorld, false, 2000);
     testPauseStepReset();
     testFault();
+    testHomeKeyframe();
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;
 }

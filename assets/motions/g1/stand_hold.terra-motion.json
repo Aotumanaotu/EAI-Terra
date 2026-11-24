@@ -1,0 +1,32 @@
+{
+  "format": "terra.motion",
+  "version": 1,
+  "name": "G1 自由站立 10 秒（保持 stand 关节目标）",
+  "scene": "../../scenes/robots/g1.terra-scene.json",
+  "startKeyframe": "g1/stand",
+  "interpolation": "smooth",
+  "poses": [
+    {
+      "time": 0.0,
+      "targets": {
+        "g1/left_hip_pitch_joint": 0.0,
+        "g1/left_knee_joint": 0.0,
+        "g1/left_ankle_pitch_joint": 0.0,
+        "g1/right_hip_pitch_joint": 0.0,
+        "g1/right_knee_joint": 0.0,
+        "g1/right_ankle_pitch_joint": 0.0
+      }
+    },
+    {
+      "time": 10.0,
+      "targets": {
+        "g1/left_hip_pitch_joint": 0.0,
+        "g1/left_knee_joint": 0.0,
+        "g1/left_ankle_pitch_joint": 0.0,
+        "g1/right_hip_pitch_joint": 0.0,
+        "g1/right_knee_joint": 0.0,
+        "g1/right_ankle_pitch_joint": 0.0
+      }
+    }
+  ]
+}

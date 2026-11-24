@@ -94,7 +94,7 @@ void testNames() {
         check(!sc::isValidInstanceName(bad), std::string{"不合法实例名 “"} + bad + "”");
     }
     check(sc::instancePrefix("cart_a") == "cart_a/", "前缀为“实例名/”");
-    const std::vector<sc::SceneModel> inst = {{"a", "", {}, ""}, {"ba", "", {}, ""}};
+    const std::vector<sc::SceneModel> inst = {{"a", "", {}, "", false}, {"ba", "", {}, "", false}};
     check(sc::attributeByPrefix("Error: Element name 'ba/x', id 3", inst) == 1, "按最先出现的前缀归属（“a/”出现在“ba/x”内部）");
     check(sc::attributeByPrefix("Error in 'a/y' and 'ba/z'", inst) == 0, "多个前缀时取最先出现的");
     check(sc::attributeByPrefix("Error without names", inst) == -1, "没有前缀时不归属");
@@ -111,7 +111,7 @@ void testResolve() {
     tp::PhysicsOptions b = a;
     b.timestep = 0.001;
     b.gravity = {0, 0, -9.7};
-    const std::vector<sc::SceneModel> inst = {{"first", "", {}, "/models/0"}, {"second", "", {}, "/models/1"}};
+    const std::vector<sc::SceneModel> inst = {{"first", "", {}, "/models/0", false}, {"second", "", {}, "/models/1", false}};
     std::vector<sc::SceneIssue> warnings;
     const tp::PhysicsOptions r = sc::resolvePhysicsOptions({}, {a, b}, inst, warnings);
     check(r.timestep == 0.002 && r.gravity.z == -9.81, "场景没写：取第一个实例的值");
@@ -133,8 +133,8 @@ void testValidationSkipsFactory() {
         ++calls;
         return tp::ComposeResult{};
     };
-    const auto bad = sc::composeWorld({{"ok", "x.xml", {}, "/models/0"}, {"9bad", "y.xml", {}, "/models/1"},
-                                       {"ok", "z.xml", {}, "/models/2"}, {"empty", "", {}, "/models/3"}},
+    const auto bad = sc::composeWorld({{"ok", "x.xml", {}, "/models/0", false}, {"9bad", "y.xml", {}, "/models/1", false},
+                                       {"ok", "z.xml", {}, "/models/2", false}, {"empty", "", {}, "/models/3", false}},
                                       {}, counting, "l");
     check(calls == 0 && !bad.ok(), "校验失败时不调用工厂");
     check(hasIssue(bad, sc::SceneIssue::Severity::Error, "9bad", "不合法"), "不合法的实例名" + issues(bad));
@@ -152,7 +152,7 @@ void testValidationSkipsFactory() {
         r.issues.push_back({tp::ComposeIssue::Severity::Warning, 0, tp::LoadErrorKind::InvalidModel, "注意"});
         return r;
     };
-    const auto failed = sc::composeWorld({{"alpha", "a.xml", {}, ""}, {"beta", "b.xml", {}, ""}}, {}, failing, "l");
+    const auto failed = sc::composeWorld({{"alpha", "a.xml", {}, "", false}, {"beta", "b.xml", {}, "", false}}, {}, failing, "l");
     check(calls == 1 && !failed.ok(), "工厂失败");
     check(hasIssue(failed, sc::SceneIssue::Severity::Error, "beta", "beta/link"), "合并后的错误按前缀归属到 beta" + issues(failed));
     check(hasIssue(failed, sc::SceneIssue::Severity::Warning, "alpha", "注意"), "后端给出的实例下标直接归属");
@@ -161,9 +161,9 @@ void testValidationSkipsFactory() {
 // ---- 与 MuJoCo 后端集成 ----
 
 void testTwoCarts() {
-    auto w = compose({{"ground", sceneAsset("ground.xml"), {}, ""},
-                      {"cart_a", sceneAsset("cart.xml"), at(0, -0.6, 0), ""},
-                      {"cart_b", sceneAsset("cart.xml"), at(0, 0.6, 0, 90), ""}});
+    auto w = compose({{"ground", sceneAsset("ground.xml"), {}, "", false},
+                      {"cart_a", sceneAsset("cart.xml"), at(0, -0.6, 0), "", false},
+                      {"cart_b", sceneAsset("cart.xml"), at(0, 0.6, 0, 90), "", false}});
     check(w.ok(), "组合地面与两辆小车" + issues(w));
     if (!w.ok()) return;
     check(w.issues.empty(), "没有警告" + issues(w));
@@ -232,7 +232,7 @@ void testTwoCarts() {
 
 void compareTrajectories(const std::string& path, int steps, bool drive) {
     auto direct = tp::mujoco::loadWorld(td::ModelSource{path});
-    auto composed = compose({{"solo", path, {}, ""}});
+    auto composed = compose({{"solo", path, {}, "", false}});
     check(direct.world != nullptr && composed.ok(), "直接加载与单实例组合都成功：" + path + issues(composed));
     if (!direct.world || !composed.ok()) return;
     auto& a = *direct.world;
@@ -271,7 +271,7 @@ void compareTrajectories(const std::string& path, int steps, bool drive) {
 }
 
 void testOptions() {
-    auto w = compose({{"cart", sceneAsset("cart.xml"), {}, "/models/0"}, {"fast", sceneAsset("cart_fast.xml"), at(0, 1, 0), "/models/1"}});
+    auto w = compose({{"cart", sceneAsset("cart.xml"), {}, "/models/0", false}, {"fast", sceneAsset("cart_fast.xml"), at(0, 1, 0), "/models/1", false}});
     check(w.ok(), "组合配置不同的两个模型" + issues(w));
     if (w.ok()) {
         check(w.world->description().timestep == 0.002, "步长取第一个实例的 0.002");
@@ -284,7 +284,7 @@ void testOptions() {
     sc::PhysicsOverrides o;
     o.timestep = 0.004;
     o.gravity = td::Vec3{0, 0, -1.62};
-    auto v = compose({{"cart", sceneAsset("cart.xml"), {}, ""}, {"fast", sceneAsset("cart_fast.xml"), {}, ""}}, o);
+    auto v = compose({{"cart", sceneAsset("cart.xml"), {}, "", false}, {"fast", sceneAsset("cart_fast.xml"), {}, "", false}}, o);
     check(v.ok() && v.world->description().timestep == 0.004 && std::fabs(v.world->description().settings.gravity.z + 1.62) < 1e-12,
           "场景指定的步长与重力生效" + issues(v));
     check(!hasIssue(v, sc::SceneIssue::Severity::Warning, "fast", "timestep") && hasIssue(v, sc::SceneIssue::Severity::Warning, "fast", "cone"),
@@ -292,19 +292,19 @@ void testOptions() {
 
     sc::PhysicsOverrides bad;
     bad.integrator = "Verlet";
-    auto x = compose({{"cart", sceneAsset("cart.xml"), {}, ""}}, bad);
+    auto x = compose({{"cart", sceneAsset("cart.xml"), {}, "", false}}, bad);
     check(!x.ok() && hasIssue(x, sc::SceneIssue::Severity::Error, "", "未知的积分器：Verlet"), "非法积分器名报错" + issues(x));
 }
 
 void testErrors() {
-    auto missing = compose({{"cart", sceneAsset("cart.xml"), {}, ""}, {"ghost", sceneAsset("no_such.xml"), {}, "/models/1"}});
+    auto missing = compose({{"cart", sceneAsset("cart.xml"), {}, "", false}, {"ghost", sceneAsset("no_such.xml"), {}, "/models/1", false}});
     check(!missing.ok() && hasIssue(missing, sc::SceneIssue::Severity::Error, "ghost", "模型文件不存在"), "文件缺失归属到实例" + issues(missing));
     for (const auto& i : missing.issues) {
         if (i.instance == "ghost") check(i.where == "/models/1", "错误带实例的位置");
     }
-    auto broken = compose({{"cart", sceneAsset("cart.xml"), {}, ""}, {"broken", sceneAsset("broken.xml"), {}, ""}});
+    auto broken = compose({{"cart", sceneAsset("cart.xml"), {}, "", false}, {"broken", sceneAsset("broken.xml"), {}, "", false}});
     check(!broken.ok() && hasIssue(broken, sc::SceneIssue::Severity::Error, "broken", "MJCF 解析失败"), "解析失败归属到实例" + issues(broken));
-    auto bad = compose({{"cart", sceneAsset("cart.xml"), {}, ""}, {"bad", sceneAsset("bad_compile.xml"), {}, ""}});
+    auto bad = compose({{"cart", sceneAsset("cart.xml"), {}, "", false}, {"bad", sceneAsset("bad_compile.xml"), {}, "", false}});
     check(!bad.ok(), "合并后编译失败");
     check(hasIssue(bad, sc::SceneIssue::Severity::Error, "bad", "编译失败"), "合并后的编译错误按前缀归属到 bad" + issues(bad));
     std::printf("INFO 编译错误示例：%s\n", bad.issues.empty() ? "" : bad.issues.front().message.c_str());

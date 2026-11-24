@@ -119,7 +119,7 @@ ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const Physi
     std::vector<SceneIssue> optionWarnings;
     tp::WorldComposition request;
     request.sourceLabel = label;
-    for (const SceneModel& m : instances) request.models.push_back({m.name, instancePrefix(m.name), m.mjcf, m.placement});
+    for (const SceneModel& m : instances) request.models.push_back({m.name, instancePrefix(m.name), m.mjcf, m.placement, m.fixedBase});
     request.resolveOptions = [&](const std::vector<tp::PhysicsOptions>& models) {
         return resolvePhysicsOptions(overrides, models, instances, optionWarnings);
     };

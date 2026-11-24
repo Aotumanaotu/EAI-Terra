@@ -25,6 +25,12 @@
 # M2-05：场景文件（scene.file）；场景实例与视觉部件（scene.instance）。
 # M2-06：仿真时钟与插值（simulation.logic）；仿真推进与帧率无关性（simulation.runner）。
 # M2-07：场景渲染参考图（graphics.render_reference.carts）；glTF 节点表与子树变换（asset.gltf）。
+# M3-01：参考机器人导入核查（robots.import）。
+# M3-04a：动作文件（motion.file）、动作播放（motion.player）。
+# M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
+# M3-03：显示用描述（physics.visual_description）；MJCF 显示换算（render.mjcf_visual）；参考图 mjcf_materials 与三台机器人。
+# M3-02：关节限位与执行器类别、关键帧（physics.robot_description）；场景初始关键帧（scene.file、scene.instance、simulation.runner 扩充；graphics.viewer_keyframe_selftest）。
 # M2-08：查看器场景模式自检（graphics.viewer_scene_selftest）；Headless 场景（headless.run_scene 等）；文件浏览（ui.text 扩充）。
 # 测试框架是否另选待定（D-015），当前测试为返回码判定的独立可执行文件。
 
@@ -212,6 +218,22 @@ target_compile_definitions(test_scene_instance PRIVATE TERRA_TEST_ASSETS_DIR="${
 terra_configure_target(test_scene_instance)
 add_test(NAME scene.instance COMMAND test_scene_instance)
 
+# 参考机器人导入核查（M3-01）：三台 Menagerie 机器人经场景文件加载；未准备素材时跳过（返回码 77）。
+add_executable(test_robot_import robots/test_robot_import.cpp)
+target_link_libraries(test_robot_import PRIVATE terra::scene terra::simulation terra::physics_mujoco)
+target_compile_definitions(test_robot_import PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_robot_import)
+add_test(NAME robots.import COMMAND test_robot_import)
+set_tests_properties(robots.import PROPERTIES SKIP_RETURN_CODE 77)
+
+# 预定义动作（M3-04c）：assets/motions/ 中每个动作文件都能绑定并跑完，没有仿真错误
+add_executable(test_robot_motions robots/test_robot_motions.cpp)
+target_link_libraries(test_robot_motions PRIVATE terra::scene terra::simulation terra::physics_mujoco)
+target_compile_definitions(test_robot_motions PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_robot_motions)
+add_test(NAME robots.motions COMMAND test_robot_motions)
+set_tests_properties(robots.motions PROPERTIES SKIP_RETURN_CODE 77)
+
 # 仿真时钟与快照插值（M2-06）：纯逻辑，不需要物理后端。
 add_executable(test_simulation_logic simulation/test_simulation_logic.cpp)
 target_link_libraries(test_simulation_logic PRIVATE terra::simulation)
@@ -225,6 +247,34 @@ target_compile_definitions(test_simulation_runner PRIVATE TERRA_TEST_ASSETS_DIR=
 terra_configure_target(test_simulation_runner)
 add_test(NAME simulation.runner COMMAND test_simulation_runner)
 
+# 动作文件与插值、播放器（M3-04a）：纯逻辑，不需要物理后端。
+add_executable(test_motion_file simulation/test_motion_file.cpp)
+target_link_libraries(test_motion_file PRIVATE terra::simulation)
+target_compile_definitions(test_motion_file PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_motion_file)
+add_test(NAME motion.file COMMAND test_motion_file)
+
+# 动作的绑定与播放（M3-04a）：MuJoCo + 场景文件；与帧率无关、与预先排队的命令逐位相同。
+add_executable(test_motion_player simulation/test_motion_player.cpp)
+target_link_libraries(test_motion_player PRIVATE terra::simulation terra::scene terra::physics_mujoco)
+target_compile_definitions(test_motion_player PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_motion_player)
+add_test(NAME motion.player COMMAND test_motion_player)
+
+# PD 控制层与快照的执行器状态（M3-04b）
+add_executable(test_pd_layer simulation/test_pd_layer.cpp)
+target_link_libraries(test_pd_layer PRIVATE terra::simulation terra::scene terra::physics_mujoco)
+target_compile_definitions(test_pd_layer PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_pd_layer)
+add_test(NAME simulation.pd COMMAND test_pd_layer)
+
+# 悬挂模式（M3-04b）：fixedBase 删掉根部自由关节，关键帧保留
+add_executable(test_fixed_base scene/test_fixed_base.cpp)
+target_link_libraries(test_fixed_base PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_fixed_base PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_fixed_base)
+add_test(NAME physics.fixed_base COMMAND test_fixed_base)
+
 # 几何体与网格描述（M2-03）：形状、尺寸、局部位姿、颜色、分组、网格、模型实例。
 add_executable(test_mujoco_geometry physics/test_mujoco_geometry.cpp)
 target_link_libraries(test_mujoco_geometry PRIVATE terra::physics_mujoco)
@@ -232,6 +282,22 @@ target_compile_definitions(test_mujoco_geometry PRIVATE
     TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
 terra_configure_target(test_mujoco_geometry)
 add_test(NAME physics.geometry COMMAND test_mujoco_geometry)
+
+# 机器人描述（M3-02）：关节限位、执行器类别、关键帧与组合后的关键帧
+add_executable(test_robot_description physics/test_robot_description.cpp)
+target_link_libraries(test_robot_description PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_robot_description PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_robot_description)
+add_test(NAME physics.robot_description COMMAND test_robot_description)
+
+# 显示用描述（M3-03）：网格法线与纹理坐标、贴图、材质
+add_executable(test_visual_description physics/test_visual_description.cpp)
+target_link_libraries(test_visual_description PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_visual_description PRIVATE
+    TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_visual_description)
+add_test(NAME physics.visual_description COMMAND test_visual_description)
 
 # 执行器描述与控制输入（M0-07）
 add_executable(test_physics_control physics/test_physics_control.cpp)
@@ -378,6 +444,12 @@ if(TERRA_BUILD_RENDER)
     terra_configure_target(test_asset_gltf)
     add_test(NAME asset.gltf COMMAND test_asset_gltf "${CMAKE_CURRENT_BINARY_DIR}/asset_gltf_tmp")
 
+    # MJCF 几何体的显示换算（M3-03）：网格法线、纹理坐标、材质与贴图的换算；纯 CPU，不创建 GL 上下文。
+    add_executable(test_mjcf_visual render/test_mjcf_visual.cpp)
+    target_link_libraries(test_mjcf_visual PRIVATE terra::viewer_scene)
+    terra_configure_target(test_mjcf_visual)
+    add_test(NAME render.mjcf_visual COMMAND test_mjcf_visual)
+
     # 参考图比较规则（M1-10）：纯 CPU。
     add_executable(test_image_compare render/test_image_compare.cpp)
     target_link_libraries(test_image_compare PRIVATE terra::render)
@@ -391,7 +463,8 @@ if(TERRA_BUILD_RENDER)
     target_compile_definitions(test_render_reference PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
     terra_configure_target(test_render_reference)
     # M2-07：carts 由场景文件与物理快照驱动（MJCF 几何体 + glTF 节点绑定），不需要下载素材
-    foreach(_scene procedural studio outdoor carts)
+    # M3-03：mjcf_materials（测试夹具，不需要下载）；robot_*（参考机器人 + 摄影棚 HDRI，缺失时跳过）
+    foreach(_scene procedural studio outdoor carts mjcf_materials robot_g1 robot_go2 robot_stretch3)
         add_test(NAME graphics.render_reference.${_scene}
             COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_reference>
                     "${PROJECT_SOURCE_DIR}/tests/render/reference" "${CMAKE_CURRENT_BINARY_DIR}/render_reference"
@@ -433,6 +506,18 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 60 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json")
     set_tests_properties(graphics.viewer_scene_selftest PROPERTIES LABELS graphics)
+    # M3-02：场景带初始关键帧时，打开即处于关键帧姿态，重置回到该关键帧（逐位相同）
+    add_test(NAME graphics.viewer_keyframe_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 60 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/scene/keyframe_arm.terra-scene.json")
+    set_tests_properties(graphics.viewer_keyframe_selftest PROPERTIES LABELS graphics)
+    # M3-04c：先打开两辆小车，第 3 帧打开动作文件——切换到动作的推荐场景（keyframe_arm）并播放；
+    # 与“动作 → setControl → step”的纯物理逐位相同；重置回到场景的初始关键帧
+    add_test(NAME graphics.viewer_motion_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 60 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json"
+                --motion "${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json")
+    set_tests_properties(graphics.viewer_motion_selftest PROPERTIES LABELS graphics)
 
     add_test(NAME graphics.viewer_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe

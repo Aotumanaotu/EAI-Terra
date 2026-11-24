@@ -1,0 +1,18 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "关键帧夹具（M3-02）：浮动基座 + 机械臂，从关键帧 raised 开始",
+  "models": [
+    {
+      "name": "arm",
+      "mjcf": "../robot_description.xml",
+      "position": [0, 0.5, 0],
+      "rotation": {"rpyDeg": [0, 0, 30]}
+    }
+  ],
+  "initialKeyframe": "arm/raised",
+  "view": {
+    "environment": "studio",
+    "camera": {"position": [1.6, -1.4, 1.1], "target": [0.2, 0.5, 0.4]}
+  }
+}

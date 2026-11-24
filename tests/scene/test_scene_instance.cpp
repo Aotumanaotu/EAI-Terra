@@ -193,11 +193,56 @@ void testDiagnostics() {
     check(!absent.ok() && !absent.issues.empty(), "场景文件不存在");
 }
 
+// 场景的初始关键帧（M3-02）：夹具 ../robot_description.xml（关键帧 rest、raised）放在 (0, 1, 0)
+sc::SceneLoadResult keyframeScene(const std::string& extra, const std::string& mjcf = "../robot_description.xml") {
+    const std::string text = R"({"format": "terra.scene", "version": 1,
+        "models": [{"name": "arm", "mjcf": ")" + mjcf + R"(", "position": [0, 1, 0]}],
+        "visuals": [{"entity": "arm/base", "gltf": "cart.gltf", "node": "Chassis", "frame": "assembly"}])" + extra + "}";
+    auto parsed = sc::parseScene(text, kDir + "/inline.terra-scene.json");
+    check(parsed.document.has_value(), "内联场景解析" + dump(parsed.issues));
+    if (!parsed.document) return {};
+    return sc::instantiate(std::move(*parsed.document), terra::physics::mujoco::composeWorld);
+}
+
+void testInitialKeyframe() {
+    auto plain = keyframeScene("");
+    check(plain.ok() && !plain.scene->homeKeyframe, "没写初始关键帧：从模型初值开始" + dump(plain.issues));
+
+    auto raised = keyframeScene(R"(, "initialKeyframe": "arm/raised")");
+    check(raised.ok(), "初始关键帧 arm/raised" + dump(raised.issues));
+    if (raised.ok()) {
+        const sc::SceneInstance& s = *raised.scene;
+        const auto& d = s.world->description();
+        check(s.homeKeyframe && *s.homeKeyframe == static_cast<std::size_t>(d.findKeyframe("arm/raised")), "记录初始关键帧的下标");
+        check(s.world->stepIndex() == 0 && s.world->simulationTime() == 0.0, "应用初始关键帧后仍是第 0 步、时间 0");
+        const auto* base = d.findEntity("arm/base");
+        if (base) {
+            const auto& pose = s.world->snapshot()->entities[base->id.value - 1].pose;
+            check(near(pose.position, {0.2, 1, 0.5}), "基座在关键帧位姿（放置框架中的 (0.2, 0, 0.5)），实际 " + str(pose.position));
+        }
+        // assembly 对齐按关键帧姿态计算：初始时 glTF 装配保持文件中的摆放（世界原点）
+        if (const auto* part = bindingPart(s, 0)) {
+            const auto poses = sc::visualPoses(s, sc::entityPoses(*s.world->snapshot()));
+            const auto& p = poses[part->id.value - 1].pose;
+            check(near(p.position, {0, 0, 0}) && std::fabs(std::fabs(p.orientation.w) - 1) < 1e-9,
+                  "assembly 对齐以初始关键帧姿态为基准，初始视觉位姿为单位变换，实际 " + str(p.position));
+        }
+    }
+
+    auto unknown = keyframeScene(R"(, "initialKeyframe": "arm/nope")");
+    check(!unknown.ok() && has(unknown.issues, Severity::Error, "/initialKeyframe", "arm/rest、arm/raised"),
+          "找不到初始关键帧时列出场景中的关键帧" + dump(unknown.issues));
+    auto noKeys = keyframeScene(R"(, "initialKeyframe": "arm/raised")", "cart.xml");
+    check(!noKeys.ok() && has(noKeys.issues, Severity::Error, "/initialKeyframe", "场景中没有关键帧"),
+          "模型没有关键帧" + dump(noKeys.issues));
+}
+
 }  // namespace
 
 int main() {
     testFixture();
     testDiagnostics();
+    testInitialKeyframe();
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;
 }

@@ -12,6 +12,7 @@
 // 观测一致性：加载、每次 step 和 reset 之后都会刷新派生量，任意时刻读到的时间、步序号与状态对应同一仿真时刻。
 // 线程：M0 单线程使用，不支持并发调用。
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -86,6 +87,10 @@ public:
     // 回到模型初始状态：时间与步序号归零、控制恢复为模型定义的中性值、清除故障、刷新初始观测，
     // 运行代次加 1。拓扑与 ID 保持不变。
     virtual void reset() = 0;
+
+    // 按关键帧重置（M3-02）：与 reset 相同（时间与步序号归零、清除故障、运行代次加 1），但位置、速度与控制取自
+    // ModelDescription::keyframes[index]。下标越界时不做任何事并返回 false。
+    virtual bool resetToKeyframe(std::size_t index) = 0;
 
     // 设置执行器控制（M0-07 报告 3.4 节）：
     //   - 按执行器寻址，部分更新：未出现的执行器保持原值；空列表合法，不做任何改变。

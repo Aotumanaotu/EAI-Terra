@@ -86,6 +86,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 
     bool seenModel = false;
     bool seenScene = false;
+    bool seenMotion = false;
     bool seenSampleEvery = false;
     RunOptions& options = result.options;
 
@@ -109,8 +110,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             value = arg.substr(eq + 1);
         }
 
-        const bool takesValue = name == "--model" || name == "--scene" || name == "--steps" || name == "--duration" ||
-                                name == "--sample-every";
+        const bool takesValue = name == "--model" || name == "--scene" || name == "--motion" || name == "--steps" ||
+                                name == "--duration" || name == "--sample-every";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
             return result;
@@ -129,7 +130,18 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             ++i;
         }
 
-        if (name == "--scene") {
+        if (name == "--motion") {
+            if (seenMotion) {
+                result.error = "重复的参数 --motion";
+                return result;
+            }
+            if (value->empty()) {
+                result.error = "--motion 的值不能为空";
+                return result;
+            }
+            seenMotion = true;
+            options.motionPath = std::string{*value};
+        } else if (name == "--scene") {
             if (seenScene) {
                 result.error = "重复的参数 --scene";
                 return result;
@@ -188,12 +200,14 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 
     if (seenModel && seenScene) {
         result.error = "--model 与 --scene 只能二选一";
-    } else if (!seenModel && !seenScene) {
-        result.error = "缺少 --model（或 --scene）";
+    } else if (seenModel && seenMotion) {
+        result.error = "--motion 需要场景文件（--scene，或动作文件中的推荐场景），不能与 --model 同用";
+    } else if (!seenModel && !seenScene && !seenMotion) {
+        result.error = "缺少 --model（或 --scene、--motion）";
     } else if (options.steps && options.durationSeconds) {
         result.error = "--steps 与 --duration 不能同时使用";
-    } else if (!options.steps && !options.durationSeconds) {
-        result.error = "需要 --steps 或 --duration 之一";
+    } else if (!options.steps && !options.durationSeconds && !seenMotion) {
+        result.error = "需要 --steps 或 --duration 之一（给出 --motion 时可省略：运行到动作结束后 1 秒）";
     }
     return result;
 }
@@ -201,12 +215,15 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 std::string usageText() {
     return "用法:\n"
            "  terra_headless (--model <MJCF> | --scene <场景文件>) (--steps N | --duration 秒) [--sample-every N] [--dry-run]\n"
+           "  terra_headless [--scene <场景文件>] --motion <动作文件> [--steps N | --duration 秒] [--sample-every N]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
            "  --model <路径>       MJCF 模型文件\n"
            "  --scene <路径>       Terra 场景文件（M2-08，*.terra-scene.json）：组合其中的模型实例后运行，只跑物理，\n"
-           "                       不读取视觉资源；实体名带实例前缀（如 cart_a/chassis）\n"
+           "                       不读取视觉资源；实体名带实例前缀（如 cart_a/chassis）。场景中的 PD 层（controllers）同样生效\n"
+           "  --motion <路径>      动作文件（M3-05，*.terra-motion.json）：从起始关键帧开始按步执行，与查看器逐位相同；\n"
+           "                       不给 --scene 时使用动作文件中的推荐场景；不给步数时运行到动作结束后 1 秒\n"
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
@@ -292,10 +309,14 @@ const char* jointTypeName(terra::data::JointType type) {
 
 }  // namespace
 
+// Headless 输出格式的修订号。M3-04 起快照（PhysicsSnapshot::kContractRevision = 2）增加了执行器状态，
+// Headless 的输出暂不变（M3-04 设计稿第 5 节），仍为 1；M3-07 定记录格式时再升。
+constexpr std::uint32_t kOutputRevision = 1;
+
 std::string modelToJson(const terra::data::ModelDescription& model) {
     const auto& st = model.settings;
     std::string json = "{\"type\":\"model\",\"contract_revision\":" +
-                       std::to_string(terra::data::PhysicsSnapshot::kContractRevision) +
+                       std::to_string(kOutputRevision) +
                        ",\"conventions\":{\"units\":\"SI\",\"up_axis\":\"+z\",\"quaternion\":\"wxyz\","
                        "\"entity_velocity\":\"entity_origin_world\",\"free_joint_angular_velocity\":\"body_local\","
                        "\"ball_joint_angular_velocity\":\"child_local\",\"contact_entity_0\":\"world_static\"}" +
@@ -401,6 +422,7 @@ std::string configToJson(const RunOptions& options, const ResolvedRun& resolved)
     std::string json = "{\"type\":\"config\",\"model\":\"" + jsonEscape(options.modelPath) +
                        "\",\"model_resolved\":\"" + jsonEscape(resolved.modelPath) + "\"";
     if (!options.scenePath.empty()) json += ",\"scene\":\"" + jsonEscape(options.scenePath) + "\"";
+    if (!options.motionPath.empty()) json += ",\"motion\":\"" + jsonEscape(options.motionPath) + "\"";
     if (options.steps) {
         json += ",\"steps\":" + std::to_string(*options.steps);
     }

@@ -33,6 +33,7 @@ public:
     const terra::data::ModelDescription& description() const noexcept override;
     std::optional<SimulationError> step() override;
     void reset() override;
+    bool resetToKeyframe(std::size_t index) override;
     std::optional<ControlError> setControl(const std::vector<ActuatorCommand>& commands) override;
     double simulationTime() const noexcept override;
     std::uint64_t stepIndex() const noexcept override;

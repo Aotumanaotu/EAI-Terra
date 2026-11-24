@@ -48,8 +48,18 @@ public:
     void stepOnce() noexcept { clock_.requestSingleStep(); }
     void setSpeed(double speed) noexcept { clock_.setSpeed(speed); }
 
-    // reset 世界并形成屏障（见文件头）
+    // reset 世界并形成屏障（见文件头）。设置了“起始关键帧”时回到该关键帧（M3-02），否则回到模型初值。
     void reset();
+    // 按指定关键帧重置（同样形成屏障）；下标越界时不做任何事并返回 false
+    bool resetToKeyframe(std::size_t index);
+    void setHomeKeyframe(std::optional<std::size_t> index) noexcept { home_ = index; }
+    std::optional<std::size_t> homeKeyframe() const noexcept { return home_; }
+
+    // 每步控制器（M3-04）：每一步之前、在排队的命令之后调用，参数为即将推进的步序号（stepIndex()），
+    // 返回的命令在这一步之前交给 setControl（动作播放、M3-04b 的 PD 层）。为空表示没有控制器。
+    using Controller = std::function<std::vector<terra::physics::ActuatorCommand>(std::uint64_t step)>;
+    void setController(Controller controller) { controller_ = std::move(controller); }
+    bool hasController() const noexcept { return static_cast<bool>(controller_); }
 
     // 每完成一步调用一次（记录、Headless 输出等）；在推进的线程上调用
     void setStepObserver(std::function<void(const terra::data::PhysicsSnapshot&)> observer) {
@@ -67,13 +77,17 @@ public:
     bool faulted() const noexcept { return world_.faulted(); }
 
 private:
+    void barrier();  // reset 之后：清空命令队列、时钟累加器与快照历史
+
     terra::physics::PhysicsWorld& world_;
     FixedStepClock clock_;
     std::multimap<std::uint64_t, std::vector<terra::physics::ActuatorCommand>> queue_;
     std::shared_ptr<const terra::data::PhysicsSnapshot> previous_;
     std::shared_ptr<const terra::data::PhysicsSnapshot> current_;
     std::function<void(const terra::data::PhysicsSnapshot&)> observer_;
+    Controller controller_;
     std::uint64_t late_ = 0;
+    std::optional<std::size_t> home_;
 };
 
 }  // namespace terra::simulation

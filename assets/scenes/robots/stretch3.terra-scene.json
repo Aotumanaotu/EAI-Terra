@@ -1,0 +1,26 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "Hello Robot Stretch 3 轮式移动操作机器人（Menagerie）",
+  "models": [
+    {
+      "name": "stretch3",
+      "mjcf": "../../robots/hello_robot_stretch_3/scene.xml"
+    }
+  ],
+  "view": {
+    "camera": {
+      "position": [
+        1.8,
+        1.4,
+        1.4
+      ],
+      "target": [
+        0,
+        -0.3,
+        0.6
+      ]
+    }
+  },
+  "initialKeyframe": "stretch3/home"
+}

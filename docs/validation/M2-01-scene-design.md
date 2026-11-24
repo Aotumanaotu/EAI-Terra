@@ -76,6 +76,7 @@ using WorldFactory = std::function<physics::ComposeResult(const physics::WorldCo
 | `models[]` | 是，至少 1 个 | 模型实例：`name` 为实例名；`mjcf` 为路径；`position`（米）、`rotation` 为放置位姿，默认原点、无旋转 |
 | `visuals[]` | 否 | glTF 绑定（第 6 节） |
 | `view` | 否 | 环境贴图（沿用查看器设置中的名称）与初始相机。只影响显示，Headless 忽略 |
+| `initialKeyframe` | 否 | **M3-02 新增。**关键帧全名（如 `"g1/stand"`）：载入后从该关键帧开始，查看器重置时也回到它。Headless 同样从它开始。见 [M3-02 报告](M3-02-robot-description.md) |
 
 **通用规则：**
 - 路径相对于场景文件所在目录，也可以写绝对路径。

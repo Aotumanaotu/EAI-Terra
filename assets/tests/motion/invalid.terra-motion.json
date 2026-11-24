@@ -1,0 +1,10 @@
+{
+  "format": "terra.motion",
+  "version": 1,
+  "interpolation": "cubic",
+  "poses": [
+    {"time": 1.0, "targets": {"arm/shoulder_pos": 0.0}},
+    {"time": 0.5, "targets": {"arm/shoulder_pos": "up"}},
+    {"time": 2.0, "target": {}}
+  ]
+}

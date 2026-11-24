@@ -1,0 +1,32 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 G1 人形机器人（悬挂模式：基座固定在离地 0.3 m 处）",
+  "models": [
+    {
+      "name": "g1",
+      "mjcf": "../../robots/unitree_g1/scene.xml",
+      "position": [
+        0,
+        0,
+        0.3
+      ],
+      "fixedBase": true
+    }
+  ],
+  "initialKeyframe": "g1/stand",
+  "view": {
+    "camera": {
+      "position": [
+        2.4,
+        -1.8,
+        1.6
+      ],
+      "target": [
+        0,
+        0,
+        1.0
+      ]
+    }
+  }
+}

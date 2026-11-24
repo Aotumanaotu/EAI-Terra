@@ -19,7 +19,8 @@
 
 namespace terra::settings {
 
-constexpr int kVersion = 2;  // 文件格式版本。2（M2-08）：新增仿真操作与最近打开的场景；空格键默认改为仿真播放/暂停
+constexpr int kVersion = 3;  // 文件格式版本。2（M2-08）：新增仿真操作与最近打开的场景；空格键默认改为仿真播放/暂停。
+                             // 3（2026-11-24，用户要求）：默认环境改为半球光（不用环境贴图）
 
 // ---- 界面 ----
 struct InterfaceSettings {
@@ -95,7 +96,7 @@ struct RenderSettings {
     bool shadows = true;
     bool grid = true;
     // M1-08b：环境贴图光照
-    EnvironmentSetting environment = EnvironmentSetting::Outdoor;
+    EnvironmentSetting environment = EnvironmentSetting::Hemisphere;  // 2026-11-24 起默认不用环境贴图（用户要求）
     double environmentIntensity = 0.6;          // [0, 5]
     double environmentRotationDegrees = 0.0;    // [0, 360]
     bool environmentBackground = true;          // 视口背景显示环境贴图

@@ -120,10 +120,20 @@ void testDefaults() {
               s.render.toneMapper == st::ToneMapperSetting::AgX && s.render.msaaSamples == 4 && s.render.shadows &&
               s.render.grid,
           "渲染默认：太阳 150°/50°、强度 3、环境 0.6、0 EV、AgX、4× MSAA、阴影与网格开启（M1-08 设计稿）");
-    check(s.render.environment == st::EnvironmentSetting::Outdoor && s.render.environmentIntensity == 0.6 &&
+    check(s.render.environment == st::EnvironmentSetting::Hemisphere && s.render.environmentIntensity == 0.6 &&
               s.render.environmentRotationDegrees == 0.0 && s.render.environmentBackground && s.render.backgroundBlur == 0.25 &&
               s.render.sunFromEnvironment && s.render.assetArmOcclusion,
-          "环境默认：室外贴图、强度 0.6、不旋转、显示背景、模糊 0.25（M1-08b）");
+          "环境默认：半球光（2026-11-24 起不用环境贴图）、强度 0.6、不旋转、显示背景、模糊 0.25（M1-08b）");
+    // 版本 2 → 3：旧默认的室外贴图改为半球光；版本 3 文件中的室外贴图是用户的选择，保持
+    {
+        const auto v2 = st::fromJson(R"({"version": 2, "render": {"environment": "outdoor"}})");
+        check(v2.settings.render.environment == st::EnvironmentSetting::Hemisphere && contains(v2.warnings, "默认环境改为半球光"),
+              "版本 2 的室外贴图迁移为半球光\n" + joined(v2.warnings));
+        const auto studio = st::fromJson(R"({"version": 2, "render": {"environment": "studio"}})");
+        check(studio.settings.render.environment == st::EnvironmentSetting::Studio && studio.warnings.empty(), "版本 2 的摄影棚贴图保持");
+        const auto v3 = st::fromJson(R"({"version": 3, "render": {"environment": "outdoor"}})");
+        check(v3.settings.render.environment == st::EnvironmentSetting::Outdoor && v3.warnings.empty(), "版本 3 的室外贴图保持");
+    }
     const st::KeySlots forward{in::Key::W, in::Key::Up};
     const st::KeySlots down{in::Key::Q, in::Key::Unknown};
     const st::KeySlots full{in::Key::F11, in::Key::Unknown};
@@ -154,7 +164,7 @@ void testRoundTrip() {
           "界面缩放：数字或 \"auto\"");
     check(text.find("\"camera.forward\": [\n      \"I\",\n      \"\"\n    ]") != std::string::npos,
           "按键写成键名数组，空槽位为空字符串");
-    check(text.rfind("{\n  \"version\": 2,", 0) == 0 && text.back() == '\n', "以 version 开头、以换行结尾（M2-08 起为版本 2）");
+    check(text.rfind("{\n  \"version\": 3,", 0) == 0 && text.back() == '\n', "以 version 开头、以换行结尾（2026-11-24 起为版本 3）");
 }
 
 void testPartialAndInvalidFields() {
@@ -207,7 +217,7 @@ void testPartialAndInvalidFields() {
               "渲染组共 4 条警告（实际 " + std::to_string(r.warnings.size()) + "）\n" + joined(r.warnings));
         const auto e = st::fromJson(R"({"version": 1, "render": {"environment": "forest", "environmentIntensity": 9,
                                          "backgroundBlur": 0.5}})");
-        check(e.settings.render.environment == st::EnvironmentSetting::Outdoor && contains(e.warnings, "render.environment") &&
+        check(e.settings.render.environment == st::EnvironmentSetting::Hemisphere && contains(e.warnings, "render.environment") &&
                   e.settings.render.environmentIntensity == 0.6 && contains(e.warnings, "render.environmentIntensity = 9") &&
                   e.settings.render.backgroundBlur == 0.5 && e.warnings.size() == 2,
               "环境：未知贴图名与超出范围的强度回退默认值，模糊照常读取\n" + joined(e.warnings));
@@ -368,7 +378,7 @@ void testSimulationSettings() {
               d.keys[Command::SimReset] == st::KeySlots{in::Key::Unknown, in::Key::Unknown},
           "默认：空格播放 / 暂停，句号单步，重置不绑定单键");
     check(d.keys[Command::CameraUp] == st::KeySlots{in::Key::E, in::Key::Unknown}, "版本 2 默认：camera.up 只有 E");
-    check(st::kVersion == 2 && st::commandName(Command::SimPlayPause) == std::string{"sim.playPause"}, "版本 2；操作名 sim.playPause");
+    check(st::kVersion >= 2 && st::commandName(Command::SimPlayPause) == std::string{"sim.playPause"}, "版本 ≥ 2（2026-11-24 起为 3）；操作名 sim.playPause");
 
     // 版本 1 的文件：camera.up 仍为旧默认（E、空格）→ 迁移，空格归 sim.playPause
     {

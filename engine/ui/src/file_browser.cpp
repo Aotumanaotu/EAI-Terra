@@ -169,7 +169,9 @@ std::optional<std::string> FileBrowser::draw(const char* title) {
         const bool enterPressed = ImGui::InputText("##name", nameBuf, sizeof nameBuf, ImGuiInputTextFlags_EnterReturnsTrue);
         fileName_ = nameBuf;
         ImGui::SameLine();
-        if (ImGui::Checkbox(tr(TextId::FileBrowserOnlyScenes), &onlyFilter_)) refresh();
+        // M3-04c：过滤后缀随用途变化（场景文件、动作文件）
+        const std::string onlyLabel = std::string{tr(TextId::FileBrowserOnlyScenes)} + filter_ + "###onlyFilter";
+        if (ImGui::Checkbox(onlyLabel.c_str(), &onlyFilter_)) refresh();
         if (ImGui::Button(tr(TextId::FileBrowserOpen)) || enterPressed) {
             if (!fileName_.empty()) {
                 const fs::path p = fs::path{fileName_}.is_absolute() ? fs::path{fileName_} : fs::path{directory_} / fileName_;

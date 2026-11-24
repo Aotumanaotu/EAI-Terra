@@ -145,7 +145,7 @@ if [ $skip_mutation = 0 ]; then
     echo "== 5. 变异测试"
     log="$logs/mutation.txt"
     b="$out/mutation"
-    files=(engine/asset/src/gltf.cpp apps/viewer/scene_view.cpp)
+    files=(engine/asset/src/gltf.cpp apps/viewer/scene_view.cpp apps/viewer/mjcf_visual.cpp)
     for f in "${files[@]}"; do cp "$f" "$out/$(basename "$f").orig"; done
     restore() { for f in "${files[@]}"; do cp "$out/$(basename "$f").orig" "$f"; done; }
     trap 'restore; echo "已恢复被变异的源文件"; exit 130' INT TERM
@@ -214,7 +214,7 @@ PY
 Node 对齐不去掉节点变换|engine/asset/src/gltf.cpp|test_asset_gltf|asset.gltf
 节点名重复不报错|engine/asset/src/gltf.cpp|test_asset_gltf|asset.gltf
 子树判断忽略父链|engine/asset/src/gltf.cpp|test_asset_gltf|asset.gltf
-MJCF 颜色未换算为线性|apps/viewer/scene_view.cpp|test_render_reference|graphics.render_reference.carts
+MJCF 颜色未换算为线性|apps/viewer/mjcf_visual.cpp|test_render_reference|graphics.render_reference.carts
 绑定了 glTF 的实体仍显示几何体|apps/viewer/scene_view.cpp|test_render_reference|graphics.render_reference.carts
 视觉位姿忽略旋转|apps/viewer/scene_view.cpp|test_render_reference|graphics.render_reference.carts
 透明几何体仍显示|apps/viewer/scene_view.cpp|test_render_reference|graphics.render_reference.carts

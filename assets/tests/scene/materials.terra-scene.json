@@ -1,0 +1,12 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "MJCF 材质与贴图（M3-03 测试夹具）",
+  "models": [
+    {"name": "materials", "mjcf": "../visual_materials.xml"}
+  ],
+  "view": {
+    "environment": "hemisphere",
+    "camera": {"position": [1.05, -1.25, 0.75], "target": [0.05, 0.15, 0.05]}
+  }
+}

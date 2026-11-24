@@ -33,6 +33,12 @@ FrameResult SimulationRunner::update(double wallSeconds) {
             if (auto error = world_.setControl(it->second)) result.controlErrors.push_back(std::move(*error));
             it = queue_.erase(it);
         }
+        if (controller_) {
+            const auto commands = controller_(index);
+            if (!commands.empty()) {
+                if (auto error = world_.setControl(commands)) result.controlErrors.push_back(std::move(*error));
+            }
+        }
         if (auto error = world_.step()) {
             result.error = std::move(error);
             previous_ = current_;
@@ -48,7 +54,17 @@ FrameResult SimulationRunner::update(double wallSeconds) {
 }
 
 void SimulationRunner::reset() {
-    world_.reset();
+    if (!home_ || !world_.resetToKeyframe(*home_)) world_.reset();
+    barrier();
+}
+
+bool SimulationRunner::resetToKeyframe(std::size_t index) {
+    if (!world_.resetToKeyframe(index)) return false;
+    barrier();
+    return true;
+}
+
+void SimulationRunner::barrier() {
     queue_.clear();
     clock_.reset();
     previous_.reset();

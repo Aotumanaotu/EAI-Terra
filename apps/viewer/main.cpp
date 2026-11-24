@@ -619,10 +619,14 @@ bool openScene(Frame& f, const std::string& requested) {
 
 constexpr const char* kRecordSuffix = ".terra-record.jsonl";
 
+std::string libraryFilePath(const Frame& f) {
+    return f.state.libraryPath.empty() ? terra::library::defaultLibraryPath() : f.state.libraryPath;
+}
+
 terra::library::Library* recordLibrary(Frame& f) {
     if (!f.state.library) {
         std::string error, warning;
-        const std::string path = f.state.libraryPath.empty() ? terra::library::defaultLibraryPath() : f.state.libraryPath;
+        const std::string path = libraryFilePath(f);
         f.state.library = terra::library::Library::open(path, error, &warning);
         if (!warning.empty()) f.state.log.push_back(warning);
         if (!f.state.library) f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + error);
@@ -637,6 +641,10 @@ std::string recordsDirectory(Frame& f) {
 
 void refreshRecordList(Frame& f) {
     f.state.recordList.clear();
+    // 只是列出时不新建资源库（M3-08）：还没有库文件时列表为空。时间轴一打开就会刷新列表，
+    // 否则每次启动查看器（包括自检）都会在用户目录中建库；保存记录或“重新扫描”时才建立
+    std::error_code ec;
+    if (!f.state.library && !std::filesystem::exists(libraryFilePath(f), ec)) return;
     if (auto* lib = recordLibrary(f)) {
         f.state.recordList = lib->records(f.state.recordsOnlyScene && f.simulated ? f.simulated->path : std::string{});
     }

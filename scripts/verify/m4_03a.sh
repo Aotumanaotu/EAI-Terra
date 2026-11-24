@@ -161,7 +161,7 @@ mutations = {
     "深度图行序没有翻转": (
         "            const float v = bottomUp[(h - 1 - row) * w + col];",
         "            const float v = bottomUp[row * w + col];"),
-    "主点取 w / 2": (
+    "主点取宽度的一半": (
         "    k.cx = 0.5 * static_cast<double>(width - 1);",
         "    k.cx = 0.5 * static_cast<double>(width);"),
     "投影的 v 方向反了": (
@@ -207,13 +207,13 @@ PY
             summary+=("  变异 $name：未被发现")
         else
             detected=$((detected + 1))
-            n=$(sed -n "/^---- 变异：$name\$/,\$p" "$log" | grep -cE 'FAILED: |FAILED |不匹配|退出码不符')
+            n=$(awk -v head="---- 变异：$name" '$0 == head {found = 1} found' "$log" | grep -cE 'FAILED: |FAILED |不匹配|退出码不符')
             summary+=("  变异 $name：已发现（$n 项检查失败）")
         fi
     done <<'LIST'
 没有命中时不为 +inf|engine/render/src/depth_renderer.cpp|test_camera_capture|graphics.camera_capture
 深度图行序没有翻转|engine/render/src/depth_renderer.cpp|test_camera_capture|graphics.camera_capture
-主点取 w / 2|engine/scene/src/camera_model.cpp|test_camera_model|scene.camera_model
+主点取宽度的一半|engine/scene/src/camera_model.cpp|test_camera_model|scene.camera_model
 投影的 v 方向反了|engine/scene/src/camera_model.cpp|test_camera_model|scene.camera_model
 观察矩阵没有取逆|apps/viewer/camera_sensor.cpp|test_camera_capture|graphics.camera_capture
 投影矩阵不除宽高比|apps/viewer/camera_sensor.cpp|test_camera_capture|graphics.camera_capture

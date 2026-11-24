@@ -302,6 +302,47 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         }
         scene.cameras.push_back(std::move(camera));
     }
+
+    // 2D 激光雷达（M4-03b）：装在实体上（或 “world”）；名字带安装实体所属实例的前缀
+    for (const SensorSpec& spec : document.sensors) {
+        if (spec.type != "lidar2d") continue;
+        LidarSensor lidar;
+        lidar.name = spec.name;
+        lidar.where = spec.where;
+        if (spec.entity != "world") {
+            const td::EntityDescription* e = d.findEntity(spec.entity);
+            if (e == nullptr) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/entity", "找不到实体“" + spec.entity + "”" + entityHint(d, spec.entity)});
+                failed = true;
+                continue;
+            }
+            const std::size_t slash = spec.entity.find('/');
+            const std::string prefix = slash == std::string::npos ? std::string{} : spec.entity.substr(0, slash + 1);
+            if (prefix.empty() || spec.name.rfind(prefix, 0) != 0 || spec.name.size() == prefix.size()) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/name",
+                                      "激光雷达名字应以所属实例的前缀“" + prefix + "”开头，如 “" + prefix + "scan”"});
+                failed = true;
+                continue;
+            }
+            lidar.entity = e->id;
+        }
+        constexpr double kRadiansPerDegree = 3.14159265358979323846 / 180.0;
+        lidar.mount = spec.pose;
+        lidar.angleMin = spec.angleMinDegrees * kRadiansPerDegree;
+        lidar.angleMax = spec.angleMaxDegrees * kRadiansPerDegree;
+        lidar.samples = spec.samples;
+        lidar.rangeMin = spec.rangeMin;
+        lidar.rangeMax = spec.rangeMax;
+        lidar.hitVisual = spec.hitVisual;
+        lidar.rateHz = spec.rateHz.value_or(10.0);
+        if (lidar.rateHz > physicsRate) {
+            out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",
+                                  "频率 " + std::to_string(lidar.rateHz) + " Hz 高于物理频率，按物理频率 " + std::to_string(physicsRate) +
+                                      " Hz 采样"});
+            lidar.rateHz = physicsRate;
+        }
+        scene.lidars.push_back(std::move(lidar));
+    }
     if (failed) return out;
 
     scene.document = std::move(document);

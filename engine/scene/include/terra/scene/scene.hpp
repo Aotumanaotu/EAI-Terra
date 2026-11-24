@@ -62,7 +62,7 @@ struct PdAssignment {
     double kd = 0.0;
 };
 
-// 场景文件中的传感器（M4-02，M4-01 设计稿第 2 节）。type 为 "imu" 或 "camera"（M4-03）；激光雷达在 M4-03b 加入。
+// 场景文件中的传感器（M4-02，M4-01 设计稿第 2 节）。type 为 "imu"、"camera"（M4-03）或 "lidar2d"（M4-03b）。
 // IMU：
 //   - 装在模型中已有的安装点上：写 site（安装点全名）；name 可省略，写了必须与 site 相同（IMU 的名字就是安装点名）；
 //   - 装在实体上：写 entity（实体全名）与可选的 position / rotation（实体坐标系）；name 必填，带同一实例的前缀。
@@ -72,6 +72,10 @@ struct PdAssignment {
 //   - 装在实体上：写 entity 与可选的 position / rotation；相机看向自身 −Z、+Y 向上（与 MJCF 相同）；name 必填。
 //   width、height（默认 640 × 480，MJCF 写了分辨率时取它）、fovyDeg（竖直视场角，默认 60 或 MJCF 中的值）、
 //   near、far（默认 0.05、50 m）、rateHz（默认 30）、rgb、depth（默认都输出）。
+// 2D 激光雷达（M4-03b）：装在实体上（entity、position、rotation），name 必填；在安装坐标系的 XY 平面内扫描，角度从 +X 起
+//   逆时针为正（与 sensor_msgs/LaserScan 一致）。angleMinDeg、angleMaxDeg（默认 −180、180）、samples（默认 360，
+//   第一束在 angleMin，最后一束在 angleMax）、rangeMin、rangeMax（默认 0.15、12 m）、rateHz（默认 10）、
+//   hits（"collision" 默认，只打参与碰撞的几何体；"visual" 只打默认显示的几何体）。
 struct SensorSpec {
     std::string type;
     std::string name;
@@ -89,6 +93,28 @@ struct SensorSpec {
     double farClip = 50.0;
     bool rgb = true;
     bool depth = true;
+    // 2D 激光雷达（M4-03b）
+    double angleMinDegrees = -180.0;
+    double angleMaxDegrees = 180.0;
+    int samples = 360;
+    double rangeMin = 0.15;
+    double rangeMax = 12.0;
+    bool hitVisual = false;
+};
+
+// 启用的 2D 激光雷达（M4-03b）。读数由物理侧的射线检测给出（不需要图形，Headless 也可用）。
+struct LidarSensor {
+    std::string name;
+    terra::data::EntityId entity;  // 无效 ID 表示装在世界上
+    terra::data::Pose mount;       // 相对实体原点；在安装坐标系的 XY 平面内扫描
+    double angleMin = 0.0;         // rad
+    double angleMax = 0.0;         // rad
+    int samples = 360;
+    double rangeMin = 0.15;        // m
+    double rangeMax = 12.0;        // m
+    double rateHz = 10.0;          // 不高于物理频率
+    bool hitVisual = false;
+    std::string where;
 };
 
 // 启用的相机传感器（M4-03）。图像由有图形上下文的程序渲染（查看器、terra_capture）；Headless 不渲染。
@@ -164,6 +190,7 @@ struct SceneInstance {
     std::vector<PdAssignment> pd;             // M3-04：PD 层接管的执行器（按 ActuatorId 排序）
     std::vector<SensorConfig> sensors;        // M4-02：MJCF 中原有的与场景文件添加的传感器，与模型描述的顺序相同
     std::vector<CameraSensor> cameras;        // M4-03：场景文件中启用的相机，按场景文件的顺序
+    std::vector<LidarSensor> lidars;          // M4-03b：场景文件中的 2D 激光雷达，按场景文件的顺序
 
     const VisualPart* visual(terra::data::VisualId id) const noexcept {
         return id.valid() && id.value <= visuals.size() ? &visuals[id.value - 1] : nullptr;

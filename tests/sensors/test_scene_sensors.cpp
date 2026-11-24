@@ -4,7 +4,7 @@
 //       给只有陀螺仪的 bare_site 补上加速度计；已有的 level_imu 只设频率；
 //       频率：写了的按场景（100、30 Hz），没写的等于物理频率 500 Hz，高于物理频率的按 500 Hz 并警告；
 //       “场景添加”标记正确；添加传感器不改变动力学：与不加传感器的同一场景推进 500 步，全部实体位姿逐位相同。
-//   - 解析错误（JSON 指针 + 原因）：未知类型、雷达尚不支持（M4-03 起相机可用，写 site 报未知字段）、site 与 entity 同时写或都不写、装在实体上缺 name、
+//   - 解析错误（JSON 指针 + 原因）：未知类型、相机与雷达写 site 报未知字段、site 与 entity 同时写或都不写、装在实体上缺 name、
 //     name 与 site 不同、site 带位姿、频率不为正、名字重复。
 //   - 组合错误：没有对应的实例、找不到安装点（列出模型中的安装点）、找不到实体、名字前缀与实例不符、与已有安装点重名。
 //   - 参考机器人（有时）：G1 自带的两个 IMU 被发现；给 Go2 的安装点 imu 加 IMU，站立保持 1 s 后比力约 9.81，
@@ -162,7 +162,7 @@ void parseErrors() {
     const Case cases[] = {
         {R"([{"type": "sonar", "site": "bench/level_imu"}])", "/sensors/0/type", "未知的传感器类型"},
         {R"([{"type": "camera", "site": "bench/level_imu"}])", "/sensors/0/site", "未知字段"},
-        {R"([{"type": "lidar2d", "site": "bench/level_imu"}])", "/sensors/0/type", "M4-03b"},
+        {R"([{"type": "lidar2d", "site": "bench/level_imu"}])", "/sensors/0/site", "未知字段"},
         {R"([{"site": "bench/level_imu"}])", "/sensors/0", "缺少 type"},
         {R"([{"type": "imu", "site": "bench/level_imu", "entity": "bench/level"}])", "/sensors/0", "其中之一"},
         {R"([{"type": "imu"}])", "/sensors/0", "其中之一"},

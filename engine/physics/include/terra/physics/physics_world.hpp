@@ -72,6 +72,21 @@ struct ControlError {
     std::string message;
 };
 
+// 射线检测（M4-03b，激光雷达用）。在当前观测时刻的几何上求每条射线到第一个命中面的距离。
+//   origin、directions 为世界坐标，directions 应为单位向量；距离不超过 maxRange 才算命中；
+//   exclude：忽略该实体自身的几何体（雷达装在机器人上时不打到安装它的实体）；
+//   hits：Collision 只打参与碰撞的几何体（与物理一致），Visual 只打默认显示的几何体（MJCF 第 0～2 组）。
+//   完全透明（alpha = 0）的几何体不会被打到（MuJoCo 的规则）。
+enum class RayTargets { Collision, Visual };
+
+struct RayQuery {
+    terra::data::Vec3 origin;
+    std::vector<terra::data::Vec3> directions;
+    double maxRange = 0.0;
+    terra::data::EntityId exclude;
+    RayTargets hits = RayTargets::Collision;
+};
+
 class PhysicsWorld {
 public:
     virtual ~PhysicsWorld() = default;
@@ -114,6 +129,9 @@ public:
     // 同一观测时刻多次调用返回同一对象；step/reset 之后返回新对象，已取得的旧快照不受影响。
     // 只读取已计算好的量，不推进或重算物理。
     virtual std::shared_ptr<const terra::data::PhysicsSnapshot> snapshot() const = 0;
+
+    // 射线检测（M4-03b）：返回与 directions 一一对应的距离（m）；maxRange 内没有命中为 +inf。只读取当前状态，不推进物理。
+    virtual std::vector<double> castRays(const RayQuery& query) const = 0;
 
 protected:
     PhysicsWorld() = default;

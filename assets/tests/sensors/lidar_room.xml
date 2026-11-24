@@ -1,0 +1,19 @@
+<!--
+  2D 激光雷达夹具（M4-03b）。无重力，一切静止。
+    房间    墙的内表面在 x = 2、x = −2、y = −2（三面墙，长 4.2 m、高 1 m）；+Y 一侧敞开：朝那边的射线没有命中
+    base    雷达的支架，位于 (0.5, 0, 0.2)；外壳 housing 是参与碰撞的方块，把雷达原点包在里面（雷达应忽略安装它的实体）
+    pillar  只用于显示的柱子（不参与碰撞，第 1 组），中心 (−1, −1)，半径 0.1：collision 模式穿过它，visual 模式打到它
+-->
+<mujoco model="lidar_room">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <geom name="floor" type="plane" size="5 5 0.1"/>
+    <geom name="east" type="box" pos="2.05 0 0.5" size="0.05 2.1 0.5"/>
+    <geom name="west" type="box" pos="-2.05 0 0.5" size="0.05 2.1 0.5"/>
+    <geom name="south" type="box" pos="0 -2.05 0.5" size="2.1 0.05 0.5"/>
+    <geom name="pillar" type="cylinder" pos="-1 -1 0.5" size="0.1 0.5" contype="0" conaffinity="0" group="1" rgba="0.2 0.6 0.9 1"/>
+    <body name="base" pos="0.5 0 0.2">
+      <geom name="housing" type="box" pos="0 0 0.1" size="0.15 0.15 0.15"/>
+    </body>
+  </worldbody>
+</mujoco>

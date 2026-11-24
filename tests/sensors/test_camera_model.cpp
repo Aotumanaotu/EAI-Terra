@@ -5,7 +5,7 @@
 //   - 场景文件的相机：MJCF 相机与装在实体上的相机都得到正确的安装位姿与参数（两种写法的相机看向同一方向）；
 //     默认值（640 × 480、MJCF 的视场角、30 Hz）；高于物理频率时按物理频率并警告；
 //   - 解析错误：camera 与 entity 二选一、装在实体上缺 name、MJCF 相机带位姿、近远平面、视场角、像素数、rgb 与 depth 都关；
-//   - 组合错误：找不到相机（列出场景中的相机）、跟踪模式的相机、找不到实体、名字前缀不符；雷达尚不支持。
+//   - 组合错误：找不到相机（列出场景中的相机）、跟踪模式的相机、找不到实体、名字前缀不符；雷达缺 name。
 
 #include <cmath>
 #include <cstdio>
@@ -152,7 +152,7 @@ void errors() {
         {R"([{"type": "camera", "camera": "bench/eye", "height": 1.5}])", "/sensors/0/height", "整数"},
         {R"([{"type": "camera", "camera": "bench/eye", "rgb": false, "depth": false}])", "/sensors/0", "不能都关闭"},
         {R"([{"type": "camera", "camera": "bench/eye", "site": "x"}])", "/sensors/0/site", "未知字段"},
-        {R"([{"type": "lidar2d", "entity": "bench/rig"}])", "/sensors/0/type", "M4-03b"},
+        {R"([{"type": "lidar2d", "entity": "bench/rig"}])", "/sensors/0", "需要 name"},
     };
     for (const Case& c : parseCases) {
         std::vector<sc::SceneIssue> issues;

@@ -1,0 +1,14 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "2D 激光雷达夹具（M4-03b）",
+  "models": [
+    {"name": "bench", "mjcf": "lidar_room.xml"}
+  ],
+  "sensors": [
+    {"type": "lidar2d", "name": "bench/scan", "entity": "bench/base", "position": [0, 0, 0.1], "rotation": {"rpyDeg": [0, 0, 90]},
+     "angleMinDeg": -180, "angleMaxDeg": 179, "samples": 360, "rangeMin": 0.15, "rangeMax": 12, "rateHz": 10},
+    {"type": "lidar2d", "name": "bench/scan_visual", "entity": "bench/base", "position": [0, 0, 0.1], "rotation": {"rpyDeg": [0, 0, 90]},
+     "angleMinDeg": -180, "angleMaxDeg": 179, "samples": 360, "hits": "visual"}
+  ]
+}

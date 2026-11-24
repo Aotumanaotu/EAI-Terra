@@ -28,6 +28,7 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-03b：2D 激光雷达（simulation.lidar）；Headless --sensors 输出雷达（headless.sensors_lidar）。
 # M4-03a：相机模型（scene.camera_model）、相机传感器的渲染（graphics.camera_capture）。
 # M4-02：IMU（physics.imu）、场景文件的传感器（scene.sensors）、采样时刻（simulation.sensor_sampling）；Headless --sensors（headless.sensors_imu 等）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
@@ -173,6 +174,9 @@ terra_add_cli_test(sensors_imu EXPECT 0
     ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/sensors/imu_added.terra-scene.json --steps 50 --sample-every 50 --sensors)
 terra_add_cli_test(cameras_ignored EXPECT 0 STDERR "2 个相机：相机需要图形上下文，在 Headless 中不可用"
     ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/sensors/camera_bench.terra-scene.json --steps 5)
+terra_add_cli_test(sensors_lidar EXPECT 0
+    STDOUT "[{].type.:.lidar.,.name.:.bench/scan.,.step.:0,.time.:0,.rate_hz.:10,.angle_min.:-3.14159[^\n]*.ranges.:.[^\n]*[^0-9,]inf[^0-9,]"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/sensors/lidar_room.terra-scene.json --steps 1 --sensors)
 terra_add_cli_test(sensors_with_rerun EXPECT 2 STDERR "--rerun 不能与"
     ARGS --rerun x.terra-record.jsonl --sensors)
 terra_add_cli_test(list_records EXPECT 0
@@ -384,6 +388,12 @@ target_link_libraries(test_camera_model PRIVATE terra::scene terra::physics_mujo
 target_compile_definitions(test_camera_model PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
 terra_configure_target(test_camera_model)
 add_test(NAME scene.camera_model COMMAND test_camera_model)
+# M4-03b：2D 激光雷达（射线检测与解析解比较、visual / collision 模式、量程、场景文件）
+add_executable(test_lidar sensors/test_lidar.cpp)
+target_link_libraries(test_lidar PRIVATE terra::scene terra::simulation terra::physics_mujoco)
+target_compile_definitions(test_lidar PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_lidar)
+add_test(NAME simulation.lidar COMMAND test_lidar)
 add_executable(test_sensor_sampling simulation/test_sensor_sampling.cpp)
 target_link_libraries(test_sensor_sampling PRIVATE terra::simulation)
 terra_configure_target(test_sensor_sampling)

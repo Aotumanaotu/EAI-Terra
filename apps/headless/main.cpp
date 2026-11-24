@@ -28,6 +28,7 @@
 #include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/record.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
+#include "terra/simulation/lidar.hpp"
 #include "terra/library/library.hpp"
 #include "terra/core/sha256.hpp"
 
@@ -206,6 +207,7 @@ int run(const RunOptions& requested) {
     std::unique_ptr<physics::PhysicsWorld> owned;
     std::vector<terra::scene::PdAssignment> pdAssignments;
     std::vector<terra::scene::SensorConfig> sensorConfigs;  // M4-02：场景中各传感器的采样频率
+    std::vector<terra::scene::LidarSensor> lidars;          // M4-03b：场景中的 2D 激光雷达
     if (!options.scenePath.empty()) {
         // 场景文件（M2-08）：由 terra_scene 组合模型实例，只跑物理；视觉绑定只检查文件是否存在
         auto scene = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
@@ -217,6 +219,7 @@ int run(const RunOptions& requested) {
         if (!scene.ok()) return kExitModel;
         pdAssignments = scene.scene->pd;
         sensorConfigs = scene.scene->sensors;
+        lidars = scene.scene->lidars;
         // 相机需要图形上下文（M4-03）：Headless 不链接图形库，只提示、不渲染
         if (!scene.scene->cameras.empty()) {
             diagnose("场景中有 " + std::to_string(scene.scene->cameras.size()) +
@@ -311,10 +314,25 @@ int run(const RunOptions& requested) {
             if (!terra::simulation::sensorSampleDue(snap->stepIndex, dt, sensorRates[k])) continue;
             written = written && emit(sensorToJson(sensors[k], snap->sensors[k], snap->stepIndex, snap->simulationTime));
         }
+        // 2D 激光雷达（M4-03b）：只在采样步上做射线检测
+        for (const auto& lidar : lidars) {
+            if (!terra::simulation::sensorSampleDue(snap->stepIndex, dt, lidar.rateHz)) continue;
+            const auto scan = terra::simulation::scanLidar(world, lidar);
+            LidarJson meta;
+            meta.name = scan.sensor;
+            meta.step = scan.step;
+            meta.time = scan.time;
+            meta.angleMin = scan.angleMin;
+            meta.angleIncrement = scan.angleIncrement;
+            meta.rangeMin = scan.rangeMin;
+            meta.rangeMax = scan.rangeMax;
+            meta.rateHz = lidar.rateHz;
+            written = written && emit(lidarToJson(meta, scan.ranges));
+        }
         return written;
     };
     if (options.sensors) {
-        if (sensors.empty()) diagnose("--sensors：模型中没有传感器（MJCF 中的 IMU，或场景文件 sensors 中添加的）");
+        if (sensors.empty() && lidars.empty()) diagnose("--sensors：模型中没有传感器（MJCF 中的 IMU，或场景文件 sensors 中添加的）");
         ok = ok && emit(sensorListToJson(world.description(), sensorRates));
     }
 

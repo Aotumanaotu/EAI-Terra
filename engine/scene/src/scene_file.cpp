@@ -353,6 +353,44 @@ void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpe
     if (!s.rgb && !s.depth) r.error(where, "rgb 与 depth 不能都关闭");
 }
 
+// 一个 2D 激光雷达（M4-03b）
+void readLidar(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
+    if (!r.object(item, where, {"type", "name", "entity", "position", "rotation", "angleMinDeg", "angleMaxDeg", "samples", "rangeMin",
+                                "rangeMax", "rateHz", "hits"})) {
+        return;
+    }
+    if (!item.contains("entity")) {
+        r.error(where, "2D 激光雷达需要 entity（安装的实体，“world” 表示装在世界上）");
+        return;
+    }
+    if (const auto n = r.string(item["entity"], where + "/entity")) s.entity = *n;
+    r.pose(item, where, s.pose);
+    if (s.name.empty() && !item.contains("name")) r.error(where, "2D 激光雷达需要 name（带实例前缀，如 “turtlebot4/scan”）");
+    for (const auto& [key, target] : {std::pair<const char*, double*>{"angleMinDeg", &s.angleMinDegrees}, std::pair<const char*, double*>{"angleMaxDeg", &s.angleMaxDegrees},
+                                      std::pair<const char*, double*>{"rangeMin", &s.rangeMin}, std::pair<const char*, double*>{"rangeMax", &s.rangeMax}}) {
+        if (item.contains(key)) {
+            if (const auto d = r.number(item[key], where + "/" + key)) *target = *d;
+        }
+    }
+    if (!(s.angleMinDegrees >= -360.0 && s.angleMaxDegrees <= 360.0 && s.angleMaxDegrees > s.angleMinDegrees)) {
+        r.error(where + "/angleMaxDeg", "角度范围应满足 −360° ≤ angleMinDeg < angleMaxDeg ≤ 360°");
+    }
+    if (!(s.rangeMin >= 0.0)) r.error(where + "/rangeMin", "最小量程不能为负");
+    if (!(s.rangeMax > s.rangeMin)) r.error(where + "/rangeMax", "最大量程必须大于最小量程");
+    if (item.contains("samples")) {
+        if (const auto n = r.integer(item["samples"], where + "/samples")) {
+            if (*n >= 1 && *n <= 100000) s.samples = static_cast<int>(*n);
+            else r.error(where + "/samples", "采样数应在 1 到 100000 之间");
+        }
+    }
+    if (item.contains("hits")) {
+        if (const auto h = r.string(item["hits"], where + "/hits")) {
+            if (*h == "visual") s.hitVisual = true;
+            else if (*h != "collision") r.error(where + "/hits", "hits 应为 “collision”（参与碰撞的几何体）或 “visual”（显示的几何体）");
+        }
+    }
+}
+
 void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
     if (!v.is_array()) {
         r.error("/sensors", "sensors 应为数组");
@@ -369,17 +407,13 @@ void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
         SensorSpec s;
         s.where = where;
         if (!item.contains("type")) {
-            r.error(where, "缺少 type（imu 或 camera）");
+            r.error(where, "缺少 type（imu、camera 或 lidar2d）");
             continue;
         }
         const auto type = r.string(item["type"], where + "/type");
         if (!type) continue;
-        if (*type == "lidar2d") {
-            r.error(where + "/type", "传感器类型“lidar2d”在 M4-03b 中加入，当前版本还不支持");
-            continue;
-        }
-        if (*type != "imu" && *type != "camera") {
-            r.error(where + "/type", "未知的传感器类型“" + *type + "”（可用：imu、camera）");
+        if (*type != "imu" && *type != "camera" && *type != "lidar2d") {
+            r.error(where + "/type", "未知的传感器类型“" + *type + "”（可用：imu、camera、lidar2d）");
             continue;
         }
         s.type = *type;
@@ -390,7 +424,8 @@ void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
             }
         }
         if (s.type == "imu") readImu(r, item, where, s);
-        else readCamera(r, item, where, s);
+        else if (s.type == "camera") readCamera(r, item, where, s);
+        else readLidar(r, item, where, s);
         if (item.contains("rateHz")) {
             if (const auto d = r.number(item["rateHz"], where + "/rateHz")) {
                 if (*d > 0) s.rateHz = *d;

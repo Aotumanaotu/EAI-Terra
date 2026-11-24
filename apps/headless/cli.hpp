@@ -93,6 +93,20 @@ std::string sensorListToJson(const terra::data::ModelDescription& model, const s
 std::string sensorToJson(const terra::data::SensorDescription& sensor, const terra::data::SensorReading& reading,
                          std::uint64_t step, double time);
 
+// type "lidar"（M4-03b，只在 --sensors 时输出）：一次 2D 激光雷达扫描。ranges 为米；JSON 没有无穷大，
+// 超出最大量程（没有命中）写作字符串 "inf"，近于最小量程写作 "-inf"（与 ROS REP-117 的 ±inf 对应）。
+struct LidarJson {
+    std::string name;
+    std::uint64_t step = 0;
+    double time = 0.0;
+    double angleMin = 0.0;
+    double angleIncrement = 0.0;
+    double rangeMin = 0.0;
+    double rangeMax = 0.0;
+    double rateHz = 0.0;
+};
+std::string lidarToJson(const LidarJson& scan, const std::vector<float>& ranges);
+
 // type "summary"：正常结束。
 std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time);
 

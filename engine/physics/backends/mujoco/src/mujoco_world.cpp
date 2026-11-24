@@ -1035,6 +1035,42 @@ std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::snapshot() cons
     return impl_->cachedSnapshot;
 }
 
+// 射线检测（M4-03b）。Collision：MuJoCo 的射线不区分碰撞与显示，打到不参与碰撞的几何体时从命中点稍向前继续，
+// 直到打到参与碰撞的几何体、超出量程或没有命中（最多 64 次）。Visual：只打第 0～2 组（默认显示的分组）。
+std::vector<double> MujocoWorld::castRays(const RayQuery& query) const {
+    const mjModel* m = impl_->model.get();
+    const mjData* d = impl_->data.get();
+    std::vector<double> out(query.directions.size(), std::numeric_limits<double>::infinity());
+    int exclude = -1;
+    if (query.exclude.valid() && query.exclude.value <= impl_->entityToBody.size()) {
+        exclude = impl_->entityToBody[query.exclude.value - 1];
+    }
+    const mjtByte visualGroups[mjNGROUP] = {1, 1, 1, 0, 0, 0};
+    const mjtByte* groups = query.hits == RayTargets::Visual ? visualGroups : nullptr;
+    constexpr double kStepPast = 1e-9;
+    for (std::size_t i = 0; i < query.directions.size(); ++i) {
+        const terra::data::Vec3& dir = query.directions[i];
+        const mjtNum vec[3] = {dir.x, dir.y, dir.z};
+        double travelled = 0.0;
+        for (int hop = 0; hop < 64; ++hop) {
+            const mjtNum pnt[3] = {query.origin.x + travelled * dir.x, query.origin.y + travelled * dir.y,
+                                   query.origin.z + travelled * dir.z};
+            int geom = -1;
+            const mjtNum dist = mj_ray(m, d, pnt, vec, groups, 1, exclude, &geom, nullptr);
+            if (dist < 0 || geom < 0) break;
+            const double total = travelled + dist;
+            if (total > query.maxRange) break;
+            const bool collides = m->geom_contype[geom] != 0 || m->geom_conaffinity[geom] != 0;
+            if (query.hits == RayTargets::Visual || collides) {
+                out[i] = total;
+                break;
+            }
+            travelled = total + kStepPast;
+        }
+    }
+    return out;
+}
+
 // ---- 世界组合（M2-04）----
 
 namespace {

@@ -40,6 +40,7 @@ public:
     std::uint64_t runEpoch() const noexcept override;
     bool faulted() const noexcept override;
     std::shared_ptr<const terra::data::PhysicsSnapshot> snapshot() const override;
+    std::vector<double> castRays(const RayQuery& query) const override;
 
 private:
     struct Impl;

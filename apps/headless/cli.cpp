@@ -529,6 +529,20 @@ std::string sensorToJson(const terra::data::SensorDescription& sensor, const ter
            array(6, 4) + "}";
 }
 
+std::string lidarToJson(const LidarJson& scan, const std::vector<float>& ranges) {
+    std::string json = "{\"type\":\"lidar\",\"name\":\"" + jsonEscape(scan.name) + "\",\"step\":" + std::to_string(scan.step) +
+                       ",\"time\":" + formatNumber(scan.time) + ",\"rate_hz\":" + formatNumber(scan.rateHz) + ",\"angle_min\":" +
+                       formatNumber(scan.angleMin) + ",\"angle_increment\":" + formatNumber(scan.angleIncrement) + ",\"range_min\":" +
+                       formatNumber(scan.rangeMin) + ",\"range_max\":" + formatNumber(scan.rangeMax) + ",\"ranges\":[";
+    for (std::size_t i = 0; i < ranges.size(); ++i) {
+        if (i > 0) json += ",";
+        const float r = ranges[i];
+        if (std::isinf(r)) json += r > 0 ? "\"inf\"" : "\"-inf\"";
+        else json += formatNumber(static_cast<double>(r));
+    }
+    return json + "]}";
+}
+
 std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time) {
     return "{\"type\":\"summary\",\"run_epoch\":" + std::to_string(runEpoch) +
            ",\"steps\":" + std::to_string(steps) + ",\"time\":" + formatNumber(time) +

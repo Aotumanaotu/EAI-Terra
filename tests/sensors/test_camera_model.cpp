@@ -1,5 +1,6 @@
 // 相机模型与相机传感器的配置（M4-03）：纯数学与场景文件，不需要图形上下文。
 //   - 内参：160 × 120、60° → fy = fx = 60 / tan30° = 103.923…，主点 (79.5, 59.5)；光学坐标系为绕 X 轴 180°；
+//   - 显示旋转（M4-04）：四个角的换算与宽高比；场景文件的取值校验；
 //   - 投影：光轴上的点落在主点；夹具中方块正面中心的投影；相机后方的点为空；
 //   - MJCF 相机（描述修订 7）：camera_bench.xml 的 eye（装在 rig 上、60°、固定、透视）与 tracker（跟踪模式）；
 //   - 场景文件的相机：MJCF 相机与装在实体上的相机都得到正确的安装位姿与参数（两种写法的相机看向同一方向）；
@@ -82,6 +83,21 @@ void math() {
     check(face && near((*face)[0], 79.5 - fy * 0.3 / 0.95, 1e-9) && near((*face)[1], 59.5 - fy * 0.2 / 0.95, 1e-9),
           "方块正面中心：u = cx − fy·0.3/0.95（世界 +Y 在图像左侧），v = cy − fy·0.2/0.95（世界上方在图像上方）");
     check(!sc::projectPoint(k, cam, {-1.0, 0.0, 1.0}), "相机后方的点：空");
+
+    // 显示旋转（M4-04，只影响显示）：显示区域四个角对应原图的哪个角
+    const auto corner = [](int rotation, double dx, double dy, double u, double v) {
+        const auto t = sc::displayToImage(rotation, dx, dy);
+        return t[0] == u && t[1] == v;
+    };
+    check(corner(0, 0, 0, 0, 0) && corner(0, 1, 0, 1, 0) && corner(0, 0.25, 0.75, 0.25, 0.75), "不旋转：原样");
+    check(corner(90, 0, 0, 1, 0) && corner(90, 1, 0, 1, 1) && corner(90, 1, 1, 0, 1) && corner(90, 0, 1, 0, 0),
+          "逆时针 90°：显示的左上角是原图右上角，原图的右边成为上边");
+    check(corner(180, 0, 0, 1, 1) && corner(180, 1, 1, 0, 0), "180°：左上与右下互换");
+    check(corner(270, 0, 0, 0, 1) && corner(270, 1, 0, 0, 0) && corner(270, 1, 1, 1, 0), "逆时针 270°：原图的左边成为上边");
+    check(corner(45, 0.3, 0.6, 0.3, 0.6), "其他角度按 0 处理");
+    check(near(sc::displayAspect(0, 640, 480), 640.0 / 480.0, 1e-12) && near(sc::displayAspect(90, 640, 480), 480.0 / 640.0, 1e-12) &&
+              near(sc::displayAspect(270, 640, 480), 0.75, 1e-12) && near(sc::displayAspect(180, 640, 480), 640.0 / 480.0, 1e-12),
+          "显示宽高比：90°、270° 时宽高互换");
 }
 
 void mjcfCameras() {
@@ -112,6 +128,7 @@ void sceneCameras() {
     check(eye.name == "bench/eye" && eye.width == 160 && eye.height == 120 && eye.fovyDegrees == 60.0 && eye.rateHz == 30.0 &&
               eye.rgb && eye.depth && eye.nearClip == 0.05 && eye.farClip == 50.0,
           "MJCF 相机 bench/eye：名字取相机名，160 × 120，视场角取 MJCF 的 60°，30 Hz，彩色与深度");
+    check(eye.displayRotation == 0, "显示旋转默认 0");
     check(side.name == "bench/side" && !side.rgb && side.depth, "装在实体上的 bench/side：只输出深度");
     const auto snap = scene.world->snapshot();
     const td::Pose a = sc::cameraWorldPose(*snap, eye);
@@ -123,7 +140,8 @@ void sceneCameras() {
     check(near(fb.x, 1.0, 1e-12) && near(b.position.z, 1.0, 1e-12), "side（rpyDeg 90, 0, −90）与 eye 看向同一方向");
 
     // 默认值与频率上限
-    auto defaults = load(R"([{"type": "camera", "camera": "bench/eye"}, {"type": "camera", "name": "bench/fast", "entity": "bench/rig", "rateHz": 1000}])");
+    auto defaults = load(R"([{"type": "camera", "camera": "bench/eye"}, {"type": "camera", "name": "bench/fast", "entity": "bench/rig", "rateHz": 1000,
+                                "displayRotationDeg": 90}])");
     check(defaults.ok(), "默认值场景可以加载" + dump(defaults.issues));
     if (defaults.ok() && defaults.scene->cameras.size() == 2) {
         const auto& c = defaults.scene->cameras[0];
@@ -131,6 +149,7 @@ void sceneCameras() {
         check(defaults.scene->cameras[1].fovyDegrees == 60.0 && std::fabs(defaults.scene->cameras[1].rateHz - 500.0) < 1e-9 &&
                   hasIssue(defaults.issues, Severity::Warning, "/sensors/1/rateHz", "高于物理频率"),
               "装在实体上：视场角默认 60°；1000 Hz 按物理频率 500 Hz 并警告");
+        check(defaults.scene->cameras[1].displayRotation == 90, "displayRotationDeg 90 读入");
     }
 }
 
@@ -152,6 +171,7 @@ void errors() {
         {R"([{"type": "camera", "camera": "bench/eye", "height": 1.5}])", "/sensors/0/height", "整数"},
         {R"([{"type": "camera", "camera": "bench/eye", "rgb": false, "depth": false}])", "/sensors/0", "不能都关闭"},
         {R"([{"type": "camera", "camera": "bench/eye", "site": "x"}])", "/sensors/0/site", "未知字段"},
+        {R"([{"type": "camera", "camera": "bench/eye", "displayRotationDeg": 45}])", "/sensors/0/displayRotationDeg", "0、90、180 或 270"},
         {R"([{"type": "lidar2d", "entity": "bench/rig"}])", "/sensors/0", "需要 name"},
     };
     for (const Case& c : parseCases) {

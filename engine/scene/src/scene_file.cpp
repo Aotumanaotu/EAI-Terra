@@ -300,7 +300,7 @@ void readImu(Reader& r, const Json& item, const std::string& where, SensorSpec& 
 // 一个相机（M4-03）
 void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
     if (!r.object(item, where, {"type", "name", "camera", "entity", "position", "rotation", "width", "height", "fovyDeg", "near",
-                                "far", "rateHz", "rgb", "depth"})) {
+                                "far", "rateHz", "rgb", "depth", "displayRotationDeg"})) {
         return;
     }
     const bool hasCamera = item.contains("camera");
@@ -351,6 +351,12 @@ void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpe
         if (const auto b = r.boolean(item["depth"], where + "/depth")) s.depth = *b;
     }
     if (!s.rgb && !s.depth) r.error(where, "rgb 与 depth 不能都关闭");
+    if (item.contains("displayRotationDeg")) {
+        if (const auto n = r.integer(item["displayRotationDeg"], where + "/displayRotationDeg")) {
+            if (*n == 0 || *n == 90 || *n == 180 || *n == 270) s.displayRotationDegrees = static_cast<int>(*n);
+            else r.error(where + "/displayRotationDeg", "显示旋转应为 0、90、180 或 270（逆时针，度）");
+        }
+    }
 }
 
 // 一个 2D 激光雷达（M4-03b）

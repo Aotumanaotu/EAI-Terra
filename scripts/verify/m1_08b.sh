@@ -128,8 +128,8 @@ if [ $skip_mutation = 0 ]; then
     log="$logs/mutation.txt"
     b="$out/mutation"
     files=(engine/render/src/environment.cpp engine/render/src/pbr.cpp engine/render/src/scene_renderer.cpp)
-    for f in "${files[@]}"; do cp "$f" "$out/$(basename "$f").orig"; done
-    restore() { for f in "${files[@]}"; do cp "$out/$(basename "$f").orig" "$f"; done; }
+    for f in "${files[@]}"; do cp "$f" "$out/${f//\//_}.orig"; done
+    restore() { for f in "${files[@]}"; do cp "$out/${f//\//_}.orig" "$f"; done; }
     trap 'restore; echo "已恢复被变异的源文件"; exit 130' INT TERM
     cmake -S . -B "$b" -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DTERRA_BUILD_RENDER=ON \
           -DTERRA_WARNINGS_AS_ERRORS=ON >"$log" 2>&1
@@ -199,7 +199,7 @@ LIST
     restore
     trap - INT TERM
     restored=1
-    for f in "${files[@]}"; do cmp -s "$f" "$out/$(basename "$f").orig" || restored=0; done
+    for f in "${files[@]}"; do cmp -s "$f" "$out/${f//\//_}.orig" || restored=0; done
     if [ $restored = 1 ]; then
         record "变异测试" "$detected/$total 被发现；源文件已恢复" "$([ $detected = $total ] && echo 1 || echo 0)"
     else

@@ -22,5 +22,11 @@
       ]
     }
   },
-  "initialKeyframe": "stretch3/home"
+  "initialKeyframe": "stretch3/home",
+  "sensors": [
+    {"type": "camera", "camera": "stretch3/d435i_camera_rgb", "width": 640, "height": 480, "near": 0.1, "far": 10, "rateHz": 15,
+     "displayRotationDeg": 90},
+    {"type": "lidar2d", "name": "stretch3/scan", "entity": "stretch3/laser", "angleMinDeg": -180, "angleMaxDeg": 179,
+     "samples": 360, "rangeMin": 0.15, "rangeMax": 12, "rateHz": 10}
+  ]
 }

@@ -72,6 +72,8 @@ struct PdAssignment {
 //   - 装在实体上：写 entity 与可选的 position / rotation；相机看向自身 −Z、+Y 向上（与 MJCF 相同）；name 必填。
 //   width、height（默认 640 × 480，MJCF 写了分辨率时取它）、fovyDeg（竖直视场角，默认 60 或 MJCF 中的值）、
 //   near、far（默认 0.05、50 m）、rateHz（默认 30）、rgb、depth（默认都输出）。
+//   displayRotationDeg（M4-04，默认 0）：只影响显示，图像逆时针转 0、90、180 或 270° 后显示；数据（图像、深度、内参）不变，
+//   与真机一致（如 Stretch 3 的头部相机是横着装的，真机图像同样需要转 90° 才正）。
 // 2D 激光雷达（M4-03b）：装在实体上（entity、position、rotation），name 必填；在安装坐标系的 XY 平面内扫描，角度从 +X 起
 //   逆时针为正（与 sensor_msgs/LaserScan 一致）。angleMinDeg、angleMaxDeg（默认 −180、180）、samples（默认 360，
 //   第一束在 angleMin，最后一束在 angleMax）、rangeMin、rangeMax（默认 0.15、12 m）、rateHz（默认 10）、
@@ -93,6 +95,7 @@ struct SensorSpec {
     double farClip = 50.0;
     bool rgb = true;
     bool depth = true;
+    int displayRotationDegrees = 0;  // M4-04：只影响显示
     // 2D 激光雷达（M4-03b）
     double angleMinDegrees = -180.0;
     double angleMaxDegrees = 180.0;
@@ -130,6 +133,7 @@ struct CameraSensor {
     double rateHz = 30.0;  // 不高于物理频率
     bool rgb = true;
     bool depth = true;
+    int displayRotation = 0;  // M4-04：显示时逆时针旋转的角度（0、90、180、270），数据不变
     std::string where;
 };
 

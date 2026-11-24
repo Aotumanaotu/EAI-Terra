@@ -28,6 +28,7 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-04：查看器传感器自检（graphics.viewer_sensor_selftest）、terra_capture（graphics.capture_determinism、capture.no_cameras）。
 # M4-03b：2D 激光雷达（simulation.lidar）；Headless --sensors 输出雷达（headless.sensors_lidar）。
 # M4-03a：相机模型（scene.camera_model）、相机传感器的渲染（graphics.camera_capture）。
 # M4-02：IMU（physics.imu）、场景文件的传感器（scene.sensors）、采样时刻（simulation.sensor_sampling）；Headless --sensors（headless.sensors_imu 等）。
@@ -614,6 +615,25 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_camera_capture> "${CMAKE_CURRENT_BINARY_DIR}/camera_capture"
                 --expect-renderer llvmpipe)
     set_tests_properties(graphics.camera_capture PROPERTIES LABELS graphics)
+
+    # M4-04：查看器的传感器自检（IMU、雷达、相机的采样次数与读数，面板停靠）；terra_capture 的确定性与采样次数；
+    # 没有相机（--no-cameras）时不创建图形上下文，在没有显示服务器的环境中也能运行
+    add_test(NAME graphics.viewer_sensor_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)
+    set_tests_properties(graphics.viewer_sensor_selftest PROPERTIES LABELS graphics)
+    add_test(NAME graphics.capture_determinism
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${CMAKE_COMMAND}" -DCAPTURE=$<TARGET_FILE:terra_capture>
+                "-DSCENE=${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json"
+                "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/capture_determinism" -DEXPECT_RENDERER=llvmpipe
+                -P "${PROJECT_SOURCE_DIR}/cmake/TerraCheckCapture.cmake")
+    set_tests_properties(graphics.capture_determinism PROPERTIES LABELS graphics)
+    add_test(NAME capture.no_cameras
+        COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
+                "${CMAKE_COMMAND}" -DEXPECTED=0 -DCOMMAND=$<TARGET_FILE:terra_capture>
+                "-DSTDOUT_REGEX=不创建图形上下文（--no-cameras）.*采集完成：20 步，IMU 84 行，雷达 1 次扫描，相机 0 帧"
+                -P "${_terra_check_exit}" --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json"
+                --steps 20 --no-cameras --force --output "${CMAKE_CURRENT_BINARY_DIR}/capture_no_cameras")
 
     # 渲染基准冒烟（M1-10）：小分辨率、少量帧，确认能跑完并输出汇总（数值不判定）。
     add_test(NAME graphics.render_bench_smoke

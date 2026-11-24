@@ -346,6 +346,21 @@ constexpr Entry kEntries[] = {
     {TextId::RecordReasonStopped, "手动停止", "Stopped"},
     {TextId::RecordReasonError, "出错", "Error"},
     {TextId::RecordReasonIncomplete, "未完成", "Incomplete"},
+    {TextId::PanelSensors, "传感器", "Sensors"},
+    {TextId::SensorsReplay, "回放中：传感器不更新（传感器的记录在 M4-07 中加入）", "Replaying: sensors are not updated (sensor recording comes in M4-07)"},
+    {TextId::SensorsNone, "场景中没有传感器。可在场景文件的 sensors 中添加 IMU、相机或 2D 激光雷达", "No sensors in this scene. Add an IMU, camera or 2D lidar under sensors in the scene file"},
+    {TextId::SensorsImu, "IMU", "IMU"},
+    {TextId::SensorsLidar, "2D 激光雷达", "2D lidar"},
+    {TextId::SensorsCamera, "相机", "Cameras"},
+    {TextId::SensorsAccel, "比力", "Specific force"},
+    {TextId::SensorsGyro, "角速度", "Angular velocity"},
+    {TextId::SensorsSamples, "采样", "samples"},
+    {TextId::SensorsWaiting, "等待第一次采样…", "Waiting for the first sample…"},
+    {TextId::SensorsHits, "命中", "hits"},
+    {TextId::SensorsDepthAt, "深度", "depth"},
+    {TextId::SensorsStep, "步", "step"},
+    {TextId::SensorsCameraFailed, "相机渲染器创建失败：", "Camera renderer could not be created: "},
+    {TextId::SensorsRotated, "显示已逆时针旋转", "Display rotated counter-clockwise by"},
 };
 
 constexpr bool entriesInOrder() {

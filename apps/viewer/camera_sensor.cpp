@@ -96,13 +96,16 @@ r::ImageRgba8 depthPreview(const std::vector<float>& depth, int width, int heigh
         px[3] = 255;
         if (!std::isfinite(depth[i])) continue;
         const float t = std::clamp((depth[i] - nearDepth) / span, 0.0f, 1.0f);
-        // 红 → 黄 → 青 → 蓝
-        const float rC = std::clamp(1.5f - 3.0f * std::fabs(t - 0.0f), 0.0f, 1.0f) + std::clamp(1.5f - 3.0f * std::fabs(t - 0.33f), 0.0f, 1.0f);
-        const float gC = std::clamp(1.5f - 3.0f * std::fabs(t - 0.33f), 0.0f, 1.0f) + std::clamp(1.5f - 3.0f * std::fabs(t - 0.66f), 0.0f, 1.0f);
-        const float bC = std::clamp(1.5f - 3.0f * std::fabs(t - 0.66f), 0.0f, 1.0f) + std::clamp(1.5f - 3.0f * std::fabs(t - 1.0f), 0.0f, 1.0f);
-        px[0] = static_cast<std::uint8_t>(255.0f * std::min(rC, 1.0f));
-        px[1] = static_cast<std::uint8_t>(255.0f * std::min(gC, 1.0f));
-        px[2] = static_cast<std::uint8_t>(255.0f * std::min(bC, 1.0f));
+        // 分段线性配色（M4-04 起）：近处红 → 橙 → 绿 → 青 → 蓝 → 远处深蓝；相邻颜色之间线性过渡，不会叠成白色或黄色
+        static constexpr float kStops[6][3] = {{0.95f, 0.15f, 0.10f}, {1.00f, 0.55f, 0.05f}, {0.25f, 0.80f, 0.30f},
+                                               {0.10f, 0.70f, 0.90f}, {0.15f, 0.30f, 0.95f}, {0.10f, 0.10f, 0.45f}};
+        const float position = t * 5.0f;
+        const auto lower = static_cast<std::size_t>(std::min(position, 4.999f));
+        const float fraction = position - static_cast<float>(lower);
+        for (std::size_t c = 0; c < 3; ++c) {
+            const float v = kStops[lower][c] + (kStops[lower + 1][c] - kStops[lower][c]) * fraction;
+            px[c] = static_cast<std::uint8_t>(std::lround(255.0f * std::clamp(v, 0.0f, 1.0f)));
+        }
     }
     return image;
 }

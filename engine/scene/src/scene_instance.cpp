@@ -293,6 +293,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         camera.farClip = spec.farClip;
         camera.rgb = spec.rgb;
         camera.depth = spec.depth;
+        camera.displayRotation = spec.displayRotationDegrees;
         camera.rateHz = spec.rateHz.value_or(30.0);
         if (camera.rateHz > physicsRate) {
             out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",

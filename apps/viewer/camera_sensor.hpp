@@ -55,7 +55,7 @@ private:
     std::unique_ptr<terra::render::DepthRenderer> depth_;
 };
 
-// 深度的伪彩色预览：近处红、远处蓝（线性映射到 [near, maxDepth]），没有命中为黑色
+// 深度的伪彩色预览：近处红、经橙、绿、青、蓝到远处深蓝（线性映射到 [near, maxDepth]），没有命中为黑色
 terra::render::ImageRgba8 depthPreview(const std::vector<float>& depth, int width, int height, float nearDepth, float maxDepth);
 // 彩色图转为 RGBA8 图像（便于写 PNG 与界面显示）
 terra::render::ImageRgba8 colorImage(const CameraFrame& frame);

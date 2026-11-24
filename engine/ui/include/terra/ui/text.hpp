@@ -315,6 +315,22 @@ enum class TextId : int {
     RecordReasonStopped,
     RecordReasonError,
     RecordReasonIncomplete,
+    // M4-04：传感器面板
+    PanelSensors,
+    SensorsReplay,
+    SensorsNone,
+    SensorsImu,
+    SensorsLidar,
+    SensorsCamera,
+    SensorsAccel,
+    SensorsGyro,
+    SensorsSamples,
+    SensorsWaiting,
+    SensorsHits,
+    SensorsDepthAt,
+    SensorsStep,
+    SensorsCameraFailed,
+    SensorsRotated,
     Count,
 };
 

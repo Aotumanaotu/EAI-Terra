@@ -39,4 +39,20 @@ std::optional<std::array<double, 2>> projectPoint(const CameraIntrinsics& k, con
     return std::array<double, 2>{k.fx * x / z + k.cx, k.fy * y / z + k.cy};
 }
 
+std::array<double, 2> displayToImage(int rotationDegrees, double dx, double dy) {
+    switch (rotationDegrees) {
+        case 90: return {1.0 - dy, dx};   // 逆时针 90°：原图的右边成为上边
+        case 180: return {1.0 - dx, 1.0 - dy};
+        case 270: return {dy, 1.0 - dx};  // 逆时针 270°（顺时针 90°）：原图的左边成为上边
+        default: return {dx, dy};
+    }
+}
+
+double displayAspect(int rotationDegrees, int width, int height) {
+    const bool swapped = rotationDegrees == 90 || rotationDegrees == 270;
+    const double w = static_cast<double>(swapped ? height : width);
+    const double h = static_cast<double>(swapped ? width : height);
+    return h > 0.0 ? w / h : 1.0;
+}
+
 }  // namespace terra::scene

@@ -1,0 +1,17 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "传感器夹具（M4-04）：IMU、2D 激光雷达与相机",
+  "physics": {"gravity": [0, 0, -9.81]},
+  "models": [
+    {"name": "imu", "mjcf": "imu_bench.xml", "position": [0, -20, 0]},
+    {"name": "room", "mjcf": "lidar_room.xml"},
+    {"name": "cam", "mjcf": "camera_bench.xml", "position": [0, 20, 0]}
+  ],
+  "sensors": [
+    {"type": "lidar2d", "name": "room/scan", "entity": "room/base", "position": [0, 0, 0.1], "rotation": {"rpyDeg": [0, 0, 90]},
+     "angleMinDeg": -180, "angleMaxDeg": 179, "samples": 360, "rangeMin": 0.15, "rangeMax": 12, "rateHz": 10},
+    {"type": "camera", "camera": "cam/eye", "width": 160, "height": 120, "rateHz": 30}
+  ],
+  "view": {"camera": {"position": [-6, -2, 5], "target": [0, 0, 0.5]}}
+}

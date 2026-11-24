@@ -38,4 +38,11 @@ terra::data::Pose cameraWorldPose(const terra::data::PhysicsSnapshot& snapshot, 
 std::optional<std::array<double, 2>> projectPoint(const CameraIntrinsics& intrinsics, const terra::data::Pose& cameraWorld,
                                                   const terra::data::Vec3& worldPoint);
 
+// 显示旋转（M4-04，只影响显示）：图像逆时针转 rotationDegrees（0、90、180、270）后显示。
+// 显示区域中的归一化坐标 (dx, dy)（0～1，原点在左上）→ 原图的归一化坐标 (u, v)（0～1，原点在左上）。
+// 显示四个角的纹理坐标、悬停时取深度都用它，保证二者一致。其他角度按 0 处理。
+std::array<double, 2> displayToImage(int rotationDegrees, double dx, double dy);
+// 旋转后显示的宽高比（宽 / 高）：90、270 时宽高互换
+double displayAspect(int rotationDegrees, int width, int height);
+
 }  // namespace terra::scene

@@ -141,8 +141,8 @@ if [ $skip_mutation = 0 ]; then
     log="$logs/mutation.txt"
     b="$out/mutation"
     files=(engine/library/src/library.cpp apps/headless/main.cpp)
-    for f in "${files[@]}"; do cp "$f" "$out/$(basename "$f").orig"; done
-    restore() { for f in "${files[@]}"; do cp "$out/$(basename "$f").orig" "$f"; done; }
+    for f in "${files[@]}"; do cp "$f" "$out/${f//\//_}.orig"; done
+    restore() { for f in "${files[@]}"; do cp "$out/${f//\//_}.orig" "$f"; done; }
     trap 'restore; echo "已恢复被变异的源文件"; exit 130' INT TERM
     # 不开 -Werror：变异只改语义，不应因警告而无法判定
     cmake -S . -B "$b" -G Ninja -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DTERRA_BUILD_RENDER=OFF >"$log" 2>&1
@@ -213,7 +213,7 @@ LIST
     restore
     trap - INT TERM
     restored=1
-    for f in "${files[@]}"; do cmp -s "$f" "$out/$(basename "$f").orig" || restored=0; done
+    for f in "${files[@]}"; do cmp -s "$f" "$out/${f//\//_}.orig" || restored=0; done
     if [ $restored = 1 ]; then
         record "变异测试" "$detected/$total 被发现；源文件已恢复" "$([ $detected = $total ] && echo 1 || echo 0)"
     else

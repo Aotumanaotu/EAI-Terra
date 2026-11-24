@@ -188,17 +188,10 @@ void stretch(r::RenderContext& ctx, vw::CameraRenderer& renderer, vw::Environmen
         std::printf("参考机器人未准备，跳过 Stretch 3 的头部相机\n");
         return;
     }
-    auto parsed = sc::readSceneFile(std::string{TERRA_ASSETS_DIR} + "/scenes/robots/stretch3.terra-scene.json");
-    check(parsed.document.has_value(), "读取 Stretch 3 场景");
-    if (!parsed.document) return;
-    sc::SensorSpec head;
-    head.type = "camera";
-    head.camera = "stretch3/d435i_camera_rgb";
-    head.name = head.camera;
-    head.where = "/sensors/0";
-    parsed.document->sensors.push_back(head);
-    auto loaded = sc::instantiate(std::move(*parsed.document), terra::physics::mujoco::composeWorld);
-    check(loaded.ok() && loaded.scene->cameras.size() == 1, "Stretch 3 场景启用头部相机");
+    // M4-04 起 Stretch 3 场景文件自带头部相机（d435i_camera_rgb）与底盘雷达
+    auto loaded = sc::loadScene(std::string{TERRA_ASSETS_DIR} + "/scenes/robots/stretch3.terra-scene.json", terra::physics::mujoco::composeWorld);
+    check(loaded.ok() && loaded.scene->cameras.size() == 1 && loaded.scene->cameras[0].name == "stretch3/d435i_camera_rgb",
+          "Stretch 3 场景的头部相机");
     if (!loaded.ok() || loaded.scene->cameras.size() != 1) return;
     auto& scene = *loaded.scene;
     std::vector<vw::SceneMessage> messages;

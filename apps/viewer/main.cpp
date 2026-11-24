@@ -16,6 +16,7 @@
 //   --demo-drive （M2-07）演示：给场景中的所有执行器施加正弦控制（幅度为控制范围的 60%），用于观看运动
 //   --library    （M3-07c）资源库文件（实验记录的索引）；默认 $TERRA_LIBRARY 或 ~/.local/share/eai-terra/library.sqlite3
 //   --record-self-test （M3-07c）自检时测试记录与回放（与 --self-test、--motion 同用）
+//   --sensor-self-test （M4-04）自检时检查传感器采样与预览（与 --self-test、--scene 同用；场景需含 IMU、雷达与相机）
 //   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
 //                自检时在第 3 帧打开（代替按播放），并与“动作 → PD 层 → setControl → step”的纯物理对照逐位比较
 
@@ -30,8 +31,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -49,6 +52,8 @@
 #include "terra/simulation/interpolation.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/record.hpp"
+#include "terra/simulation/lidar.hpp"
+#include "terra/simulation/sensor_sampling.hpp"
 #include "terra/library/library.hpp"
 #include "terra/core/build_info.hpp"
 #include "terra/core/sha256.hpp"
@@ -74,6 +79,7 @@
 #include "terra/ui/widgets.hpp"
 #include "terra/view/camera.hpp"
 #include "terra/view/camera_controller.hpp"
+#include "camera_sensor.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
 
@@ -103,6 +109,7 @@ struct Options {
     std::string motionPath;  // M3-04c：动作文件（需要同时给出场景，或动作文件自带推荐场景）
     std::string libraryPath;  // M3-07c：资源库文件；空表示默认位置（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
     bool recordSelfTest = false;  // M3-07c：自检时测试记录与回放（第 5 帧开始记录，中间停止并回放）
+    bool sensorSelfTest = false;  // M4-04：自检时检查传感器采样与预览
     bool demoDrive = false;
 };
 
@@ -131,6 +138,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.libraryPath = argv[++i];
         } else if (a == "--record-self-test") {
             o.recordSelfTest = true;
+        } else if (a == "--sensor-self-test") {
+            o.sensorSelfTest = true;
         } else if (a == "--demo-drive") {
             o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -305,6 +314,8 @@ struct AppState {
     bool recordsOnlyScene = true;
     bool recordListStale = true;   // 切换场景、保存记录后在下一次绘制时刷新
     std::array<char, 64> actuatorFilter{};  // 执行器面板的名字过滤
+    bool showSensors = true;  // M4-04：传感器面板
+    int sensorImu = 0;        // 传感器面板中显示曲线的 IMU
     // 执行器面板本帧显示的实测与目标（自检用：回放时应等于记录中的值）
     std::map<std::uint32_t, std::pair<double, std::optional<double>>> actuatorShown;
     std::uint64_t actuatorShownStep = 0;  // 回放时面板对应的步序号
@@ -340,6 +351,7 @@ void buildDefaultLayout(ImGuiID dockspace) {
     ImGui::DockBuilderDockWindow("###Outliner", left);
     ImGui::DockBuilderDockWindow("###Details", right);
     ImGui::DockBuilderDockWindow("###Actuators", right);
+    ImGui::DockBuilderDockWindow("###Sensors", right);
     ImGui::DockBuilderDockWindow("###Log", bottom);
     ImGui::DockBuilderDockWindow("###Stats", bottom);
     ImGui::DockBuilderDockWindow("###Timeline", bottom);
@@ -381,6 +393,74 @@ struct SimulatedScene {
         double speed = 1.0;
     };
     std::optional<Replay> replay;
+
+    // M4-04：传感器预览。每完成一步，按各传感器的频率在对应的那一步采样（与 Headless、terra_capture 相同的采样时刻）：
+    // IMU 记入曲线；雷达在该步做射线检测；相机只保存该步的快照，本帧结束前渲染（预览只渲染最新的一份）。
+    // 回放期间不推进物理，传感器也不更新（传感器的记录在 M4-07）。
+    struct ImuSample {
+        double time = 0.0;
+        std::array<float, 6> values{};  // 比力 xyz、角速度 xyz
+    };
+    struct CameraPreview {
+        std::shared_ptr<const terra::data::PhysicsSnapshot> pending;
+        std::optional<vw::CameraFrame> frame;
+        terra::render::Texture2D color;
+        terra::render::Texture2D depth;
+        std::uint64_t rendered = 0;
+    };
+    static constexpr std::size_t kImuHistory = 2500;
+    std::vector<std::deque<ImuSample>> imuHistory;  // 与模型描述的 sensors 一一对应
+    std::vector<std::uint64_t> imuSamples;          // 累计采样数（自检用）
+    std::vector<std::optional<terra::simulation::LidarScan>> lidarScans;
+    std::vector<std::uint64_t> lidarSamples;
+    std::vector<CameraPreview> cameraPreviews;
+    std::unique_ptr<vw::CameraRenderer> cameraRenderer;  // 场景中有相机时才创建
+
+    void resetSensors() {
+        const std::size_t imus = instance.world->description().sensors.size();
+        imuHistory.assign(imus, {});
+        imuSamples.assign(imus, 0);
+        lidarScans.assign(instance.lidars.size(), std::nullopt);
+        lidarSamples.assign(instance.lidars.size(), 0);
+        cameraPreviews.resize(instance.cameras.size());
+        for (auto& c : cameraPreviews) c.pending.reset();
+    }
+    double imuRate(std::size_t k) const {
+        for (const auto& c : instance.sensors) {
+            if (c.sensor.value == k + 1) return c.rateHz;
+        }
+        return 0.0;
+    }
+    // 每完成一步（以及打开、重置之后的初始状态）：记录与传感器采样
+    void observe(const terra::data::PhysicsSnapshot& snapshot) {
+        if (recorder && snapshot.stepIndex % recordSampleEvery == 0) recorder->state(snapshot);
+        const double dt = snapshot.fixedTimestep;
+        for (std::size_t k = 0; k < imuHistory.size() && k < snapshot.sensors.size(); ++k) {
+            if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, imuRate(k))) continue;
+            ImuSample sample;
+            sample.time = snapshot.simulationTime;
+            for (std::size_t c = 0; c < 6 && c < snapshot.sensors[k].values.size(); ++c) {
+                sample.values[c] = static_cast<float>(snapshot.sensors[k].values[c]);
+            }
+            imuHistory[k].push_back(sample);
+            if (imuHistory[k].size() > kImuHistory) imuHistory[k].pop_front();
+            ++imuSamples[k];
+        }
+        for (std::size_t k = 0; k < lidarScans.size(); ++k) {
+            if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.lidars[k].rateHz)) continue;
+            lidarScans[k] = terra::simulation::scanLidar(*instance.world, instance.lidars[k]);
+            ++lidarSamples[k];
+        }
+        for (std::size_t k = 0; k < cameraPreviews.size(); ++k) {
+            if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.cameras[k].rateHz)) continue;
+            cameraPreviews[k].pending = std::make_shared<terra::data::PhysicsSnapshot>(snapshot);
+        }
+    }
+    // 重置、打开之后：从初始状态重新开始
+    void restartSensors() {
+        resetSensors();
+        observe(*instance.world->snapshot());
+    }
 
     // 回放时刻 t 的实体位姿：落在采样点上时直接取该份状态（逐位相同），否则在相邻两份之间插值
     std::vector<terra::data::Pose> replayPoses() const {
@@ -587,6 +667,13 @@ bool openScene(Frame& f, const std::string& requested) {
         // 每步控制器：动作与 PD 层（没有时返回空，等同于没有控制器）
         SimulatedScene* self = &sim;
         sim.runner->setController([self](std::uint64_t step) { return self->control(step); });
+        // 每步之后：实验记录与传感器采样（M4-04 起常驻，开始 / 停止记录时不再替换）
+        sim.runner->setStepObserver([self](const terra::data::PhysicsSnapshot& snapshot) { self->observe(snapshot); });
+    }
+    sim.restartSensors();
+    if (!sim.instance.cameras.empty() || !sim.instance.lidars.empty() || !sim.instance.world->description().sensors.empty()) {
+        std::printf("INFO 场景：传感器 IMU %zu 个、相机 %zu 个、2D 激光雷达 %zu 个（窗口 → 传感器）\n",
+                    sim.instance.world->description().sensors.size(), sim.instance.cameras.size(), sim.instance.lidars.size());
     }
     sim.runner->pause();
     std::vector<vw::SceneMessage> messages;
@@ -658,7 +745,6 @@ void stopRecording(Frame& f, const char* reason) {
     const bool ok = sim.recorder->finish(sim.instance.world->stepIndex(), sim.instance.world->simulationTime(), reason);
     sim.recorder.reset();
     sim.runner->setControlObserver(nullptr);
-    sim.runner->setStepObserver(nullptr);
     if (!ok) {
         f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + path);
         return;
@@ -676,6 +762,7 @@ void simReset(Frame& f) {
     if (!f.simulated) return;
     stopRecording(f, "stopped");
     f.simulated->runner->reset();
+    f.simulated->restartSensors();
     f.simulated->pd.clearTargets();
     f.simulated->panelTargets.clear();
     if (f.simulated->motion) f.simulated->motion->stop();
@@ -686,6 +773,7 @@ void simResetToKeyframe(Frame& f, std::size_t index) {
     if (!f.simulated) return;
     stopRecording(f, "stopped");
     if (!f.simulated->runner->resetToKeyframe(index)) return;
+    f.simulated->restartSensors();
     f.simulated->pd.clearTargets();
     f.simulated->panelTargets.clear();
     if (f.simulated->motion) f.simulated->motion->stop();
@@ -710,6 +798,7 @@ void startMotion(Frame& f) {
     stopRecording(f, "stopped");
     SimulatedScene& sim = *f.simulated;
     if (const auto key = sim.motion->motion().startKeyframe) sim.runner->resetToKeyframe(*key);
+    if (sim.motion->motion().startKeyframe) sim.restartSensors();  // M4-04：按关键帧重置后传感器从初始状态重新开始
     sim.pd.clearTargets();
     sim.panelTargets.clear();
     sim.motion->start(sim.instance.world->stepIndex());
@@ -817,9 +906,6 @@ void startRecording(Frame& f) {
     SimulatedScene* self = &sim;
     sim.runner->setControlObserver([self](std::uint64_t step, const std::vector<terra::physics::ActuatorCommand>& commands) {
         if (self->recorder) self->recorder->control(step, commands);
-    });
-    sim.runner->setStepObserver([self](const terra::data::PhysicsSnapshot& snapshot) {
-        if (self->recorder && snapshot.stepIndex % self->recordSampleEvery == 0) self->recorder->state(snapshot);
     });
     f.state.log.push_back(std::string{tr(TextId::LogRecordStarted)} + f.state.lastRecordPath);
     std::printf("INFO 开始记录：%s（每 %llu 步采样一次）\n", f.state.lastRecordPath.c_str(),
@@ -1316,6 +1402,7 @@ void menuBar(Frame& f) {
         ImGui::MenuItem(tr(TextId::PanelStats), nullptr, &panels.showStats);
         ImGui::MenuItem(tr(TextId::PanelActuators), nullptr, &f.state.showActuators);
         ImGui::MenuItem(tr(TextId::PanelTimeline), nullptr, &f.state.showTimeline);
+        ImGui::MenuItem(tr(TextId::PanelSensors), nullptr, &f.state.showSensors);
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuWindowResetLayout))) {
             f.settings.current.ui.layout.clear();
@@ -2250,6 +2337,256 @@ void timelinePanel(Frame& f) {
     if (!visible) f.state.showTimeline = false;
 }
 
+// ---- 传感器（M4-04）：相机预览的渲染与传感器面板 ----
+
+// 本帧结束前渲染各相机最新一份该采样的快照（预览只渲染最新的一份；不丢帧的完整采集用 terra_capture）
+void updateCameraPreviews(Frame& f) {
+    if (!f.simulated || f.simulated->replay) return;
+    SimulatedScene& sim = *f.simulated;
+    bool pending = false;
+    for (const auto& c : sim.cameraPreviews) pending = pending || c.pending != nullptr;
+    if (!pending) return;
+    if (!sim.cameraRenderer) {
+        std::string error;
+        sim.cameraRenderer = vw::CameraRenderer::create(f.ctx, error);
+        if (!sim.cameraRenderer) {
+            f.state.log.push_back(std::string{tr(TextId::SensorsCameraFailed)} + error);
+            for (auto& c : sim.cameraPreviews) c.pending.reset();
+            return;
+        }
+    }
+    st::RenderSettings rs = f.settings.current.render;
+    if (f.state.sceneEnvironment) rs.environment = *f.state.sceneEnvironment;
+    std::vector<vw::SceneMessage> messages;
+    const vw::FrameLighting lit = vw::frameLighting(rs, f.environments, f.ctx, messages);
+    appendMessages(f.state, messages);
+    for (std::size_t k = 0; k < sim.cameraPreviews.size(); ++k) {
+        auto& preview = sim.cameraPreviews[k];
+        if (!preview.pending) continue;
+        const auto& camera = sim.instance.cameras[k];
+        preview.frame = sim.cameraRenderer->capture(sim.instance, *sim.view, camera, *preview.pending, lit);
+        preview.pending.reset();
+        ++preview.rendered;
+        const vw::CameraFrame& frame = *preview.frame;
+        if (!frame.rgb.empty()) {
+            const auto image = vw::colorImage(frame);
+            preview.color = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
+        }
+        if (!frame.depth.empty()) {
+            float farthest = 0.0f;
+            for (const float d : frame.depth) {
+                if (std::isfinite(d)) farthest = std::max(farthest, d);
+            }
+            const auto image = vw::depthPreview(frame.depth, camera.width, camera.height, 0.0f, std::max(farthest, 0.1f));
+            preview.depth = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
+        }
+    }
+}
+
+// x、y、z 三条曲线（红、绿、蓝）画在同一坐标中，纵轴按数据自动缩放；左上角与左下角标出范围
+void tripleCurve(const char* id, const std::deque<SimulatedScene::ImuSample>& samples, std::size_t offset, const char* unit, float height) {
+    const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+    ImGui::InvisibleButton(id, ImVec2(width, height));
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+    if (samples.size() < 2) return;
+    float lo = std::numeric_limits<float>::infinity();
+    float hi = -std::numeric_limits<float>::infinity();
+    for (const auto& s : samples) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            lo = std::min(lo, s.values[offset + c]);
+            hi = std::max(hi, s.values[offset + c]);
+        }
+    }
+    if (hi - lo < 1e-3f) {
+        lo -= 0.5f;
+        hi += 0.5f;
+    }
+    const float pad = 0.08f * (hi - lo);
+    lo -= pad;
+    hi += pad;
+    const auto yOf = [&](float v) { return b.y - (v - lo) / (hi - lo) * (b.y - a.y); };
+    if (lo < 0.0f && hi > 0.0f) dl->AddLine(ImVec2(a.x, yOf(0.0f)), ImVec2(b.x, yOf(0.0f)), ImGui::GetColorU32(ImGuiCol_Border));
+    const ImU32 colors[3] = {IM_COL32(230, 80, 70, 255), IM_COL32(90, 190, 90, 255), IM_COL32(80, 140, 235, 255)};
+    std::vector<ImVec2> points(samples.size());
+    const float step = (b.x - a.x) / static_cast<float>(samples.size() - 1);
+    for (std::size_t c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < samples.size(); ++i) points[i] = ImVec2(a.x + step * static_cast<float>(i), yOf(samples[i].values[offset + c]));
+        dl->AddPolyline(points.data(), static_cast<int>(points.size()), colors[c], 1.5f);  // ImGui 1.93：粗细在前、标志在后
+    }
+    char text[48];
+    std::snprintf(text, sizeof text, "%.2f %s", static_cast<double>(hi), unit);
+    dl->AddText(ImVec2(a.x + 4.0f, a.y + 2.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
+    std::snprintf(text, sizeof text, "%.2f %s", static_cast<double>(lo), unit);
+    dl->AddText(ImVec2(a.x + 4.0f, b.y - ImGui::GetFontSize() - 2.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), text);
+}
+
+// 雷达俯视图：雷达在中心，朝上为雷达的 0°（+X），逆时针为正；红点命中，灰线没有命中，蓝点近于最小量程；每 1 m 一圈
+void lidarView(const terra::simulation::LidarScan& scan, float size) {
+    ImGui::InvisibleButton("##lidar", ImVec2(size, size));
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    double farthest = 0.0;
+    for (const float r : scan.ranges) {
+        if (std::isfinite(r)) farthest = std::max(farthest, static_cast<double>(r));
+    }
+    const double range = farthest > 0.0 ? std::min(farthest * 1.1, scan.rangeMax) : scan.rangeMax;
+    const float scale = (size * 0.5f - 6.0f) / static_cast<float>(std::max(range, 0.1));
+    const ImU32 grid = (ImGui::GetColorU32(ImGuiCol_Border) & 0x00FFFFFFu) | 0x60000000u;
+    for (int m = 1; m <= static_cast<int>(range) && m <= 30; ++m) dl->AddCircle(c, scale * static_cast<float>(m), grid, 48);
+    const ImU32 miss = (ImGui::GetColorU32(ImGuiCol_TextDisabled) & 0x00FFFFFFu) | 0x30000000u;
+    for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
+        const double angle = scan.angleMin + static_cast<double>(i) * scan.angleIncrement;
+        const ImVec2 dir(static_cast<float>(-std::sin(angle)), static_cast<float>(-std::cos(angle)));
+        const float r = scan.ranges[i];
+        if (std::isfinite(r)) {
+            dl->AddCircleFilled(ImVec2(c.x + dir.x * r * scale, c.y + dir.y * r * scale), 1.8f, IM_COL32(230, 70, 60, 255), 6);
+        } else if (r > 0) {
+            dl->AddLine(c, ImVec2(c.x + dir.x * (size * 0.5f - 4.0f), c.y + dir.y * (size * 0.5f - 4.0f)), miss);
+        } else {
+            dl->AddCircleFilled(ImVec2(c.x + dir.x * 6.0f, c.y + dir.y * 6.0f), 1.8f, IM_COL32(70, 120, 230, 255), 6);
+        }
+    }
+    const ImU32 head = ImGui::GetColorU32(ImGuiCol_Text);
+    dl->AddTriangleFilled(ImVec2(c.x, c.y - 7.0f), ImVec2(c.x - 5.0f, c.y + 5.0f), ImVec2(c.x + 5.0f, c.y + 5.0f), head);
+}
+
+void sensorsPanel(Frame& f) {
+    if (!f.state.showSensors) return;
+    // 已保存的布局中没有这个面板时，首次显示并入执行器面板所在的停靠组
+    if (const ImGuiWindow* sibling = ImGui::FindWindowByName("###Actuators"); sibling != nullptr && sibling->DockId != 0) {
+        ImGui::SetNextWindowDockID(sibling->DockId, ImGuiCond_FirstUseEver);
+    }
+    bool visible = true;
+    if (ImGui::Begin(label(TextId::PanelSensors, "Sensors").c_str(), &visible)) {
+        if (!f.simulated) {
+            ImGui::TextDisabled("%s", tr(TextId::OutlinerNoScene));
+        } else {
+            SimulatedScene& sim = *f.simulated;
+            const auto& d = sim.instance.world->description();
+            if (sim.replay) ImGui::TextWrapped("%s", tr(TextId::SensorsReplay));
+            if (d.sensors.empty() && sim.instance.cameras.empty() && sim.instance.lidars.empty()) {
+                ImGui::TextWrapped("%s", tr(TextId::SensorsNone));
+            }
+            const float font = ImGui::GetFontSize();
+            if (!d.sensors.empty()) {
+                const std::string header = std::string{tr(TextId::SensorsImu)} + "  (" + std::to_string(d.sensors.size()) + ")###imu";
+                if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    int& selected = f.state.sensorImu;
+                    selected = std::clamp(selected, 0, static_cast<int>(d.sensors.size()) - 1);
+                    const auto k = static_cast<std::size_t>(selected);
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::BeginCombo("##imu", d.sensors[k].name.c_str())) {
+                        for (std::size_t i = 0; i < d.sensors.size(); ++i) {
+                            if (ImGui::Selectable(d.sensors[i].name.c_str(), i == k)) selected = static_cast<int>(i);
+                        }
+                        ImGui::EndCombo();
+                    }
+                    const auto& history = sim.imuHistory[k];
+                    if (history.empty()) {
+                        ImGui::TextDisabled("%s", tr(TextId::SensorsWaiting));
+                    } else {
+                        const auto& v = history.back().values;
+                        ImGui::Text("%s  % .3f  % .3f  % .3f  m/s²", tr(TextId::SensorsAccel), static_cast<double>(v[0]), static_cast<double>(v[1]),
+                                    static_cast<double>(v[2]));
+                        ImGui::Text("%s  % .3f  % .3f  % .3f  rad/s", tr(TextId::SensorsGyro), static_cast<double>(v[3]), static_cast<double>(v[4]),
+                                    static_cast<double>(v[5]));
+                        ImGui::TextDisabled("%.0f Hz  ·  %s %llu  ·  t = %.3f s", sim.imuRate(k), tr(TextId::SensorsSamples),
+                                            static_cast<unsigned long long>(sim.imuSamples[k]), history.back().time);
+                        tripleCurve("##acc", history, 0, "m/s²", font * 5.0f);
+                        tripleCurve("##gyro", history, 3, "rad/s", font * 5.0f);
+                    }
+                }
+            }
+            if (!sim.instance.lidars.empty()) {
+                const std::string header = std::string{tr(TextId::SensorsLidar)} + "  (" + std::to_string(sim.instance.lidars.size()) + ")###lidar";
+                if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    for (std::size_t k = 0; k < sim.instance.lidars.size(); ++k) {
+                        ImGui::PushID(static_cast<int>(k));
+                        const auto& lidar = sim.instance.lidars[k];
+                        ImGui::TextUnformatted(lidar.name.c_str());
+                        if (const auto& scan = sim.lidarScans[k]) {
+                            std::size_t hits = 0;
+                            for (const float r : scan->ranges) hits += std::isfinite(r) ? 1u : 0u;
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("%.0f Hz  ·  %s %zu / %zu  ·  t = %.3f s", lidar.rateHz, tr(TextId::SensorsHits), hits,
+                                                scan->ranges.size(), scan->time);
+                            lidarView(*scan, std::min(ImGui::GetContentRegionAvail().x, font * 18.0f));
+                        } else {
+                            ImGui::TextDisabled("%s", tr(TextId::SensorsWaiting));
+                        }
+                        ImGui::PopID();
+                    }
+                }
+            }
+            if (!sim.instance.cameras.empty()) {
+                const std::string header = std::string{tr(TextId::SensorsCamera)} + "  (" + std::to_string(sim.instance.cameras.size()) + ")###camera";
+                if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    for (std::size_t k = 0; k < sim.instance.cameras.size(); ++k) {
+                        ImGui::PushID(static_cast<int>(k));
+                        const auto& camera = sim.instance.cameras[k];
+                        const auto& preview = sim.cameraPreviews[k];
+                        ImGui::TextUnformatted(camera.name.c_str());
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%d × %d  ·  %.0f°  ·  %.0f Hz", camera.width, camera.height, camera.fovyDegrees, camera.rateHz);
+                        if (!preview.frame) {
+                            ImGui::TextDisabled("%s", tr(TextId::SensorsWaiting));
+                        } else {
+                            const vw::CameraFrame& frame = *preview.frame;
+                            ImGui::TextDisabled("t = %.3f s  ·  %s %llu", frame.time, tr(TextId::SensorsStep),
+                                                static_cast<unsigned long long>(frame.step));
+                            const int shown = (preview.color.name() != 0 ? 1 : 0) + (preview.depth.name() != 0 ? 1 : 0);
+                            const float gap = ImGui::GetStyle().ItemSpacing.x;
+                            const float w = (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(std::max(shown - 1, 0))) /
+                                            static_cast<float>(std::max(shown, 1));
+                            // 显示旋转（M4-04）：只影响显示，按旋转后的四个角贴图；悬停取深度用同一个换算
+                            const int rotation = camera.displayRotation;
+                            const auto aspect = static_cast<float>(terra::scene::displayAspect(rotation, camera.width, camera.height));
+                            const ImVec2 size(w, w / std::max(aspect, 0.01f));
+                            const auto uvAt = [rotation](double dx, double dy) {
+                                const auto t = terra::scene::displayToImage(rotation, dx, dy);
+                                return ImVec2(static_cast<float>(t[0]), static_cast<float>(t[1]));
+                            };
+                            int index = 0;
+                            for (const auto* texture : {&preview.color, &preview.depth}) {
+                                if (texture->name() == 0) continue;
+                                if (index > 0) ImGui::SameLine();
+                                ImGui::PushID(index++);
+                                ImGui::InvisibleButton("##image", size);
+                                const ImVec2 a = ImGui::GetItemRectMin();
+                                const ImVec2 b = ImGui::GetItemRectMax();
+                                ImGui::GetWindowDrawList()->AddImageQuad(static_cast<ImTextureID>(texture->name()), a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y),
+                                                                         uvAt(0, 0), uvAt(1, 0), uvAt(1, 1), uvAt(0, 1));
+                                // 悬停时显示该像素的深度（两张图都可以）
+                                if (ImGui::IsItemHovered() && !frame.depth.empty()) {
+                                    const ImVec2 at = ImGui::GetIO().MousePos;
+                                    const auto t = terra::scene::displayToImage(rotation, static_cast<double>((at.x - a.x) / size.x),
+                                                                                static_cast<double>((at.y - a.y) / size.y));
+                                    const int px = std::clamp(static_cast<int>(t[0] * camera.width), 0, camera.width - 1);
+                                    const int py = std::clamp(static_cast<int>(t[1] * camera.height), 0, camera.height - 1);
+                                    const float depth = frame.depth[static_cast<std::size_t>(py) * static_cast<std::size_t>(camera.width) + static_cast<std::size_t>(px)];
+                                    if (std::isfinite(depth)) ImGui::SetTooltip("(%d, %d)  %s %.3f m", px, py, tr(TextId::SensorsDepthAt), static_cast<double>(depth));
+                                    else ImGui::SetTooltip("(%d, %d)  %s ∞", px, py, tr(TextId::SensorsDepthAt));
+                                }
+                                ImGui::PopID();
+                            }
+                            if (rotation != 0) ImGui::TextDisabled("%s %d°", tr(TextId::SensorsRotated), rotation);
+                        }
+                        ImGui::PopID();
+                    }
+                }
+            }
+        }
+    }
+    ImGui::End();
+    if (!visible) f.state.showSensors = false;
+}
+
 void logPanel(Frame& f) {
     bool& visible = f.settings.current.ui.showLog;
     if (!visible) return;
@@ -2377,6 +2714,7 @@ void buildUi(Frame& f) {
     outlinerPanel(f);
     detailsPanel(f);
     actuatorPanel(f);
+    sensorsPanel(f);  // 在执行器面板之后：首次显示时并入它所在的停靠组
     logPanel(f);
     statsPanel(f);
     timelinePanel(f);  // 在日志之后：首次显示时并入日志所在的停靠组
@@ -2631,6 +2969,7 @@ struct SceneSelfTestRecord {
     // M3-07c：记录与回放自检
     bool recordTest = false;
     std::size_t replayIndex = 0;  // 回放跳到的状态下标
+    bool sensorTest = false;      // M4-04：传感器自检（播放后不暂停、不单步）
     bool toggleStarted = false;   // M3-07d：开始 / 停止切换（工具栏、快捷键共用的路径）确实开始与停止了记录
     bool toggleStopped = false;
 };
@@ -2650,6 +2989,7 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
     if (frame == total / 2) {
         if (const auto* e = sim.instance.world->description().findEntity("cart_a/chassis")) f.state.selectedEntity = e->id;
     }
+    if (sceneRecord.sensorTest) return;  // M4-04：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
         // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
         // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
@@ -2762,7 +3102,73 @@ int recordSelfTest(Frame& f) {
     return failures == 0 ? 0 : 1;
 }
 
+// 传感器自检（M4-04）：场景 assets/tests/sensors/sensor_suite.terra-scene.json（IMU 夹具、雷达房间、相机夹具）。
+// 采样次数与 Headless、terra_capture 的采样规则一致；雷达与相机的读数与 M4-03 的解析解一致；面板与执行器面板同组。
+int sensorSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    SimulatedScene& sim = *f.simulated;
+    const auto& d = sim.instance.world->description();
+    const std::uint64_t steps = sim.instance.world->stepIndex();
+    const double dt = d.timestep;
+    std::printf("INFO 仿真推进了 %llu 步\n", static_cast<unsigned long long>(steps));
+    check(steps > 10, "仿真推进了（" + std::to_string(steps) + " 步）");
+    const auto due = [&](double rate) {
+        std::uint64_t n = 0;
+        for (std::uint64_t s = 0; s <= steps; ++s) n += terra::simulation::sensorSampleDue(s, dt, rate) ? 1u : 0u;
+        return n;
+    };
+    // IMU：物理频率，每一步（含初始状态）采样一次；水平静止的 level_imu 为 (0, 0, 9.81)
+    const auto* level = d.findSensor("imu/level_imu");
+    check(level != nullptr, "找到 IMU imu/level_imu");
+    if (level != nullptr) {
+        const std::size_t k = level->id.value - 1;
+        const auto& history = sim.imuHistory[k];
+        check(sim.imuSamples[k] == steps + 1, "IMU 每步采样：" + std::to_string(sim.imuSamples[k]) + " 次 = 步数 + 1");
+        check(!history.empty() && std::fabs(history.back().values[2] - 9.81f) < 1e-4f && history.back().values[0] == 0.0f,
+              "IMU 曲线的最新一点为 (0, 0, 9.81)");
+    }
+    // 雷达：10 Hz；读数与 M4-03b 的房间一致（275 束命中）
+    check(sim.instance.lidars.size() == 1 && sim.lidarSamples.size() == 1, "一个 2D 激光雷达");
+    if (sim.instance.lidars.size() == 1 && sim.lidarSamples.size() == 1) {
+        check(sim.lidarSamples[0] == due(10.0), "雷达按 10 Hz 采样：" + std::to_string(sim.lidarSamples[0]) + " 次，与采样规则一致");
+        const auto& scan = sim.lidarScans[0];
+        std::size_t hits = 0;
+        if (scan) {
+            for (const float r : scan->ranges) hits += std::isfinite(r) ? 1u : 0u;
+        }
+        check(scan && terra::simulation::sensorSampleDue(scan->step, dt, 10.0) && hits == 275,
+              "最新一次扫描在采样步上，275 束命中（与 M4-03b 的解析解一致，实际 " + std::to_string(hits) + "）");
+    }
+    // 相机：30 Hz；最新一帧在采样步上；画面中心是 2 m 外的墙
+    check(sim.cameraPreviews.size() == 1, "一个相机");
+    if (sim.cameraPreviews.size() == 1) {
+        const auto& preview = sim.cameraPreviews[0];
+        check(preview.rendered >= 1 && preview.frame.has_value(), "相机画面已渲染（" + std::to_string(preview.rendered) + " 次）");
+        if (preview.frame) {
+            const auto& frame = *preview.frame;
+            const auto& cam = sim.instance.cameras[0];
+            const float center = frame.depth.empty() ? 0.0f
+                                                     : frame.depth[static_cast<std::size_t>(cam.height / 2) * static_cast<std::size_t>(cam.width) +
+                                                                   static_cast<std::size_t>(cam.width / 2)];
+            check(terra::simulation::sensorSampleDue(frame.step, dt, 30.0) && frame.step <= steps, "相机画面取自 30 Hz 的采样步");
+            check(std::fabs(center - 2.0f) < 1e-5f, "画面中心的深度为 2 m（墙），实际 " + std::to_string(center));
+            check(preview.color.name() != 0 && preview.depth.name() != 0, "彩色与深度的预览纹理已创建");
+        }
+    }
+    const ImGuiWindow* sensors = ImGui::FindWindowByName("###Sensors");
+    const ImGuiWindow* actuators = ImGui::FindWindowByName("###Actuators");
+    check(sensors != nullptr && actuators != nullptr && sensors->DockNode != nullptr && sensors->DockNode == actuators->DockNode,
+          "“传感器”面板与“执行器”面板停靠在同一组");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    return failures == 0 ? 0 : 1;
+}
+
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.sensorTest) return sensorSelfTest(f);
     if (sceneRecord.recordTest) return recordSelfTest(f);
     int failures = 0;
     const auto check = [&](bool ok, const std::string& what) {
@@ -2885,7 +3291,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "用法：terra_viewer [--seconds N] [--frames N] [--language zh|en] [--settings 文件] [--self-test] "
                      "[--expect-renderer 子串] [--scene 场景文件] [--motion 动作文件] [--demo-drive] [--library 库文件] "
-                     "[--record-self-test]\n");
+                     "[--record-self-test] [--sensor-self-test]\n");
         return 2;
     }
 
@@ -3041,6 +3447,7 @@ int main(int argc, char** argv) {
     if (options.selfTest && simulated) {
         sceneRecord.motionPath = options.motionPath;
         sceneRecord.recordTest = options.recordSelfTest;
+        sceneRecord.sensorTest = options.sensorSelfTest;
     }
     if (!options.motionPath.empty() && !(options.selfTest && simulated)) {
         if (!openMotion(frame, options.motionPath)) {
@@ -3133,6 +3540,7 @@ int main(int argc, char** argv) {
                 for (const auto& e : stepped.controlErrors) state.log.push_back(e.message);
             }
         }
+        updateCameraPreviews(frame);  // M4-04：渲染本帧该采样的相机画面
 
         if (options.selfTest && options.frames > 0) {
             // 自检脚本：第 4–7 帧依次打开偏好设置的四个页面，第 7 帧打开按键录制弹窗，第 8 帧取消录制、第 9 帧关闭窗口；

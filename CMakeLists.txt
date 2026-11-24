@@ -69,6 +69,7 @@ add_subdirectory(apps/bench)
 if(TERRA_BUILD_RENDER)
     add_subdirectory(apps/viewer)
     add_subdirectory(apps/bench_render)
+    add_subdirectory(apps/capture)
 endif()
 
 if(TERRA_BUILD_TESTS)

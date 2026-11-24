@@ -158,7 +158,7 @@ void testComposed() {
     td::Pose placed;
     placed.position = {1, 2, 0};
     placed.orientation = yawDeg(90);
-    composition.models = {{"a", "a/", kFixture, td::Pose{}, false}, {"b", "b/", kFixture, placed, false}};
+    composition.models = {{"a", "a/", kFixture, td::Pose{}, false, {}}, {"b", "b/", kFixture, placed, false, {}}};
     auto composed = terra::physics::mujoco::composeWorld(composition);
     for (const auto& issue : composed.issues) std::printf("INFO 组合：%s\n", issue.message.c_str());
     check(composed.world != nullptr, "组合两个实例");

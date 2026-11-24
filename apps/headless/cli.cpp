@@ -104,6 +104,14 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             options.listRecords = true;
             continue;
         }
+        if (arg == "--sensors") {
+            if (options.sensors) {
+                result.error = "重复的参数 --sensors";
+                return result;
+            }
+            options.sensors = true;
+            continue;
+        }
         if (arg == "--dry-run") {
             if (options.dryRun) {
                 result.error = "重复的参数 --dry-run";
@@ -250,7 +258,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (options.listRecords) {
         // 列出库中的记录：只能配合 --library 与（作为筛选条件的）--scene
         if (seenModel || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps || options.durationSeconds ||
-            options.dryRun || seenSampleEvery) {
+            options.dryRun || seenSampleEvery || options.sensors) {
             result.error = "--list-records 只能与 --library、--scene（按场景筛选）同用";
         }
         return result;
@@ -262,7 +270,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (seenRerun) {
         // 复现：一切由记录给出，不能再指定运行参数
         if (seenModel || seenScene || seenMotion || seenRecord || options.steps || options.durationSeconds || options.dryRun ||
-            seenSampleEvery) {
+            seenSampleEvery || options.sensors) {
             result.error = "--rerun 不能与 --model、--scene、--motion、--record、--steps、--duration、--sample-every、--dry-run 同用";
         }
         return result;
@@ -313,6 +321,8 @@ std::string usageText() {
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
+           "  --sensors            输出传感器读数（M4-02）：model 之后一行 sensor_list（清单与频率），之后按各传感器的频率\n"
+           "                       输出 sensor 行（第 0 步总是输出）；频率来自场景文件的 sensors，默认等于物理频率\n"
            "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"
            "  -h, --help           显示本帮助\n"
            "      --version        显示版本与构建信息\n"
@@ -489,6 +499,34 @@ std::string stateToJson(const terra::data::PhysicsSnapshot& snapshot) {
     json += snapshot.diagnostics.finite ? "true" : "false";
     json += ",\"solver_iterations\":" + std::to_string(snapshot.diagnostics.solverIterations) + "}}";
     return json;
+}
+
+std::string sensorListToJson(const terra::data::ModelDescription& model, const std::vector<double>& rates) {
+    std::string json = "{\"type\":\"sensor_list\",\"sensors\":[";
+    for (std::size_t k = 0; k < model.sensors.size(); ++k) {
+        const auto& s = model.sensors[k];
+        if (k > 0) json += ",";
+        json += "{\"id\":" + std::to_string(s.id.value) + ",\"name\":\"" + jsonEscape(s.name) + "\",\"kind\":\"imu\",\"entity\":" +
+                std::to_string(s.entity.value) + ",\"added\":" + (s.added ? "true" : "false") + ",\"rate_hz\":" +
+                formatNumber(k < rates.size() ? rates[k] : 0.0) + "}";
+    }
+    return json + "]}";
+}
+
+std::string sensorToJson(const terra::data::SensorDescription& sensor, const terra::data::SensorReading& reading,
+                         std::uint64_t step, double time) {
+    const auto array = [&](std::size_t from, std::size_t count) {
+        std::string out = "[";
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i > 0) out += ",";
+            out += formatNumber(from + i < reading.values.size() ? reading.values[from + i] : 0.0);
+        }
+        return out + "]";
+    };
+    return "{\"type\":\"sensor\",\"id\":" + std::to_string(sensor.id.value) + ",\"name\":\"" + jsonEscape(sensor.name) +
+           "\",\"kind\":\"imu\",\"step\":" + std::to_string(step) + ",\"time\":" + formatNumber(time) +
+           ",\"linear_acceleration\":" + array(0, 3) + ",\"angular_velocity\":" + array(3, 3) + ",\"orientation\":" +
+           array(6, 4) + "}";
 }
 
 std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time) {

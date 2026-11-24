@@ -32,6 +32,17 @@ struct PhysicsOptions {
     double tolerance = 0.0;
 };
 
+// 场景文件添加的 IMU（M4-02）。名字都是实例内的名字（不带前缀，组合时与其他元素一样加上前缀）：
+//   - site 非空：装在模型中已有的安装点上；该安装点缺少加速度计或陀螺仪时补上（已经齐全时不做任何改动）；
+//   - 否则装在 body 上：新建名为 name 的安装点，位姿为 pose（body 坐标系），再加上加速度计与陀螺仪。
+// 插入的传感器只读取状态，不改变动力学。
+struct ImuMount {
+    std::string name;
+    std::string site;
+    std::string body;
+    terra::data::Pose pose;
+};
+
 struct ModelPlacement {
     std::string instanceName;  // 写入 ModelDescription::modelInstances
     std::string prefix;        // 加在该实例所有元素名字前，如 "cart_a/"
@@ -39,6 +50,7 @@ struct ModelPlacement {
     terra::data::Pose placement;
     // M3-04：删掉该实例根部 body 的自由关节（悬挂模式）。没有自由关节时给出警告。
     bool fixedBase = false;
+    std::vector<ImuMount> imus;  // M4-02
 };
 
 struct WorldComposition {

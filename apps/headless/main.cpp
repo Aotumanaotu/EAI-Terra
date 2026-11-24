@@ -27,6 +27,7 @@
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/record.hpp"
+#include "terra/simulation/sensor_sampling.hpp"
 #include "terra/library/library.hpp"
 #include "terra/core/sha256.hpp"
 
@@ -204,6 +205,7 @@ int run(const RunOptions& requested) {
     // 唯一与具体后端相关的调用；之后只通过 PhysicsWorld 接口使用世界。
     std::unique_ptr<physics::PhysicsWorld> owned;
     std::vector<terra::scene::PdAssignment> pdAssignments;
+    std::vector<terra::scene::SensorConfig> sensorConfigs;  // M4-02：场景中各传感器的采样频率
     if (!options.scenePath.empty()) {
         // 场景文件（M2-08）：由 terra_scene 组合模型实例，只跑物理；视觉绑定只检查文件是否存在
         auto scene = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
@@ -214,6 +216,12 @@ int run(const RunOptions& requested) {
         }
         if (!scene.ok()) return kExitModel;
         pdAssignments = scene.scene->pd;
+        sensorConfigs = scene.scene->sensors;
+        // 相机需要图形上下文（M4-03）：Headless 不链接图形库，只提示、不渲染
+        if (!scene.scene->cameras.empty()) {
+            diagnose("场景中有 " + std::to_string(scene.scene->cameras.size()) +
+                     " 个相机：相机需要图形上下文，在 Headless 中不可用（请用查看器或 terra_capture）；其余照常运行");
+        }
         owned = std::move(scene.scene->world);
     } else {
         physics::LoadResult loaded = terra::physics::mujoco::loadWorld(terra::data::ModelSource{options.modelPath});
@@ -288,7 +296,30 @@ int run(const RunOptions& requested) {
     ok = ok && emit(modelToJson(world.description()));
     const terra::RunSchedule schedule{resolved.totalSteps, options.sampleEvery};
     const double dt = resolved.timestep;
+
+    // 传感器（M4-02）：频率来自场景文件，直接加载 MJCF 时等于物理频率；按 sensorSampleDue 采样
+    const auto& sensors = world.description().sensors;
+    std::vector<double> sensorRates(sensors.size(), dt > 0 ? 1.0 / dt : 0.0);
+    for (const auto& c : sensorConfigs) {
+        if (c.sensor.valid() && c.sensor.value <= sensorRates.size()) sensorRates[c.sensor.value - 1] = c.rateHz;
+    }
+    const auto emitSensors = [&]() {
+        if (!options.sensors) return true;
+        const auto snap = world.snapshot();
+        bool written = true;
+        for (std::size_t k = 0; k < sensors.size() && k < snap->sensors.size(); ++k) {
+            if (!terra::simulation::sensorSampleDue(snap->stepIndex, dt, sensorRates[k])) continue;
+            written = written && emit(sensorToJson(sensors[k], snap->sensors[k], snap->stepIndex, snap->simulationTime));
+        }
+        return written;
+    };
+    if (options.sensors) {
+        if (sensors.empty()) diagnose("--sensors：模型中没有传感器（MJCF 中的 IMU，或场景文件 sensors 中添加的）");
+        ok = ok && emit(sensorListToJson(world.description(), sensorRates));
+    }
+
     ok = ok && emit(sampleState(world));  // 第 0 步：初始状态
+    ok = ok && emitSensors();
     if (recorder) recorder->state(*world.snapshot());
     for (std::uint64_t i = 0; ok && i < resolved.totalSteps; ++i) {
         // 每步控制：动作给出的命令 → PD 层（与查看器的每步控制器相同）
@@ -324,6 +355,7 @@ int run(const RunOptions& requested) {
             ok = emit(sampleState(world));
             if (recorder) recorder->state(*world.snapshot());
         }
+        ok = ok && emitSensors();
     }
     if (recorder && !recorder->finish(world.stepIndex(), world.simulationTime(), "completed")) {
         diagnose("写入实验记录失败：" + options.recordPath);

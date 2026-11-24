@@ -70,7 +70,9 @@ struct ComposedWorld {
 };
 
 // 校验实例，生成组合请求并调用 factory。校验失败时不调用 factory。label 写入模型描述的 sourcePath。
+// imus（M4-02）：按实例下标给出场景文件添加的 IMU（名字不带前缀）；为空或较短时其余实例没有。
 ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const PhysicsOverrides& overrides,
-                           const WorldFactory& factory, const std::string& label);
+                           const WorldFactory& factory, const std::string& label,
+                           const std::vector<std::vector<terra::physics::ImuMount>>& imus = {});
 
 }  // namespace terra::scene

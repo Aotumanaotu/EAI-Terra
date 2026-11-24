@@ -151,6 +151,7 @@ enum class ColorFormat {
     None,     // 无颜色附件（仅深度，如阴影图）
     Rgba8,    // 8 位，供显示与回读
     Rgba16F,  // 半精度浮点，HDR 场景渲染（M1-08）
+    R32F,     // 单通道 32 位浮点（M4-03：相机的线性深度）
 };
 
 enum class DepthFormat {
@@ -187,6 +188,8 @@ public:
 
     // 读回 RGBA8 像素，行序自下而上（OpenGL 约定），每行 width*4 字节。仅单采样、带颜色附件时有效。
     std::vector<std::uint8_t> readPixels(int x, int y, int width, int height) const;
+    // 读回单通道 32 位浮点（M4-03，R32F 颜色附件），行序自下而上。仅单采样时有效。
+    std::vector<float> readFloats(int x, int y, int width, int height) const;
     // 把颜色复制到同尺寸的 target（多重采样时即解析），使用最近邻过滤。
     void resolveTo(const Framebuffer& target) const;
 

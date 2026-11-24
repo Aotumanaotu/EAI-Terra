@@ -44,7 +44,50 @@ std::vector<td::Pose> entityPoses(const td::PhysicsSnapshot& snapshot) {
 
 SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory) {
     SceneLoadResult out;
-    ComposedWorld composed = composeWorld(document.models, document.physics, factory, document.path);
+    // 场景文件添加的 IMU（M4-02）：按全名中的实例前缀分到各实例，名字去掉前缀后交给后端
+    std::vector<std::vector<terra::physics::ImuMount>> imus(document.models.size());
+    bool sensorFailed = false;
+    for (const SensorSpec& spec : document.sensors) {
+        if (spec.type != "imu") continue;
+        const bool onSite = !spec.site.empty();
+        const std::string& mount = onSite ? spec.site : spec.entity;
+        const std::string field = spec.where + (onSite ? "/site" : "/entity");
+        const std::size_t slash = mount.find('/');
+        std::size_t instance = document.models.size();
+        if (slash != std::string::npos) {
+            for (std::size_t i = 0; i < document.models.size(); ++i) {
+                if (document.models[i].name == mount.substr(0, slash)) instance = i;
+            }
+        }
+        if (instance == document.models.size()) {
+            std::string list;
+            for (const auto& m : document.models) list += (list.empty() ? "" : "、") + m.name;
+            out.issues.push_back({Severity::Error, {}, field,
+                                  "“" + mount + "”没有对应的实例：名字需要带实例前缀（场景中的实例：" + list + "）"});
+            sensorFailed = true;
+            continue;
+        }
+        const std::string prefix = instancePrefix(document.models[instance].name);
+        terra::physics::ImuMount imu;
+        if (onSite) {
+            imu.site = mount.substr(prefix.size());
+            imu.name = imu.site;
+        } else {
+            if (spec.name.rfind(prefix, 0) != 0 || spec.name.size() == prefix.size()) {
+                out.issues.push_back({Severity::Error, document.models[instance].name, spec.where + "/name",
+                                      "IMU 名字应以所属实例的前缀“" + prefix + "”开头，如 “" + prefix + "imu”"});
+                sensorFailed = true;
+                continue;
+            }
+            imu.body = mount.substr(prefix.size());
+            imu.name = spec.name.substr(prefix.size());
+            imu.pose = spec.pose;
+        }
+        imus[instance].push_back(std::move(imu));
+    }
+    if (sensorFailed) return out;
+
+    ComposedWorld composed = composeWorld(document.models, document.physics, factory, document.path, imus);
     out.issues = std::move(composed.issues);
     if (!composed.ok()) return out;
 
@@ -178,6 +221,88 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         part.binding = static_cast<int>(k);
         scene.visuals.push_back(part);
     }
+
+    // 传感器的采样频率（M4-02）：场景文件写了的按场景，否则等于物理频率；不高于物理频率
+    const double physicsRate = d.timestep > 0 ? 1.0 / d.timestep : 0.0;
+    for (const td::SensorDescription& s : d.sensors) {
+        SensorConfig config{s.id, physicsRate};
+        for (const SensorSpec& spec : document.sensors) {
+            if (spec.name != s.name || !spec.rateHz) continue;
+            config.rateHz = *spec.rateHz;
+            if (config.rateHz > physicsRate) {
+                out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",
+                                      "频率 " + std::to_string(*spec.rateHz) + " Hz 高于物理频率，按物理频率 " +
+                                          std::to_string(physicsRate) + " Hz 采样"});
+                config.rateHz = physicsRate;
+            }
+        }
+        scene.sensors.push_back(config);
+    }
+
+    // 相机（M4-03）：MJCF 中的相机或装在实体上；只支持固定在实体上的透视相机
+    for (const SensorSpec& spec : document.sensors) {
+        if (spec.type != "camera") continue;
+        CameraSensor camera;
+        camera.name = spec.name;
+        camera.where = spec.where;
+        if (!spec.camera.empty()) {
+            const td::CameraDescription* c = d.findCamera(spec.camera);
+            if (c == nullptr) {
+                std::string list;
+                for (const auto& known : d.cameras) list += (list.empty() ? "" : "、") + known.name;
+                out.issues.push_back({Severity::Error, {}, spec.where + "/camera",
+                                      "找不到相机“" + spec.camera + "”" + (list.empty() ? "；场景中没有 MJCF 相机" : "；场景中的相机：" + list)});
+                failed = true;
+                continue;
+            }
+            if (!c->fixed || !c->perspective) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/camera",
+                                      "相机“" + spec.camera + "”" + (c->fixed ? "是正交投影" : "使用跟踪模式") + "，目前只支持固定在实体上的透视相机"});
+                failed = true;
+                continue;
+            }
+            camera.entity = c->entity;
+            camera.mount = c->mount;
+            camera.fovyDegrees = c->fovyDegrees;
+            if (c->width > 0 && c->height > 0) {
+                camera.width = c->width;
+                camera.height = c->height;
+            }
+        } else {
+            const td::EntityDescription* e = d.findEntity(spec.entity);
+            if (e == nullptr) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/entity", "找不到实体“" + spec.entity + "”" + entityHint(d, spec.entity)});
+                failed = true;
+                continue;
+            }
+            const std::size_t slash = spec.entity.find('/');
+            const std::string prefix = slash == std::string::npos ? std::string{} : spec.entity.substr(0, slash + 1);
+            if (prefix.empty() || spec.name.rfind(prefix, 0) != 0 || spec.name.size() == prefix.size()) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/name",
+                                      "相机名字应以所属实例的前缀“" + prefix + "”开头，如 “" + prefix + "camera”"});
+                failed = true;
+                continue;
+            }
+            camera.entity = e->id;
+            camera.mount = spec.pose;
+        }
+        if (spec.width) camera.width = *spec.width;
+        if (spec.height) camera.height = *spec.height;
+        if (spec.fovyDegrees) camera.fovyDegrees = *spec.fovyDegrees;
+        camera.nearClip = spec.nearClip;
+        camera.farClip = spec.farClip;
+        camera.rgb = spec.rgb;
+        camera.depth = spec.depth;
+        camera.rateHz = spec.rateHz.value_or(30.0);
+        if (camera.rateHz > physicsRate) {
+            out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",
+                                  "频率 " + std::to_string(camera.rateHz) + " Hz 高于物理频率，按物理频率 " + std::to_string(physicsRate) +
+                                      " Hz 采样"});
+            camera.rateHz = physicsRate;
+        }
+        scene.cameras.push_back(std::move(camera));
+    }
+    if (failed) return out;
 
     scene.document = std::move(document);
     scene.world = std::move(composed.world);

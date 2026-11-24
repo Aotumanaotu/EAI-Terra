@@ -1,6 +1,6 @@
 # EAI Terra 开发记录
 
-> 本文件是**实际开发进度与验证证据的主记录**。开发计划描述未来任务，本文件只记录确实发生的工作。**M0 已完成**（2026-11-19）。**M1 已完成**（2026-11-23）。**M2 已完成**（2026-11-23）。**M3 已完成**（2026-11-24，LOG-132）。当前为 **M4**：任务分解评审通过（LOG-133、134）；M4-01 传感器设计稿待评审（LOG-134）。
+> 本文件是**实际开发进度与验证证据的主记录**。开发计划描述未来任务，本文件只记录确实发生的工作。**M0 已完成**（2026-11-19）。**M1 已完成**（2026-11-23）。**M2 已完成**（2026-11-23）。**M3 已完成**（2026-11-24，LOG-132）。当前为 **M4**：M4-01 传感器设计评审通过；M4-02 IMU 已通过（LOG-136）；M4-03a 离屏渲染与相机已实现，待基线验证（LOG-137）。
 
 ## 1. 当前进度快照
 
@@ -1739,6 +1739,48 @@
   - Headless 只有物理侧传感器；新程序 `terra_capture` 做离线采集；
   - 真值夹具与判据；6 个评审问题。
 - **下一步：**等待用户评审 M4-01 第 8 节；之后实现 M4-02 IMU。
+
+### LOG-135：M4-01 评审通过；M4-02 IMU（实现）
+
+- **日期：**2026-11-24。
+- **类型 / 当前状态：**决策 + 功能。M4-02 代码已写，未编译（按约定）；**待基线验证**。
+- **评审：**M4-01 设计稿第 8 节 6 个问题全部按建议通过。
+- **实现：**详见 [M4-02 报告](../validation/M4-02-imu.md)。
+  - 数据契约：`SensorId`，模型描述修订 6（`sensors`），快照修订 3（`sensors`，IMU 每个 10 个数）；
+  - MuJoCo 后端：发现 MJCF 中的 IMU；按场景文件在实体或已有安装点上插入 IMU；读数随快照给出；
+  - 场景文件 `sensors`（`imu`）与每个传感器的频率；
+  - 采样时刻（按时间累计）；Headless `--sensors`。
+  - 与设计稿的一处细化：快照总是给出全部物理侧传感器的当前读数，按频率采样由使用方决定。
+  - 已核对 MuJoCo 4.0.1 源码：`sensor_noise` 没有被使用，读数是无噪声真值。
+- **文件（未提交）：**
+  - 修改：`engine/core/data/include/terra/data/{ids,model_description,state}.hpp`、`engine/physics/include/terra/physics/world_composition.hpp`、`engine/physics/backends/mujoco/src/mujoco_world.cpp`、`engine/scene/include/terra/scene/{scene,composition}.hpp`、`engine/scene/src/{scene_file,scene_instance,composition}.cpp`、`engine/simulation/CMakeLists.txt`、`apps/headless/{cli.hpp,cli.cpp,main.cpp}`、`tests/CMakeLists.txt`、`tests/apps/test_headless_cli.cpp`、`tests/physics/test_robot_description.cpp`、`tests/simulation/test_pd_layer.cpp`；
+  - 新增：`engine/simulation/include/terra/simulation/sensor_sampling.hpp`、`engine/simulation/src/sensor_sampling.cpp`、`assets/tests/sensors/{imu_bench.xml,imu_added.terra-scene.json}`、`tests/sensors/{test_imu,test_scene_sensors}.cpp`、`tests/simulation/test_sensor_sampling.cpp`、`scripts/verify/m4_02.sh`。
+- **验证：**`bash scripts/verify/m4_02.sh`。预期 78/78、107/107，变异 9 个；变异锚点 206/206 唯一。本步只有数值，没有窗口展示。
+- **下一步：**基线运行；通过后进行 M4-03a 离屏渲染与相机。
+
+### LOG-136：M4-02 通过
+
+- **日期：**2026-11-24。
+- **类型 / 当前状态：**验证。M4-02 **已实现并通过基线验证**。
+- **结果（`bash scripts/verify/m4_02.sh`）：**78/78、107/107（Debug 与 Release -Werror）、ASan 86/86 + 21/21、变异 9/9。夹具读数与解析解一致；G1 自带的两个 IMU 读数合理。详见 [M4-02 报告](../validation/M4-02-imu.md) 第 5.2 节。
+- **下一步：**M4-03a 离屏渲染与相机。
+
+### LOG-137：M4-03a 离屏渲染与相机（实现）
+
+- **日期：**2026-11-24。
+- **类型 / 当前状态：**功能。代码已写，未编译（按约定）；**待基线验证**。
+- **实现：**详见 [M4-03a 报告](../validation/M4-03a-camera.md)。
+  - 线性深度渲染器（沿光轴的距离，米；无命中为 +inf）；
+  - MJCF 相机清单（模型描述修订 7）；
+  - 场景文件中的相机（MJCF 相机或装在实体上）；
+  - 相机模型（内参、光学坐标系、投影）；
+  - 按快照渲染彩色与深度（`CameraRenderer`）；
+  - Headless 遇到相机时提示并忽略。
+  - 与设计稿的一处细化：相机作为场景层的配置（`SceneInstance::cameras`），不进入物理侧的传感器清单与快照。
+- **验证：**`bash scripts/verify/m4_03a.sh`。
+  - 预期 80/80、110/110，变异 10 个；变异锚点 216/216 唯一。
+  - 最后用系统默认的看图程序打开相机拍到的图片（夹具与 Stretch 3 头部相机）。
+- **下一步：**基线运行；通过后进行 M4-03b（2D 激光雷达）。
 
 ## 4. 后续记录规则
 

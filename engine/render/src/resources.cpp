@@ -327,7 +327,7 @@ FramebufferResult Framebuffer::create(const FramebufferDesc& desc) {
     const bool multisample = desc.samples > 1;
     glCreateFramebuffers(1, &f.name_);
     if (desc.color != ColorFormat::None) {
-        const GLenum format = desc.color == ColorFormat::Rgba16F ? GL_RGBA16F : GL_RGBA8;
+        const GLenum format = desc.color == ColorFormat::Rgba16F ? GL_RGBA16F : desc.color == ColorFormat::R32F ? GL_R32F : GL_RGBA8;
         if (multisample) {
             glCreateRenderbuffers(1, &f.color_);
             glNamedRenderbufferStorageMultisample(f.color_, desc.samples, format, width, height);
@@ -447,6 +447,20 @@ std::vector<std::uint8_t> Framebuffer::readPixels(int x, int y, int width, int h
     glReadnPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, static_cast<GLsizei>(pixels.size()), pixels.data());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous));
     return pixels;
+}
+
+std::vector<float> Framebuffer::readFloats(int x, int y, int width, int height) const {
+    std::vector<float> values;
+    if (name_ == 0 || width <= 0 || height <= 0) return values;
+    values.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    GLint previous = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, name_);
+    glNamedFramebufferReadBuffer(name_, GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadnPixels(x, y, width, height, GL_RED, GL_FLOAT, static_cast<GLsizei>(values.size() * sizeof(float)), values.data());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous));
+    return values;
 }
 
 }  // namespace terra::render

@@ -93,7 +93,8 @@ int attributeByPrefix(const std::string& message, const std::vector<SceneModel>&
 }
 
 ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const PhysicsOverrides& overrides,
-                           const WorldFactory& factory, const std::string& label) {
+                           const WorldFactory& factory, const std::string& label,
+                           const std::vector<std::vector<tp::ImuMount>>& imus) {
     ComposedWorld out;
     if (instances.empty()) {
         out.issues.push_back(issue(Severity::Error, nullptr, "场景中没有模型实例"));
@@ -119,7 +120,11 @@ ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const Physi
     std::vector<SceneIssue> optionWarnings;
     tp::WorldComposition request;
     request.sourceLabel = label;
-    for (const SceneModel& m : instances) request.models.push_back({m.name, instancePrefix(m.name), m.mjcf, m.placement, m.fixedBase});
+    for (std::size_t i = 0; i < instances.size(); ++i) {
+        const SceneModel& m = instances[i];
+        request.models.push_back({m.name, instancePrefix(m.name), m.mjcf, m.placement, m.fixedBase,
+                                  i < imus.size() ? imus[i] : std::vector<tp::ImuMount>{}});
+    }
     request.resolveOptions = [&](const std::vector<tp::PhysicsOptions>& models) {
         return resolvePhysicsOptions(overrides, models, instances, optionWarnings);
     };

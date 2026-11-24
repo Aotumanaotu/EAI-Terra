@@ -4,7 +4,7 @@
 # terra_viewer_scene（M1-10）：演示场景、环境贴图库与渲染设置换算；不依赖界面库。
 # 查看器、参考图测试与渲染基准共用，保证三者画面一致。
 # M2-07：场景的渲染适配（scene_view.cpp）：terra_scene 的视觉部件 → 渲染项；不链接物理后端。
-add_library(terra_viewer_scene STATIC demo_scene.cpp scene_view.cpp mjcf_visual.cpp)
+add_library(terra_viewer_scene STATIC demo_scene.cpp scene_view.cpp mjcf_visual.cpp camera_sensor.cpp)
 add_library(terra::viewer_scene ALIAS terra_viewer_scene)
 target_include_directories(terra_viewer_scene PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(terra_viewer_scene PUBLIC terra::render terra::asset terra::settings terra::scene)

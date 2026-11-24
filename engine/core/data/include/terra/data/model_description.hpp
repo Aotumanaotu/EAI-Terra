@@ -172,6 +172,37 @@ struct KeyframeDescription {
     double time = 0.0;  // 模型中写的关键帧时间（s），只作记录
 };
 
+// 传感器（M4-02，描述修订 6；M4-01 设计稿）。物理侧传感器由后端计算，读数随快照给出（PhysicsSnapshot::sensors）。
+//   Imu：同一安装点上的加速度计与陀螺仪（MJCF 中已有的，或场景文件添加的）。读数在安装点坐标系中：
+//        比力（m/s²，静止水平放置时为 (0, 0, +9.81)）、角速度（rad/s），以及安装点在世界中的姿态。
+//        MJCF 中的 noise 属性不施加（MuJoCo 本身也不施加），读数是无噪声的真值；cutoff 照 MuJoCo 的规则截断。
+// 相机与激光雷达在 M4-03 加入。
+enum class SensorKind { Imu };
+
+struct SensorDescription {
+    SensorId id;
+    std::string name;  // 安装点全名（带实例前缀），如 "g1/imu_in_pelvis"
+    SensorKind kind = SensorKind::Imu;
+    EntityId entity;   // 安装的实体；装在世界上时为无效 ID
+    ModelInstanceId modelInstance;
+    Pose mount;        // 安装点相对实体原点（body 坐标系）的位姿
+    bool added = false;  // 由场景文件添加（组合时插入了安装点或传感器）；false 表示 MJCF 中原有
+};
+
+// MJCF 中的相机（M4-03，描述修订 7）。不论是否启用都列出；场景文件 sensors 中引用名字即可作为相机传感器启用。
+// 相机坐标系与 MuJoCo、OpenGL 相同：看向自身 −Z，+Y 向上，+X 向右。
+struct CameraDescription {
+    std::string name;  // 全名（带实例前缀）
+    EntityId entity;   // 无效 ID 表示装在世界上
+    ModelInstanceId modelInstance;
+    Pose mount;        // 相对实体原点（body 坐标系）
+    double fovyDegrees = 45.0;  // 竖直视场角（度）
+    int width = 0;     // MJCF 中写的分辨率；没写（MuJoCo 默认 1 × 1）时为 0
+    int height = 0;
+    bool fixed = true;        // mode = fixed：位姿随实体；跟踪类模式（trackcom、targetbody 等）为 false，Terra 不支持
+    bool perspective = true;  // 透视投影；正交投影为 false，Terra 不支持
+};
+
 // 模型中固定的仿真配置，用于记录和复现实验（开发计划 M0-05 ①）。
 // 名称为后端无关的文字描述；未知取值记为 "unknown(<编号>)"。
 struct SimulationSettings {
@@ -186,7 +217,8 @@ struct SimulationSettings {
 struct ModelDescription {
     // 描述的修订号：1 为 M0；2 为 M2-03（增加模型实例、几何体与网格，已有字段不变）。
     // 3 为 M3-02（关节限位、轴向与被动参数；执行器类别、增益、传动比与力限；关键帧）。
-    static constexpr std::uint32_t kRevision = 5;
+    // 4 为 M3-03（显示用网格、材质与贴图）；5 为 M3-06（实体质量）；6 为 M4-02（传感器）；7 为 M4-03（MJCF 相机）。
+    static constexpr std::uint32_t kRevision = 7;
 
     // 世界实例号：每次成功加载分配一个新值，进程内唯一、从 1 递增；0 无效。
     // 实体、关节、执行器 ID 只在同一个世界实例内有意义；重新加载后旧 ID 的数值可能相同，
@@ -204,6 +236,8 @@ struct ModelDescription {
     std::vector<MaterialDescription> materials;  // M3-03
     std::vector<TextureDescription> textures;    // M3-03
     std::vector<KeyframeDescription> keyframes;  // 按模型中的顺序；下标即 PhysicsWorld::resetToKeyframe 的参数
+    std::vector<SensorDescription> sensors;      // M4-02；按安装点在模型中的顺序
+    std::vector<CameraDescription> cameras;      // M4-03；按模型中的顺序
 
     const EntityDescription* entity(EntityId id) const noexcept {
         return id.valid() && id.value <= entities.size() ? &entities[id.value - 1] : nullptr;
@@ -219,6 +253,23 @@ struct ModelDescription {
     }
     const GeomDescription* geom(GeomId id) const noexcept {
         return id.valid() && id.value <= geoms.size() ? &geoms[id.value - 1] : nullptr;
+    }
+    const SensorDescription* sensor(SensorId id) const noexcept {
+        return id.valid() && id.value <= sensors.size() ? &sensors[id.value - 1] : nullptr;
+    }
+    const CameraDescription* findCamera(std::string_view name) const noexcept {
+        if (name.empty()) return nullptr;
+        for (const auto& c : cameras) {
+            if (c.name == name) return &c;
+        }
+        return nullptr;
+    }
+    const SensorDescription* findSensor(std::string_view name) const noexcept {
+        if (name.empty()) return nullptr;
+        for (const auto& s : sensors) {
+            if (s.name == name) return &s;
+        }
+        return nullptr;
     }
     // 按名称查找；空名称不参与查找。
     const EntityDescription* findEntity(std::string_view name) const noexcept {

@@ -28,6 +28,8 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-03a：相机模型（scene.camera_model）、相机传感器的渲染（graphics.camera_capture）。
+# M4-02：IMU（physics.imu）、场景文件的传感器（scene.sensors）、采样时刻（simulation.sensor_sampling）；Headless --sensors（headless.sensors_imu 等）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
 # M3-07c：查看器记录与回放（graphics.viewer_record_selftest）；记录采样率设置（settings.store 扩充）。
 # M3-07b：资源库（library.store）；Headless --library / --list-records（headless.list_records）。
@@ -165,6 +167,14 @@ terra_add_cli_test(rerun_motion EXPECT 0
     ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl)
 set_tests_properties(headless.rerun_motion PROPERTIES FIXTURES_REQUIRED headless_record)
 # M3-07b：记录完成后已加入资源库；按场景筛选列出
+# M4-02：--sensors 输出传感器清单（频率）与按频率采样的读数；不能与 --rerun 同用
+terra_add_cli_test(sensors_imu EXPECT 0
+    STDOUT "[{].type.:.sensor_list.[^\n]*.name.:.bench/bare_site.[^\n]*.rate_hz.:30.*[{].type.:.sensor.,.id.:[0-9]+,.name.:.bench/level_imu.,.kind.:.imu.,.step.:50,.time.:[^\n]*.linear_acceleration.:.-?0,-?0,9.81"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/sensors/imu_added.terra-scene.json --steps 50 --sample-every 50 --sensors)
+terra_add_cli_test(cameras_ignored EXPECT 0 STDERR "2 个相机：相机需要图形上下文，在 Headless 中不可用"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/sensors/camera_bench.terra-scene.json --steps 5)
+terra_add_cli_test(sensors_with_rerun EXPECT 2 STDERR "--rerun 不能与"
+    ARGS --rerun x.terra-record.jsonl --sensors)
 terra_add_cli_test(list_records EXPECT 0
     STDOUT "[{].type.:.record.,.path.:[^\n]*headless_record/arm.terra-record.jsonl.,[^\n]*keyframe_arm[^\n]*.steps.:1250,[^\n]*.reason.:.completed."
     ARGS --list-records --library ${CMAKE_CURRENT_BINARY_DIR}/headless_record/library.sqlite3
@@ -354,6 +364,30 @@ target_link_libraries(test_pd_layer PRIVATE terra::simulation terra::scene terra
 target_compile_definitions(test_pd_layer PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
 terra_configure_target(test_pd_layer)
 add_test(NAME simulation.pd COMMAND test_pd_layer)
+
+# 传感器（M4-02）：IMU 真值（physics.imu）；场景文件的 sensors（scene.sensors，参考机器人缺失时跳过其中的机器人部分）；
+# 采样时刻（simulation.sensor_sampling，纯逻辑）
+add_executable(test_imu sensors/test_imu.cpp)
+target_link_libraries(test_imu PRIVATE terra::physics_mujoco)
+target_compile_definitions(test_imu PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_imu)
+add_test(NAME physics.imu COMMAND test_imu)
+add_executable(test_scene_sensors sensors/test_scene_sensors.cpp)
+target_link_libraries(test_scene_sensors PRIVATE terra::scene terra::simulation terra::physics_mujoco)
+target_compile_definitions(test_scene_sensors PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests"
+                                                      TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_scene_sensors)
+add_test(NAME scene.sensors COMMAND test_scene_sensors)
+# M4-03：相机模型（内参、投影、MJCF 相机、场景文件的相机；纯数学，不需要图形）
+add_executable(test_camera_model sensors/test_camera_model.cpp)
+target_link_libraries(test_camera_model PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_camera_model PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_camera_model)
+add_test(NAME scene.camera_model COMMAND test_camera_model)
+add_executable(test_sensor_sampling simulation/test_sensor_sampling.cpp)
+target_link_libraries(test_sensor_sampling PRIVATE terra::simulation)
+terra_configure_target(test_sensor_sampling)
+add_test(NAME simulation.sensor_sampling COMMAND test_sensor_sampling)
 
 # 悬挂模式（M3-04b）：fixedBase 删掉根部自由关节，关键帧保留
 add_executable(test_fixed_base scene/test_fixed_base.cpp)
@@ -558,6 +592,18 @@ if(TERRA_BUILD_RENDER)
                     --scene ${_scene} --expect-renderer llvmpipe)
         set_tests_properties(graphics.render_reference.${_scene} PROPERTIES LABELS graphics SKIP_RETURN_CODE 77)
     endforeach()
+
+    # 相机传感器的渲染（M4-03）：夹具中的深度、投影、远平面、彩色、时间与位姿、确定性；Stretch 3 头部相机（有参考机器人时）。
+    # 输出目录中写出彩色 | 深度的 PNG。
+    add_executable(test_camera_capture sensors/test_camera_capture.cpp)
+    target_link_libraries(test_camera_capture PRIVATE terra::viewer_scene terra::render terra::platform_glfw terra::input
+                                                      terra::scene terra::physics_mujoco)
+    target_compile_definitions(test_camera_capture PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+    terra_configure_target(test_camera_capture)
+    add_test(NAME graphics.camera_capture
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_camera_capture> "${CMAKE_CURRENT_BINARY_DIR}/camera_capture"
+                --expect-renderer llvmpipe)
+    set_tests_properties(graphics.camera_capture PROPERTIES LABELS graphics)
 
     # 渲染基准冒烟（M1-10）：小分辨率、少量帧，确认能跑完并输出汇总（数值不判定）。
     add_test(NAME graphics.render_bench_smoke

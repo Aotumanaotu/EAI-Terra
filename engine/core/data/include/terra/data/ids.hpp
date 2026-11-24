@@ -27,6 +27,8 @@ using ActuatorId = Id<struct ActuatorTag>;
 using ModelInstanceId = Id<struct ModelInstanceTag>;
 using GeomId = Id<struct GeomTag>;
 using VisualId = Id<struct VisualTag>;
+// M4-02：传感器（模型描述修订 6）
+using SensorId = Id<struct SensorTag>;
 
 }  // namespace terra::data
 

@@ -1,0 +1,13 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "相机夹具（M4-03）",
+  "models": [
+    {"name": "bench", "mjcf": "camera_bench.xml"}
+  ],
+  "sensors": [
+    {"type": "camera", "camera": "bench/eye", "width": 160, "height": 120, "rateHz": 30},
+    {"type": "camera", "name": "bench/side", "entity": "bench/rig", "rotation": {"rpyDeg": [90, 0, -90]},
+     "width": 160, "height": 120, "fovyDeg": 60, "rgb": false}
+  ]
+}

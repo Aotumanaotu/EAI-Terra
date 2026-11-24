@@ -67,13 +67,21 @@ struct ActuatorState {
     double force = 0.0;
 };
 
+// 物理侧传感器的读数（M4-02，快照修订 3）。values 的排列按类型：
+//   Imu：[0..2] 比力（m/s²），[3..5] 角速度（rad/s），均在安装点坐标系中；[6..9] 安装点在世界中的姿态（wxyz）
+// 快照中总是给出全部物理侧传感器的当前读数；按频率采样由使用方决定（terra::simulation::sensorSampleDue）。
+struct SensorReading {
+    SensorId id;
+    std::vector<double> values;
+};
+
 struct Diagnostics {
     bool finite = true;          // 位姿、速度、关节状态均为有限值
     int solverIterations = 0;    // 本观测时刻约束求解的最大迭代次数（各约束岛取最大）
 };
 
 struct PhysicsSnapshot {
-    static constexpr std::uint32_t kContractRevision = 2;  // 快照格式修订号（M3-04：增加 actuators）
+    static constexpr std::uint32_t kContractRevision = 3;  // 快照格式修订号（M3-04：增加 actuators；M4-02：增加 sensors）
 
     std::uint64_t worldInstance = 0;  // 与 ModelDescription::worldInstance 相同，区分不同的加载
     std::uint64_t runEpoch = 0;
@@ -84,6 +92,7 @@ struct PhysicsSnapshot {
     std::vector<EntityState> entities;  // 与 ModelDescription::entities 顺序相同
     std::vector<JointState> joints;     // 与 ModelDescription::joints 顺序相同
     std::vector<ActuatorState> actuators;  // 与 ModelDescription::actuators 顺序相同（M3-04）
+    std::vector<SensorReading> sensors;    // 与 ModelDescription::sensors 顺序相同（M4-02）
     ContactSummary contacts;
     Diagnostics diagnostics;
 };

@@ -62,6 +62,57 @@ struct PdAssignment {
     double kd = 0.0;
 };
 
+// 场景文件中的传感器（M4-02，M4-01 设计稿第 2 节）。type 为 "imu" 或 "camera"（M4-03）；激光雷达在 M4-03b 加入。
+// IMU：
+//   - 装在模型中已有的安装点上：写 site（安装点全名）；name 可省略，写了必须与 site 相同（IMU 的名字就是安装点名）；
+//   - 装在实体上：写 entity（实体全名）与可选的 position / rotation（实体坐标系）；name 必填，带同一实例的前缀。
+//   rateHz 省略时等于物理频率（每步采样）；高于物理频率时按物理频率并给出警告。
+// 相机（M4-03）：
+//   - 用 MJCF 中的相机：写 camera（相机全名）；name 可省略（取相机名）；视场角默认取 MJCF 中的值；
+//   - 装在实体上：写 entity 与可选的 position / rotation；相机看向自身 −Z、+Y 向上（与 MJCF 相同）；name 必填。
+//   width、height（默认 640 × 480，MJCF 写了分辨率时取它）、fovyDeg（竖直视场角，默认 60 或 MJCF 中的值）、
+//   near、far（默认 0.05、50 m）、rateHz（默认 30）、rgb、depth（默认都输出）。
+struct SensorSpec {
+    std::string type;
+    std::string name;
+    std::string site;
+    std::string entity;
+    terra::data::Pose pose;
+    std::optional<double> rateHz;
+    std::string where;  // "/sensors/<i>"
+    // 相机（M4-03）
+    std::string camera;
+    std::optional<int> width;
+    std::optional<int> height;
+    std::optional<double> fovyDegrees;
+    double nearClip = 0.05;
+    double farClip = 50.0;
+    bool rgb = true;
+    bool depth = true;
+};
+
+// 启用的相机传感器（M4-03）。图像由有图形上下文的程序渲染（查看器、terra_capture）；Headless 不渲染。
+struct CameraSensor {
+    std::string name;
+    terra::data::EntityId entity;  // 无效 ID 表示装在世界上
+    terra::data::Pose mount;       // 相对实体原点；相机看向自身 −Z，+Y 向上
+    int width = 640;
+    int height = 480;
+    double fovyDegrees = 60.0;
+    double nearClip = 0.05;
+    double farClip = 50.0;
+    double rateHz = 30.0;  // 不高于物理频率
+    bool rgb = true;
+    bool depth = true;
+    std::string where;
+};
+
+// 传感器的采样配置（与 ModelDescription::sensors 一一对应）
+struct SensorConfig {
+    terra::data::SensorId sensor;
+    double rateHz = 0.0;  // 实际采用的频率（Hz），不高于物理频率
+};
+
 struct SceneDocument {
     std::string path;       // 场景文件（绝对路径；从文本解析时为调用方给出的路径）
     std::string directory;  // 相对路径的基准目录
@@ -73,6 +124,7 @@ struct SceneDocument {
     // M3-02：载入后从这个关键帧开始（全名，如 "g1/stand"），重置时也回到它；空表示模型初值
     std::string initialKeyframe;
     std::vector<PdControllerSpec> controllers;  // M3-04
+    std::vector<SensorSpec> sensors;            // M4-02
 };
 
 struct ParseResult {
@@ -110,6 +162,8 @@ struct SceneInstance {
     std::vector<VisualPart> visuals;
     std::optional<std::size_t> homeKeyframe;  // 场景的初始关键帧（已应用）；重置时回到它
     std::vector<PdAssignment> pd;             // M3-04：PD 层接管的执行器（按 ActuatorId 排序）
+    std::vector<SensorConfig> sensors;        // M4-02：MJCF 中原有的与场景文件添加的传感器，与模型描述的顺序相同
+    std::vector<CameraSensor> cameras;        // M4-03：场景文件中启用的相机，按场景文件的顺序
 
     const VisualPart* visual(terra::data::VisualId id) const noexcept {
         return id.valid() && id.value <= visuals.size() ? &visuals[id.value - 1] : nullptr;

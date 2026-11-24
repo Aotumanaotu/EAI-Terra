@@ -14,6 +14,7 @@
 #include <map>
 #include <mutex>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 #include <mujoco/mujoco.h>
@@ -433,6 +434,14 @@ struct MujocoWorld::Impl {
     std::vector<int> entityToBody;
     std::vector<EntityId> bodyToEntity;
 
+    // IMU（M4-02）：安装点下标与加速度计、陀螺仪在 sensordata 中的地址，与 description.sensors 一一对应
+    struct ImuChannel {
+        int site = -1;
+        int accelerometer = -1;
+        int gyro = -1;
+    };
+    std::vector<ImuChannel> imus;
+
     // 当前观测时刻的快照缓存；step/reset 后清空，下次请求时重新构建。
     std::shared_ptr<const terra::data::PhysicsSnapshot> cachedSnapshot;
 
@@ -513,6 +522,26 @@ std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::Impl::buildSnap
         as.force = d->actuator_force[a];
         finite = finite && allFinite(ctrl, m->actuator_ctrlnum[a]) && std::isfinite(as.force);
         snap->actuators.push_back(std::move(as));
+    }
+
+    // 传感器（M4-02）：IMU 的比力与角速度取 MuJoCo 传感器的输出（安装点坐标系），姿态由安装点的世界旋转矩阵换算
+    snap->sensors.reserve(imus.size());
+    for (std::size_t k = 0; k < imus.size(); ++k) {
+        const ImuChannel& ch = imus[k];
+        terra::data::SensorReading r;
+        r.id = description.sensors[k].id;
+        r.values.resize(10);
+        const mjtNum* acc = d->sensordata + ch.accelerometer;
+        const mjtNum* gyro = d->sensordata + ch.gyro;
+        mjtNum quat[4];
+        mju_mat2Quat(quat, d->site_xmat + 9 * static_cast<std::size_t>(ch.site));
+        for (std::size_t c = 0; c < 3; ++c) {
+            r.values[c] = acc[c];
+            r.values[3 + c] = gyro[c];
+        }
+        for (std::size_t c = 0; c < 4; ++c) r.values[6 + c] = quat[c];
+        finite = finite && allFinite(r.values.data(), 10);
+        snap->sensors.push_back(std::move(r));
     }
 
     // 接触：只统计参与约束求解（exclude==0 且 efc_address>=0）且法向力 > 0 的接触点。
@@ -787,6 +816,65 @@ LoadResult MujocoWorld::build(mjModel* rawModel, const BuildInput& inputs, LoadR
     describeGeometry(model.get(), bodyToEntity, names, desc);
     for (int k = 0; k < static_cast<int>(model->nkey); ++k) {
         desc.keyframes.push_back({nameOf(model.get(), mjOBJ_KEY, k), model->key_time[k]});
+    }
+
+    // 相机（M4-03）：全部列出；跟踪模式与正交投影只标记，由使用方决定是否支持
+    for (int c = 0; c < static_cast<int>(model->ncam); ++c) {
+        const auto ci = static_cast<std::size_t>(c);
+        const std::string raw = nameOf(model.get(), mjOBJ_CAMERA, c);
+        terra::data::CameraDescription camera;
+        camera.name = InstanceNames::visible(raw);
+        camera.entity = bodyToEntity[static_cast<std::size_t>(model->cam_bodyid[c])];
+        camera.modelInstance = names.instanceOf(raw);
+        const mjtNum* pos = model->cam_pos + 3 * ci;
+        const mjtNum* quat = model->cam_quat + 4 * ci;
+        camera.mount.position = {pos[0], pos[1], pos[2]};
+        camera.mount.orientation = {quat[0], quat[1], quat[2], quat[3]};
+        camera.fovyDegrees = model->cam_fovy[c];
+        const int* resolution = model->cam_resolution + 2 * ci;
+        if (resolution[0] > 1 && resolution[1] > 1) {
+            camera.width = resolution[0];
+            camera.height = resolution[1];
+        }
+        camera.fixed = model->cam_mode[c] == mjCAMLIGHT_FIXED;
+        camera.perspective = model->cam_projection[c] == mjPROJ_PERSPECTIVE;
+        desc.cameras.push_back(std::move(camera));
+    }
+
+    // 传感器（M4-02）：同一安装点上同时有加速度计与陀螺仪即为一个 IMU（各取第一个），按安装点顺序。
+    // 场景文件插入的传感器名字带隐藏标记，据此区分“MJCF 中原有”与“场景添加”。
+    struct ImuSensors {
+        int accelerometer = -1;
+        int gyro = -1;
+        bool added = false;
+    };
+    std::map<int, ImuSensors> imuBySite;
+    for (int k = 0; k < static_cast<int>(model->nsensor); ++k) {
+        const int type = model->sensor_type[k];
+        if (model->sensor_objtype[k] != mjOBJ_SITE || (type != mjSENS_ACCELEROMETER && type != mjSENS_GYRO)) continue;
+        ImuSensors& entry = imuBySite[model->sensor_objid[k]];
+        int& slot = type == mjSENS_ACCELEROMETER ? entry.accelerometer : entry.gyro;
+        if (slot >= 0) continue;
+        slot = model->sensor_adr[k];
+        entry.added = entry.added || nameOf(model.get(), mjOBJ_SENSOR, k).find(kHiddenNameMark) != std::string::npos;
+    }
+    for (const auto& [site, entry] : imuBySite) {
+        if (entry.accelerometer < 0 || entry.gyro < 0) continue;
+        const auto si = static_cast<std::size_t>(site);
+        const std::string raw = nameOf(model.get(), mjOBJ_SITE, site);
+        terra::data::SensorDescription sensor;
+        sensor.id = terra::data::SensorId{static_cast<std::uint32_t>(desc.sensors.size() + 1)};
+        sensor.name = InstanceNames::visible(raw);
+        sensor.kind = terra::data::SensorKind::Imu;
+        sensor.entity = bodyToEntity[static_cast<std::size_t>(model->site_bodyid[site])];
+        sensor.modelInstance = names.instanceOf(raw);
+        const mjtNum* pos = model->site_pos + 3 * si;
+        const mjtNum* quat = model->site_quat + 4 * si;
+        sensor.mount.position = {pos[0], pos[1], pos[2]};
+        sensor.mount.orientation = {quat[0], quat[1], quat[2], quat[3]};
+        sensor.added = entry.added;
+        desc.sensors.push_back(std::move(sensor));
+        impl->imus.push_back({site, entry.accelerometer, entry.gyro});
     }
 
     // 只在加载成功时分配实例号，失败的加载不消耗编号。
@@ -1071,6 +1159,65 @@ void nameUnnamed(mjSpec* spec, mjtObj type, const char* kind) {
     }
 }
 
+// 场景文件添加的 IMU（M4-02）：在实例自己的 spec 中（组合之前，名字不带前缀）插入安装点与传感器。
+// 返回空表示成功，否则为错误原因。插入的传感器以隐藏标记命名（对外不可见，也不与模型中的名字冲突）。
+std::string addImu(mjSpec* spec, const ImuMount& imu) {
+    const auto listOf = [&](mjtObj type, const std::string& what) {
+        std::string list;
+        int count = 0;
+        for (mjsElement* e = mjs_firstElement(spec, type); e != nullptr; e = mjs_nextElement(spec, e)) {
+            const char* name = mjs_getString(mjs_getName(e));
+            if (name == nullptr || name[0] == '\0' || std::string{name}.find(kHiddenNameMark) != std::string::npos) continue;
+            if (count < 8) list += (list.empty() ? "" : "、") + std::string{name};
+            ++count;
+        }
+        if (count == 0) return "；模型中没有命名的" + what;
+        return "；模型中的" + what + "：" + list + (count > 8 ? " 等 " + std::to_string(count) + " 个" : std::string{});
+    };
+    std::string site = imu.site;
+    if (site.empty()) {
+        mjsBody* body = mjs_findBody(spec, imu.body.c_str());
+        if (body == nullptr) return "找不到实体“" + imu.body + "”" + listOf(mjOBJ_BODY, "实体");
+        if (mjs_findElement(spec, mjOBJ_SITE, imu.name.c_str()) != nullptr) {
+            return "模型中已有名为“" + imu.name + "”的安装点；要装在它上面时请写 site，否则换一个名字";
+        }
+        mjsSite* added = mjs_addSite(body, nullptr);
+        if (added == nullptr || mjs_setName(added->element, imu.name.c_str()) != 0) return "无法添加安装点“" + imu.name + "”";
+        const terra::data::Pose& p = imu.pose;
+        added->pos[0] = p.position.x;
+        added->pos[1] = p.position.y;
+        added->pos[2] = p.position.z;
+        added->quat[0] = p.orientation.w;
+        added->quat[1] = p.orientation.x;
+        added->quat[2] = p.orientation.y;
+        added->quat[3] = p.orientation.z;
+        site = imu.name;
+    } else if (mjs_findElement(spec, mjOBJ_SITE, site.c_str()) == nullptr) {
+        return "找不到安装点“" + site + "”" + listOf(mjOBJ_SITE, "安装点");
+    }
+    bool hasAccelerometer = false;
+    bool hasGyro = false;
+    for (mjsElement* e = mjs_firstElement(spec, mjOBJ_SENSOR); e != nullptr; e = mjs_nextElement(spec, e)) {
+        const mjsSensor* sensor = mjs_asSensor(e);
+        const char* object = sensor != nullptr ? mjs_getString(sensor->objname) : nullptr;
+        if (sensor == nullptr || sensor->objtype != mjOBJ_SITE || object == nullptr || site != object) continue;
+        hasAccelerometer = hasAccelerometer || sensor->type == mjSENS_ACCELEROMETER;
+        hasGyro = hasGyro || sensor->type == mjSENS_GYRO;
+    }
+    for (const auto& [type, have, tag] : {std::make_tuple(mjSENS_ACCELEROMETER, hasAccelerometer, "accelerometer_"),
+                                          std::make_tuple(mjSENS_GYRO, hasGyro, "gyro_")}) {
+        if (have) continue;
+        mjsSensor* sensor = mjs_addSensor(spec);
+        if (sensor == nullptr) return "无法为“" + site + "”添加传感器";
+        sensor->type = type;
+        sensor->objtype = mjOBJ_SITE;
+        mjs_setString(sensor->objname, site.c_str());
+        const std::string hidden = std::string{kHiddenNameMark} + tag + site;
+        if (mjs_setName(sensor->element, hidden.c_str()) != 0) return "无法为“" + site + "”添加传感器（名字冲突）";
+    }
+    return {};
+}
+
 // 关键帧中的自由关节位姿相对实例的放置框架（M3-02）。MuJoCo 把关键帧里自由关节的值当作世界位姿，组合时不随
 // mjs_attach 的框架变换，放在别处的机器人按关键帧重置后会回到原点附近。这里把属于实例 i 的关键帧（名字以其前缀开头）
 // 中、属于实例 i 的自由关节的位置与姿态乘上放置位姿，线速度一并旋转（角速度在 body 坐标系中，不变）。
@@ -1236,6 +1383,16 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
             return out;
         }
     }
+
+    // 2c. 场景文件添加的 IMU（M4-02）
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        for (const ImuMount& imu : models[i].imus) {
+            if (std::string problem = addImu(children[i].get(), imu); !problem.empty()) {
+                error(static_cast<int>(i), LoadErrorKind::InvalidModel, "IMU“" + imu.name + "”：" + problem);
+            }
+        }
+    }
+    if (hasError()) return out;
 
     // 3. 组合：每个实例放在世界中的一个框架上
     mjsBody* world = mjs_findBody(parent.get(), "world");

@@ -272,6 +272,136 @@ void readControllers(Reader& r, const Json& v, std::vector<PdControllerSpec>& ou
     }
 }
 
+// 一个 IMU（M4-02）
+void readImu(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
+    if (!r.object(item, where, {"type", "name", "site", "entity", "position", "rotation", "rateHz"})) return;
+    const bool hasSite = item.contains("site");
+    const bool hasEntity = item.contains("entity");
+    if (hasSite == hasEntity) {
+        r.error(where, "安装位置应写 site（已有的安装点）或 entity（实体）其中之一");
+        return;
+    }
+    if (hasSite) {
+        if (const auto n = r.string(item["site"], where + "/site")) s.site = *n;
+        if (item.contains("position") || item.contains("rotation")) {
+            r.error(where, "装在已有的安装点上时不能再写 position / rotation（位姿由模型中的安装点决定）");
+        }
+        if (!s.name.empty() && s.name != s.site) {
+            r.error(where + "/name", "装在已有安装点上的 IMU 名字就是安装点名“" + s.site + "”；省略 name 即可");
+        }
+        s.name = s.site;
+    } else {
+        if (const auto n = r.string(item["entity"], where + "/entity")) s.entity = *n;
+        r.pose(item, where, s.pose);
+        if (s.name.empty() && !item.contains("name")) r.error(where, "装在实体上的 IMU 需要 name（带实例前缀，如 “go2/imu_head”）");
+    }
+}
+
+// 一个相机（M4-03）
+void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
+    if (!r.object(item, where, {"type", "name", "camera", "entity", "position", "rotation", "width", "height", "fovyDeg", "near",
+                                "far", "rateHz", "rgb", "depth"})) {
+        return;
+    }
+    const bool hasCamera = item.contains("camera");
+    const bool hasEntity = item.contains("entity");
+    if (hasCamera == hasEntity) {
+        r.error(where, "相机应写 camera（MJCF 中的相机）或 entity（装在实体上）其中之一");
+        return;
+    }
+    if (hasCamera) {
+        if (const auto n = r.string(item["camera"], where + "/camera")) s.camera = *n;
+        if (item.contains("position") || item.contains("rotation")) {
+            r.error(where, "使用 MJCF 中的相机时不能再写 position / rotation（位姿由模型中的相机决定）");
+        }
+        if (s.name.empty()) s.name = s.camera;
+    } else {
+        if (const auto n = r.string(item["entity"], where + "/entity")) s.entity = *n;
+        r.pose(item, where, s.pose);
+        if (s.name.empty() && !item.contains("name")) r.error(where, "装在实体上的相机需要 name（带实例前缀，如 “g1/head_camera”）");
+    }
+    const std::pair<const char*, std::optional<int>*> sizes[] = {{"width", &s.width}, {"height", &s.height}};
+    for (const auto& [key, target] : sizes) {
+        if (!item.contains(key)) continue;
+        if (const auto n = r.integer(item[key], where + "/" + key)) {
+            if (*n >= 1 && *n <= 8192) *target = static_cast<int>(*n);
+            else r.error(where + "/" + key, "像素数应在 1 到 8192 之间");
+        }
+    }
+    if (item.contains("fovyDeg")) {
+        if (const auto d = r.number(item["fovyDeg"], where + "/fovyDeg")) {
+            if (*d > 0 && *d < 180) s.fovyDegrees = *d;
+            else r.error(where + "/fovyDeg", "竖直视场角应在 0° 到 180° 之间（不含端点）");
+        }
+    }
+    if (item.contains("near")) {
+        if (const auto d = r.number(item["near"], where + "/near")) {
+            if (*d > 0) s.nearClip = *d;
+            else r.error(where + "/near", "近平面距离必须大于 0");
+        }
+    }
+    if (item.contains("far")) {
+        if (const auto d = r.number(item["far"], where + "/far")) s.farClip = *d;
+    }
+    if (!(s.farClip > s.nearClip)) r.error(where + "/far", "远平面距离必须大于近平面距离");
+    if (item.contains("rgb")) {
+        if (const auto b = r.boolean(item["rgb"], where + "/rgb")) s.rgb = *b;
+    }
+    if (item.contains("depth")) {
+        if (const auto b = r.boolean(item["depth"], where + "/depth")) s.depth = *b;
+    }
+    if (!s.rgb && !s.depth) r.error(where, "rgb 与 depth 不能都关闭");
+}
+
+void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
+    if (!v.is_array()) {
+        r.error("/sensors", "sensors 应为数组");
+        return;
+    }
+    std::set<std::string> names;
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        const std::string where = "/sensors/" + std::to_string(i);
+        const Json& item = v[i];
+        if (!item.is_object()) {
+            r.error(where, "应为对象，实际为" + kindOf(item));
+            continue;
+        }
+        SensorSpec s;
+        s.where = where;
+        if (!item.contains("type")) {
+            r.error(where, "缺少 type（imu 或 camera）");
+            continue;
+        }
+        const auto type = r.string(item["type"], where + "/type");
+        if (!type) continue;
+        if (*type == "lidar2d") {
+            r.error(where + "/type", "传感器类型“lidar2d”在 M4-03b 中加入，当前版本还不支持");
+            continue;
+        }
+        if (*type != "imu" && *type != "camera") {
+            r.error(where + "/type", "未知的传感器类型“" + *type + "”（可用：imu、camera）");
+            continue;
+        }
+        s.type = *type;
+        if (item.contains("name")) {
+            if (const auto n = r.string(item["name"], where + "/name")) {
+                if (n->empty()) r.error(where + "/name", "名字为空");
+                s.name = *n;
+            }
+        }
+        if (s.type == "imu") readImu(r, item, where, s);
+        else readCamera(r, item, where, s);
+        if (item.contains("rateHz")) {
+            if (const auto d = r.number(item["rateHz"], where + "/rateHz")) {
+                if (*d > 0) s.rateHz = *d;
+                else r.error(where + "/rateHz", "频率必须大于 0");
+            }
+        }
+        if (!s.name.empty() && !names.insert(s.name).second) r.error(where + "/name", "传感器名“" + s.name + "”重复");
+        out.push_back(std::move(s));
+    }
+}
+
 void readVisuals(Reader& r, const Json& v, std::vector<VisualBindingSpec>& out) {
     if (!v.is_array()) {
         r.error("/visuals", "visuals 应为数组");
@@ -351,7 +481,8 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     SceneDocument doc;
     doc.path = path.string();
     doc.directory = path.parent_path().string();
-    if (r.object(root, "", {"format", "version", "name", "physics", "models", "visuals", "view", "initialKeyframe", "controllers"})) {
+    if (r.object(root, "", {"format", "version", "name", "physics", "models", "visuals", "view", "initialKeyframe", "controllers",
+                            "sensors"})) {
         if (!root.contains("format")) {
             r.error("", "缺少 format（应为 “terra.scene”）");
         } else if (const auto s = r.string(root["format"], "/format"); s && *s != "terra.scene") {
@@ -376,6 +507,7 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
         if (root.contains("visuals")) readVisuals(r, root["visuals"], doc.visuals);
         if (root.contains("view")) readView(r, root["view"], doc.view);
         if (root.contains("controllers")) readControllers(r, root["controllers"], doc.controllers);
+        if (root.contains("sensors")) readSensors(r, root["sensors"], doc.sensors);
         if (root.contains("initialKeyframe")) {
             if (const auto k = r.string(root["initialKeyframe"], "/initialKeyframe")) {
                 if (k->empty()) r.error("/initialKeyframe", "关键帧名为空（从模型初值开始时省略此字段）");

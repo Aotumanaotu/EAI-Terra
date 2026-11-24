@@ -1,0 +1,14 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "IMU 夹具（M4-02）：场景文件添加 IMU",
+  "models": [
+    {"name": "bench", "mjcf": "imu_bench.xml"}
+  ],
+  "sensors": [
+    {"type": "imu", "name": "bench/fall_imu2", "entity": "bench/faller", "rateHz": 100},
+    {"type": "imu", "name": "bench/tilt_imu2", "entity": "bench/tilted", "position": [0, 0, 0], "rotation": {"rpyDeg": [-30, 0, 0]}},
+    {"type": "imu", "site": "bench/bare_site", "rateHz": 30},
+    {"type": "imu", "site": "bench/level_imu", "rateHz": 1000}
+  ]
+}

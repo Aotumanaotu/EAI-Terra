@@ -43,6 +43,7 @@ struct RunOptions {
     std::optional<double> durationSeconds;  // 仿真时长（秒）；换算为步数需要模型步长，在 M0-04 后完成
     std::uint64_t sampleEvery = 1;          // 每 N 步输出一次状态
     bool dryRun = false;                    // 只校验参数与模型文件，不运行仿真
+    bool sensors = false;                   // M4-02：输出传感器读数（sensor_list 与 sensor 行），按各传感器的频率采样
 };
 
 struct ParseResult {
@@ -83,6 +84,14 @@ std::string modelToJson(const terra::data::ModelDescription& model);
 
 // type "state"：一个观测时刻的完整状态（实体位姿与速度、关节状态、接触摘要、诊断）。
 std::string stateToJson(const terra::data::PhysicsSnapshot& snapshot);
+
+// type "sensor_list"（M4-02，只在 --sensors 时输出）：传感器清单与采样频率，rates 与 model.sensors 一一对应。
+std::string sensorListToJson(const terra::data::ModelDescription& model, const std::vector<double>& rates);
+
+// type "sensor"（M4-02）：一个传感器在一个采样时刻的读数。IMU 的字段为 linear_acceleration（比力，m/s²）、
+// angular_velocity（rad/s），均在安装点坐标系中；orientation 为安装点在世界中的姿态（wxyz）。
+std::string sensorToJson(const terra::data::SensorDescription& sensor, const terra::data::SensorReading& reading,
+                         std::uint64_t step, double time);
 
 // type "summary"：正常结束。
 std::string summaryToJson(std::uint64_t runEpoch, std::uint64_t steps, double time);

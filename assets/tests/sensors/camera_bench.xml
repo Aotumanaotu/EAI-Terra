@@ -1,0 +1,24 @@
+<!--
+  相机真值夹具（M4-03）。无重力，几何体不参与碰撞，一切静止。
+    rig     相机支架，位于 (0, 0, 1)；相机 eye 看向世界 +X（xyaxes：相机 x 轴 = 世界 −Y，y 轴 = 世界 +Z），竖直视场角 60°
+    wall    静态的墙，正面在 x = 2.0，足够大，充满视野：深度处处为 2.0 m
+    target  红色方块，中心 (1.0, 0.3, 1.2)，半边长 0.05：正面在 x = 0.95，正面中心的投影可按内参算出
+    tracker 跟踪模式的相机（trackcom），Terra 不支持，场景文件引用它应报错
+-->
+<mujoco model="camera_bench">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+  <worldbody>
+    <geom name="wall" type="box" pos="2.05 0 1" size="0.05 5 5" rgba="0.8 0.8 0.8 1"/>
+    <body name="target" pos="1.0 0.3 1.2">
+      <geom type="box" size="0.05 0.05 0.05" rgba="1 0 0 1"/>
+    </body>
+    <body name="rig" pos="0 0 1">
+      <geom type="sphere" size="0.01" rgba="0 0 0 0"/>
+      <camera name="eye" pos="0 0 0" xyaxes="0 -1 0 0 0 1" fovy="60"/>
+    </body>
+    <camera name="tracker" mode="trackcom" pos="0 -1 1"/>
+  </worldbody>
+</mujoco>

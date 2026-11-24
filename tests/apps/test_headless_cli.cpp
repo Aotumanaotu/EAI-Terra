@@ -171,6 +171,14 @@ void testUsageErrors() {
     expectError({"--model", "a", "--duration", "1", "--duration", "2"}, "重复");
     expectError({"--model", "a", "--steps", "1", "--sample-every", "1", "--sample-every", "2"}, "重复");
     expectError({"--model", "a", "--steps", "1", "--dry-run", "--dry-run"}, "重复");
+    // M4-02：--sensors
+    expectError({"--model", "a", "--steps", "1", "--sensors", "--sensors"}, "重复");
+    expectError({"--list-records", "--sensors"}, "--list-records 只能与");
+    {
+        const auto r = parse({"--scene", "s.json", "--steps", "5", "--sensors"});
+        check(r.ok() && r.options.sensors, "--sensors 为开关，不带值");
+        check(!parse({"--model", "a", "--steps", "1"}).options.sensors, "默认不输出传感器");
+    }
 
     // 非法步数
     for (const char* bad : {"0", "-5", "+5", "1.5", "10x", " 10", "", "1e3", "18446744073709551616"}) {

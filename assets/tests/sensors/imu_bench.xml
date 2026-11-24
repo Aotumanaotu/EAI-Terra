@@ -1,0 +1,54 @@
+<!--
+  IMU 真值夹具（M4-02）：每个实体上的读数都有解析解。全部几何体不参与碰撞，重力 (0, 0, -9.81)。
+    level    固定、水平：比力 (0, 0, 9.81)，角速度 0
+    tilted   固定、绕 X 轴转 30°：比力 = 重力反向在安装点坐标系中 = (0, 9.81·sin30°, 9.81·cos30°)，角速度 0
+    spinner  绕竖直轴转动，关键帧 spin 给角速度 2 rad/s；没有阻尼与摩擦，角速度保持不变。
+             安装点离轴 0.5 m：比力 = 向心加速度 (−ω²r, 0, 0) − 重力 = (−2, 0, 9.81)，角速度 (0, 0, 2)
+    faller   自由落体：比力 0，角速度 0
+    bare     有安装点 bare_site 但没有传感器（场景文件可以给它补上 IMU）
+-->
+<mujoco model="imu_bench">
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+  <default>
+    <geom contype="0" conaffinity="0" size="0.05" mass="1"/>
+  </default>
+  <worldbody>
+    <body name="level" pos="0 0 1">
+      <geom type="box" size="0.05 0.05 0.05"/>
+      <site name="level_imu"/>
+    </body>
+    <body name="tilted" pos="1 0 1" euler="30 0 0">
+      <geom type="box" size="0.05 0.05 0.05"/>
+      <site name="tilt_imu"/>
+    </body>
+    <body name="spinner" pos="2 0 1">
+      <joint name="spin" type="hinge" axis="0 0 1"/>
+      <geom type="box" size="0.3 0.05 0.05" pos="0.25 0 0"/>
+      <site name="spin_imu" pos="0.5 0 0"/>
+    </body>
+    <body name="faller" pos="3 0 5">
+      <freejoint name="fall"/>
+      <geom type="sphere"/>
+      <site name="fall_imu"/>
+    </body>
+    <body name="bare" pos="4 0 1">
+      <geom type="sphere"/>
+      <site name="bare_site" pos="0 0 0.1"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <accelerometer name="level_acc" site="level_imu"/>
+    <gyro name="level_gyro" site="level_imu"/>
+    <accelerometer name="tilt_acc" site="tilt_imu"/>
+    <gyro name="tilt_gyro" site="tilt_imu"/>
+    <accelerometer name="spin_acc" site="spin_imu"/>
+    <gyro name="spin_gyro" site="spin_imu"/>
+    <accelerometer name="fall_acc" site="fall_imu"/>
+    <gyro name="fall_gyro" site="fall_imu"/>
+    <!-- 只有陀螺仪的安装点不是 IMU -->
+    <gyro name="bare_gyro_only" site="bare_site"/>
+  </sensor>
+  <keyframe>
+    <key name="spin" qvel="2 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

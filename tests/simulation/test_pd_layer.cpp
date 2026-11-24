@@ -197,7 +197,7 @@ void testActuatorState(sc::SceneInstance& s) {
     check(m.id == motor->id && m.controls.size() == 1 && m.controls[0] == 0.25, "力矩执行器：控制量 0.25");
     check(std::fabs(m.force - 0.25) < 1e-12, "力矩执行器：输出力 = 增益 × 控制量 = 0.25（传动比之前）");
     check(p.controls.size() == 1 && p.controls[0] == 0.4 && p.force > 0, "位置执行器：控制量 0.4，输出力朝目标（为正）");
-    check(td::PhysicsSnapshot::kContractRevision == 2, "快照修订号 2");
+    check(td::PhysicsSnapshot::kContractRevision >= 2, "快照修订号 ≥ 2（M4-02 起为 3）");
 }
 
 }  // namespace

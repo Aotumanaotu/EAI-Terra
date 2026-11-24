@@ -18,77 +18,83 @@
       }
     },
     {
-      "time": 1.0,
+      "time": 1.5,
       "targets": {
-        "stretch3/left_wheel_vel": 4.0,
-        "stretch3/right_wheel_vel": 4.0
+        "stretch3/lift": 0.95
       }
     },
     {
-      "time": 4.0,
-      "targets": {
-        "stretch3/left_wheel_vel": 4.0,
-        "stretch3/right_wheel_vel": 4.0
-      }
-    },
-    {
-      "time": 5.0,
-      "targets": {
-        "stretch3/left_wheel_vel": 4.0,
-        "stretch3/right_wheel_vel": -4.0
-      }
-    },
-    {
-      "time": 8.0,
-      "targets": {
-        "stretch3/left_wheel_vel": 4.0,
-        "stretch3/right_wheel_vel": -4.0
-      }
-    },
-    {
-      "time": 9.0,
+      "time": 2.5,
       "targets": {
         "stretch3/left_wheel_vel": 0.0,
-        "stretch3/right_wheel_vel": 0.0,
-        "stretch3/lift": 0.6
+        "stretch3/right_wheel_vel": 0.0
       }
     },
     {
-      "time": 11.0,
+      "time": 3.5,
       "targets": {
-        "stretch3/lift": 1.0,
-        "stretch3/arm": 0.1
+        "stretch3/left_wheel_vel": 4.0,
+        "stretch3/right_wheel_vel": 4.0
+      }
+    },
+    {
+      "time": 5.5,
+      "targets": {
+        "stretch3/left_wheel_vel": 4.0,
+        "stretch3/right_wheel_vel": 4.0
+      }
+    },
+    {
+      "time": 6.5,
+      "targets": {
+        "stretch3/left_wheel_vel": 4.0,
+        "stretch3/right_wheel_vel": -4.0
+      }
+    },
+    {
+      "time": 9.5,
+      "targets": {
+        "stretch3/left_wheel_vel": 4.0,
+        "stretch3/right_wheel_vel": -4.0
+      }
+    },
+    {
+      "time": 10.5,
+      "targets": {
+        "stretch3/left_wheel_vel": 0.0,
+        "stretch3/right_wheel_vel": 0.0
+      }
+    },
+    {
+      "time": 12.0,
+      "targets": {
+        "stretch3/arm": 0.45,
+        "stretch3/wrist_yaw": 0.0,
+        "stretch3/lift": 0.95
       }
     },
     {
       "time": 13.0,
-      "targets": {
-        "stretch3/arm": 0.45,
-        "stretch3/wrist_yaw": 0.0
-      }
-    },
-    {
-      "time": 14.0,
       "targets": {
         "stretch3/gripper": 0.04,
         "stretch3/wrist_yaw": 1.0
       }
     },
     {
-      "time": 15.0,
+      "time": 14.0,
       "targets": {
         "stretch3/gripper": -0.01
       }
     },
     {
-      "time": 16.0,
+      "time": 15.0,
       "targets": {
         "stretch3/gripper": 0.04,
         "stretch3/wrist_yaw": 0.0
       }
     },
     {
-      "time": 18.0,
+      "time": 17.0,
       "targets": {
         "stretch3/arm": 0.1,
         "stretch3/lift": 0.6,

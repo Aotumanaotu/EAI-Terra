@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <utility>
+#include <vector>
 
 #include <glad/gl.h>
 #include <glm/glm.hpp>
@@ -96,6 +97,7 @@ float shadowFactor(vec3 p, vec3 n) {
 
 uniform int uIbl;
 uniform float uIblIntensity;
+uniform float uOpacity;
 
 void main() {
     vec3 geometric = normalize(vNormal);
@@ -125,7 +127,7 @@ void main() {
     float shadow = shadowFactor(vWorld, geometric);
     vec3 color = shadeSurface(baseColor, metallic, roughness, uReflectance, emissive, n, v, uSunDir, uSunRadiance, shadow, occlusion);
     if (uIbl == 1) color += ambientIbl(baseColor, metallic, roughness, uReflectance, n, v, occlusion) * uIblIntensity;
-    fragColor = vec4(color, 1.0);
+    fragColor = vec4(color, uOpacity);
 }
 )";
 
@@ -509,14 +511,15 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
     const int normalScaleLoc = p.uniformLocation("uNormalScale");
     const int occlusionStrengthLoc = p.uniformLocation("uOcclusionStrength");
     const int doubleSidedLoc = p.uniformLocation("uDoubleSided");
+    const int opacityLoc = p.uniformLocation("uOpacity");
     // 贴图单元：0 阴影、1–3 环境光照、4 环境立方体（背景）、5–9 材质贴图
     p.setUniformInt(p.uniformLocation("uBaseColorMap"), 5);
     p.setUniformInt(p.uniformLocation("uMetallicRoughnessMap"), 6);
     p.setUniformInt(p.uniformLocation("uNormalMap"), 7);
     p.setUniformInt(p.uniformLocation("uOcclusionMap"), 8);
     p.setUniformInt(p.uniformLocation("uEmissiveMap"), 9);
-    for (const RenderItem& item : items) {
-        if (item.mesh == nullptr) continue;
+    std::vector<const RenderItem*> translucent;  // 半透明物体（M3-06）：在网格之后绘制
+    const auto drawItem = [&](const RenderItem& item) {
         const glm::mat4 model = toGlm(item.model);
         const Matrix4 normalMatrix = fromGlm(glm::mat4(glm::transpose(glm::inverse(glm::mat3(model)))));
         const Material& m = item.material;
@@ -539,8 +542,17 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
         p.setUniformFloat(normalScaleLoc, m.normalScale);
         p.setUniformFloat(occlusionStrengthLoc, m.occlusionStrength);
         p.setUniformInt(doubleSidedLoc, m.doubleSided ? 1 : 0);
-        ctx.setCullBackFaces(!m.doubleSided);
+        p.setUniformFloat(opacityLoc, std::clamp(m.opacity, 0.0f, 1.0f));
+        ctx.setCullBackFaces(!m.doubleSided && m.opacity >= 1.0f);
         item.mesh->draw(ctx);
+    };
+    for (const RenderItem& item : items) {
+        if (item.mesh == nullptr) continue;
+        if (item.material.opacity < 1.0f) {
+            translucent.push_back(&item);
+            continue;
+        }
+        drawItem(item);
     }
 
     s.stamp(2);
@@ -596,6 +608,25 @@ void SceneRenderer::render(int width, int height, const ViewParams& view, const 
         ctx.setAlphaBlend(false);
         ctx.setDepthWrite(true);
         ctx.setDepthLessEqual(false);
+    }
+
+    // ---- 半透明物体（M3-06，如叠加显示的碰撞几何体）：从远到近混合，不写深度；与同位置的不透明表面重合时仍可见 ----
+    if (!translucent.empty()) {
+        const glm::vec3 eye = toGlm(view.cameraPosition);
+        std::stable_sort(translucent.begin(), translucent.end(), [&](const RenderItem* a, const RenderItem* b) {
+            const glm::vec3 pa(a->model[12], a->model[13], a->model[14]);
+            const glm::vec3 pb(b->model[12], b->model[13], b->model[14]);
+            return glm::length(pa - eye) > glm::length(pb - eye);
+        });
+        p.use();
+        ctx.setDepthLessEqual(true);
+        ctx.setDepthWrite(false);
+        ctx.setAlphaBlend(true);
+        for (const RenderItem* item : translucent) drawItem(*item);
+        ctx.setAlphaBlend(false);
+        ctx.setDepthWrite(true);
+        ctx.setDepthLessEqual(false);
+        s.stats.translucentDrawn = static_cast<int>(translucent.size());
     }
 
     s.stamp(4);

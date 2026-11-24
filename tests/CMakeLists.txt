@@ -29,6 +29,7 @@
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
+# M3-06：关节与接触验证（robots.validation）；实体质量（模型描述修订 5）。
 # M3-05：Headless --motion（headless.run_motion 等）；Headless 与查看器路径逐位一致（motion.consistency、motion.consistency_go2）。
 # M3-03：显示用描述（physics.visual_description）；MJCF 显示换算（render.mjcf_visual）；参考图 mjcf_materials 与三台机器人。
 # M3-02：关节限位与执行器类别、关键帧（physics.robot_description）；场景初始关键帧（scene.file、scene.instance、simulation.runner 扩充；graphics.viewer_keyframe_selftest）。
@@ -263,6 +264,14 @@ terra_configure_target(test_robot_motions)
 add_test(NAME robots.motions COMMAND test_robot_motions)
 set_tests_properties(robots.motions PROPERTIES SKIP_RETURN_CODE 77)
 
+# 关节与接触验证（M3-06）：每台参考机器人一组数值判据（冻结，见 M3-06 报告）
+add_executable(test_robot_validation robots/test_robot_validation.cpp)
+target_link_libraries(test_robot_validation PRIVATE terra::scene terra::simulation terra::physics_mujoco)
+target_compile_definitions(test_robot_validation PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_robot_validation)
+add_test(NAME robots.validation COMMAND test_robot_validation)
+set_tests_properties(robots.validation PROPERTIES SKIP_RETURN_CODE 77)
+
 # 仿真时钟与快照插值（M2-06）：纯逻辑，不需要物理后端。
 add_executable(test_simulation_logic simulation/test_simulation_logic.cpp)
 target_link_libraries(test_simulation_logic PRIVATE terra::simulation)
@@ -493,7 +502,7 @@ if(TERRA_BUILD_RENDER)
     terra_configure_target(test_render_reference)
     # M2-07：carts 由场景文件与物理快照驱动（MJCF 几何体 + glTF 节点绑定），不需要下载素材
     # M3-03：mjcf_materials（测试夹具，不需要下载）；robot_*（参考机器人 + 摄影棚 HDRI，缺失时跳过）
-    foreach(_scene procedural studio outdoor carts mjcf_materials robot_g1 robot_go2 robot_stretch3)
+    foreach(_scene procedural studio outdoor carts mjcf_materials mjcf_collision robot_g1 robot_go2 robot_stretch3)
         add_test(NAME graphics.render_reference.${_scene}
             COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:test_render_reference>
                     "${PROJECT_SOURCE_DIR}/tests/render/reference" "${CMAKE_CURRENT_BINARY_DIR}/render_reference"

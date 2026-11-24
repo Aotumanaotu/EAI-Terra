@@ -1,0 +1,16 @@
+<!--
+  地面（2026-11-24，M3-06）：与 Menagerie 场景相同外观的棋盘格平面，供需要把机器人放在别处（如悬挂）的场景单独使用。
+  注意：Menagerie 的 scene.xml 自带地面，作为模型实例放置时，地面会随实例的放置位姿一起移动；
+  因此悬挂场景使用机器人本体文件（如 g1.xml）加本文件，而不是把 scene.xml 整体抬高。
+  由 Terra 编写，与机器人模型的许可无关。
+-->
+<mujoco model="terra floor">
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+  <worldbody>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+  </worldbody>
+</mujoco>

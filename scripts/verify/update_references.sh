@@ -22,7 +22,7 @@ run() {
 }
 status=0
 scenes=("$@")
-[ ${#scenes[@]} -gt 0 ] || scenes=(procedural studio outdoor carts mjcf_materials robot_g1 robot_go2 robot_stretch3)
+[ ${#scenes[@]} -gt 0 ] || scenes=(procedural studio outdoor carts mjcf_materials mjcf_collision robot_g1 robot_go2 robot_stretch3)
 for scene in "${scenes[@]}"; do
     if [ -f "$refs/$scene.png" ]; then
         echo "---- $scene：与现有参考图比较"

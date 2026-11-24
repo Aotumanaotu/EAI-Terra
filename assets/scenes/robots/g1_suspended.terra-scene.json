@@ -5,13 +5,17 @@
   "models": [
     {
       "name": "g1",
-      "mjcf": "../../robots/unitree_g1/scene.xml",
+      "mjcf": "../../robots/unitree_g1/g1.xml",
       "position": [
         0,
         0,
         0.3
       ],
       "fixedBase": true
+    },
+    {
+      "name": "floor",
+      "mjcf": "../common/floor.xml"
     }
   ],
   "initialKeyframe": "g1/stand",

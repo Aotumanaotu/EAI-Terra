@@ -76,6 +76,7 @@ std::unique_ptr<SceneView> SceneView::create(const sc::SceneInstance& scene, std
         GeomDraw& draw = view->geoms_[g.id.value - 1];
         draw.group = g.group;
         draw.collides = g.collides;
+        draw.plane = g.shape == td::GeomShape::Plane;
         draw.shape = r::identityMatrix();
         const MjcfSurface surface = mjcfSurface(g, d);
         draw.material = surface.material;
@@ -212,15 +213,25 @@ std::vector<r::RenderItem> SceneView::items(const sc::SceneInstance& scene, cons
             const bool groupShown = g.group >= 0 && g.group < static_cast<int>(options.groups.size()) &&
                                     options.groups[static_cast<std::size_t>(g.group)];
             const bool hidden = part.entity.valid() && part.entity.value <= hideGeomsOf_.size() && hideGeomsOf_[part.entity.value - 1];
-            const bool shown = (groupShown && !hidden) || (options.collision && g.collides);
-            if (!shown) continue;
+            const bool shown = groupShown && !hidden;
             r::RenderItem item;
             item.mesh = g.mesh;
             item.model = as::multiply(poseMatrix(pose.pose), g.shape);
             item.material = g.material;
             item.castsShadow = g.castsShadow;
             if (selected) highlight(item);
-            out.push_back(item);
+            if (shown) out.push_back(item);
+            // 碰撞几何体的叠加显示（M3-06）：半透明橙色，不投影；与可见几何体重合时（基本形状的模型常见）呈橙色调
+            if (options.collision && g.collides && !g.plane) {
+                r::RenderItem overlay = item;
+                overlay.material = r::Material{};
+                overlay.material.baseColor = kCollisionColor;
+                overlay.material.emissive = {kCollisionColor.x * 0.25f, kCollisionColor.y * 0.25f, kCollisionColor.z * 0.25f};
+                overlay.material.roughness = 0.8f;
+                overlay.material.opacity = kCollisionOpacity;
+                overlay.castsShadow = false;
+                out.push_back(overlay);
+            }
         } else {
             if (part.binding < 0 || static_cast<std::size_t>(part.binding) >= bindings_.size()) continue;
             const BindingDraw& b = bindings_[static_cast<std::size_t>(part.binding)];

@@ -65,6 +65,7 @@ struct FrameStats {
     bool shadowsDrawn = false;
     bool imageLighting = false;  // 本帧使用了环境贴图光照
     bool backgroundDrawn = false;
+    int translucentDrawn = 0;  // M3-06：本帧绘制的半透明物体数
 };
 
 // GPU 分阶段计时（M1-10）：每帧在各阶段之间写 OpenGL 时间戳。

@@ -228,6 +228,11 @@ int main() {
     check(loaded.world != nullptr, "加载 robot_description.xml");
     if (loaded.world) {
         testJoints(loaded.world->description());
+        // M3-06（修订 5）：实体质量（夹具中各几何体写明 mass：基座 2、机械臂 0.5、滑块 0.2、轮子 0.3 kg）
+        const auto& d = loaded.world->description();
+        const auto mass = [&](const char* name) { const auto* e = d.findEntity(name); return e ? e->mass : -1.0; };
+        check(near(mass("base"), 2.0) && near(mass("arm"), 0.5) && near(mass("slider"), 0.2) && near(mass("wheel"), 0.3),
+              "实体质量：基座 2、机械臂 0.5、滑块 0.2、轮子 0.3 kg");
         testActuators(loaded.world->description());
         testKeyframes(*loaded.world);
     }

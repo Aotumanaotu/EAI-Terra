@@ -30,13 +30,16 @@ namespace terra::viewer {
 
 struct SceneViewOptions {
     std::array<bool, 6> groups{true, true, true, false, false, false};  // MJCF group 0–5 是否显示
-    bool collision = false;     // 叠加显示所有参与碰撞的几何体
+    bool collision = false;     // 叠加显示所有参与碰撞的几何体（M3-06：半透明橙色，见 kCollisionColor）
     bool armOcclusion = true;   // glTF 资产的 ARM 遮蔽约定（M1-10）
     terra::data::EntityId highlight;  // M2-08：大纲中选中的实体，其视觉部件加一层暖色自发光以示区别；无效 = 不高亮
 };
 
 // 高亮时叠加的自发光（线性辐射）
 constexpr terra::render::Vec3f kHighlightEmissive{0.30f, 0.17f, 0.02f};
+// 碰撞几何体的叠加显示（M3-06，用户要求橙色或红色、半透明）：线性颜色、不透明度
+constexpr terra::render::Vec3f kCollisionColor{1.0f, 0.28f, 0.02f};
+constexpr float kCollisionOpacity = 0.45f;
 
 // 位姿与缩放 → 模型矩阵（列主序，单精度）
 terra::render::Matrix4 poseMatrix(const terra::data::Pose& pose, double scale = 1.0);
@@ -61,6 +64,7 @@ private:
         bool castsShadow = true;
         int group = 0;
         bool collides = false;
+        bool plane = false;  // 平面（地面）不叠加碰撞显示
     };
     struct BindingDraw {
         const terra::asset::GpuAsset* asset = nullptr;  // 为空：绑定已放弃

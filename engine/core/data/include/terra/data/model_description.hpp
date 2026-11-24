@@ -24,6 +24,7 @@ struct EntityDescription {
     std::string name;  // 模型中未命名时为空；场景组合的世界中为带实例前缀的全名（M2-04）
     EntityId parent;   // 父实体；直接挂在世界上时为无效 ID
     ModelInstanceId modelInstance;  // 所属模型实例（M2-03 起）
+    double mass = 0.0;  // M3-06（描述修订 5）：实体自身的质量（kg，不含子实体）；用于重量与接触力的核对
 };
 
 // 模型实例（M2-03）。直接加载单个 MJCF 时只有一个实例：名字为空（不加前缀），放置位姿为单位变换。
@@ -185,7 +186,7 @@ struct SimulationSettings {
 struct ModelDescription {
     // 描述的修订号：1 为 M0；2 为 M2-03（增加模型实例、几何体与网格，已有字段不变）。
     // 3 为 M3-02（关节限位、轴向与被动参数；执行器类别、增益、传动比与力限；关键帧）。
-    static constexpr std::uint32_t kRevision = 4;
+    static constexpr std::uint32_t kRevision = 5;
 
     // 世界实例号：每次成功加载分配一个新值，进程内唯一、从 1 递增；0 无效。
     // 实体、关节、执行器 ID 只在同一个世界实例内有意义；重新加载后旧 ID 的数值可能相同，

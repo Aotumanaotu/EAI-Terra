@@ -692,7 +692,7 @@ LoadResult MujocoWorld::build(mjModel* rawModel, const BuildInput& inputs, LoadR
         const int parentBody = model->body_parentid[b];
         const std::string raw = nameOf(model.get(), mjOBJ_BODY, b);
         desc.entities.push_back({id, InstanceNames::visible(raw), bodyToEntity[static_cast<std::size_t>(parentBody)],
-                                 names.instanceOf(raw)});
+                                 names.instanceOf(raw), model->body_mass[b]});
         impl->entityToBody.push_back(b);
     }
 

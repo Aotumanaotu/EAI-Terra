@@ -54,31 +54,36 @@ struct SceneSpec {
     r::Vec3f target;
     std::string scenePath;   // M3-03：场景文件（相对 assets/）；空表示 carts 的 tests/scene/two_carts.terra-scene.json
     std::string robotCheck;  // M3-03：需要的参考机器人文件（相对 assets/），缺失时跳过；空表示不需要
+    bool collision = false;  // M3-06：叠加显示碰撞几何体（半透明橙色）
 };
 
 bool spec(const std::string& name, SceneSpec& out) {
     if (name == "procedural") {
-        out = {name, false, false, st::EnvironmentSetting::Hemisphere, {-5.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 0.0f}, {}, {}};
+        out = {name, false, false, st::EnvironmentSetting::Hemisphere, {-5.0f, 0.0f, 2.0f}, {0.0f, 0.0f, 0.0f}, {}, {}, false};
     } else if (name == "studio") {
-        out = {name, true, false, st::EnvironmentSetting::Studio, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}, {}, {}};
+        out = {name, true, false, st::EnvironmentSetting::Studio, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}, {}, {}, false};
     } else if (name == "outdoor") {
-        out = {name, true, false, st::EnvironmentSetting::Outdoor, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}, {}, {}};
+        out = {name, true, false, st::EnvironmentSetting::Outdoor, {-4.2f, 0.0f, 0.95f}, {-2.55f, 0.0f, 0.25f}, {}, {}, false};
     } else if (name == "carts") {
-        out = {name, false, true, st::EnvironmentSetting::Hemisphere, {-2.2f, -2.4f, 1.5f}, {0.25f, 0.0f, 0.1f}, {}, {}};
+        out = {name, false, true, st::EnvironmentSetting::Hemisphere, {-2.2f, -2.4f, 1.5f}, {0.25f, 0.0f, 0.1f}, {}, {}, false};
     } else if (name == "mjcf_materials") {
         // M3-03：材质、二维贴图（平面 texuniform、长方体、带纹理坐标的网格）、平滑法线与平直着色、不支持的立方体贴图
         out = {name, false, true, st::EnvironmentSetting::Hemisphere, {1.05f, -1.25f, 0.75f}, {0.05f, 0.15f, 0.05f},
-               "tests/scene/materials.terra-scene.json", {}};
+               "tests/scene/materials.terra-scene.json", {}, false};
+    } else if (name == "mjcf_collision") {
+        // M3-06：同一材质夹具，叠加显示碰撞几何体（半透明橙色，地面平面不叠加）
+        out = {name, false, true, st::EnvironmentSetting::Hemisphere, {1.05f, -1.25f, 0.75f}, {0.05f, 0.15f, 0.05f},
+               "tests/scene/materials.terra-scene.json", {}, true};
     } else if (name == "robot_g1") {
         // M3-03：三台参考机器人，处于场景的初始关键帧；摄影棚环境（需要 HDRI 与 Menagerie 模型）
         out = {name, true, true, st::EnvironmentSetting::Studio, {2.2f, -1.6f, 1.3f}, {0.0f, 0.0f, 0.75f},
-               "scenes/robots/g1.terra-scene.json", "robots/unitree_g1/g1.xml"};
+               "scenes/robots/g1.terra-scene.json", "robots/unitree_g1/g1.xml", false};
     } else if (name == "robot_go2") {
         out = {name, true, true, st::EnvironmentSetting::Studio, {1.4f, -1.1f, 0.7f}, {0.0f, 0.0f, 0.25f},
-               "scenes/robots/go2.terra-scene.json", "robots/unitree_go2/go2.xml"};
+               "scenes/robots/go2.terra-scene.json", "robots/unitree_go2/go2.xml", false};
     } else if (name == "robot_stretch3") {
         out = {name, true, true, st::EnvironmentSetting::Studio, {1.8f, 1.4f, 1.4f}, {0.0f, -0.3f, 0.6f},
-               "scenes/robots/stretch3.terra-scene.json", "robots/hello_robot_stretch_3/stretch.xml"};
+               "scenes/robots/stretch3.terra-scene.json", "robots/hello_robot_stretch_3/stretch.xml", false};
     } else {
         return false;
     }
@@ -89,7 +94,7 @@ bool spec(const std::string& name, SceneSpec& out) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "用法：test_render_reference <参考图目录> <输出目录> --scene <procedural|studio|outdoor|carts|mjcf_materials|robot_g1|robot_go2|robot_stretch3> [--update]\n");
+        std::fprintf(stderr, "用法：test_render_reference <参考图目录> <输出目录> --scene <procedural|studio|outdoor|carts|mjcf_materials|mjcf_collision|robot_g1|robot_go2|robot_stretch3> [--update]\n");
         return 2;
     }
     const fs::path referenceDir{argv[1]};
@@ -200,7 +205,15 @@ int main(int argc, char** argv) {
                 // 其他场景文件：不推进，渲染打开时的姿态（机器人处于场景的初始关键帧）
                 sceneView = vw::SceneView::create(*simulated, messages);
                 const auto poses = terra::scene::visualPoses(*simulated, terra::scene::entityPoses(*simulated->world->snapshot()));
-                sceneItems = sceneView->items(*simulated, poses);
+                vw::SceneViewOptions viewOptions;
+                viewOptions.collision = s.collision;
+                sceneItems = sceneView->items(*simulated, poses, viewOptions);
+                if (s.collision) {
+                    std::size_t overlays = 0;
+                    for (const auto& item : sceneItems) overlays += item.material.opacity < 1.0f ? 1u : 0u;
+                    std::printf("INFO 碰撞几何体叠加：%zu 个半透明渲染项\n", overlays);
+                    check(overlays == 7, "材质夹具中 7 个非平面几何体参与碰撞，各叠加一个半透明渲染项（实际 " + std::to_string(overlays) + "）");
+                }
                 if (s.name == "carts") check(sceneView->liveBindings() == 4, "4 个 glTF 绑定全部可用（节点 Chassis、Mast 存在）");
                 for (const auto& m : messages) std::printf("INFO 场景提示：%s\n", m.text.c_str());
                 std::printf("INFO 场景：%zu 个渲染项，%zu 个网格，仿真时间 %.3f 秒\n", sceneItems.size(), sceneView->meshCount(),
@@ -229,6 +242,7 @@ int main(int argc, char** argv) {
                                   lit.hemisphere, lit.settings, lit.image);
             *out = r::fromBottomUp(kWidth, kHeight, made.renderer->readOutput(0, 0, kWidth, kHeight));
         }
+        if (s.collision) check(made.renderer->lastFrame().translucentDrawn == 7, "渲染器按半透明绘制了 7 个物体");
         std::printf("INFO 阴影投射物 %d 个，MSAA %d×，环境贴图光照 %s\n", made.renderer->lastFrame().shadowCasters,
                     made.renderer->lastFrame().samples, made.renderer->lastFrame().imageLighting ? "是" : "否");
     }

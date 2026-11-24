@@ -41,6 +41,9 @@ struct Material {
     float normalScale = 1.0f;
     float occlusionStrength = 1.0f;
     bool doubleSided = false;                    // 双面：不剔除背面，背面法线取反
+    // M3-06：不透明度。小于 1 时在不透明物体、背景与网格之后按距离从远到近混合绘制（深度测试、不写深度、不剔除背面）；
+    // 半透明物体应设 castsShadow = false（阴影图只画不透明物体）。
+    float opacity = 1.0f;
 };
 
 // 太阳光（方向光）。direction 指向光源（单位向量）。

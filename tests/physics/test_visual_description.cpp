@@ -226,7 +226,7 @@ int main() {
     check(loaded.world != nullptr, "加载 visual_materials.xml");
     if (!loaded.world) return 1;
     const td::ModelDescription& d = loaded.world->description();
-    check(td::ModelDescription::kRevision == 4, "模型描述修订号 4");
+    check(td::ModelDescription::kRevision >= 4, "模型描述修订号 ≥ 4（M3-06 起为 5）");
     testMeshes(d);
     testTextures(d);
     testMaterials(d);

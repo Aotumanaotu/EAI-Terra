@@ -146,6 +146,7 @@ enum class Command : int {
     SimPlayPause,  // M2-08：仿真播放 / 暂停（默认空格）
     SimStep,       // M2-08：单步（默认句号键）
     SimReset,      // M2-08：重置（默认不绑定单键；界面另有固定的 Ctrl+R）
+    SimRecord,     // M3-07d：开始 / 停止记录（默认不绑定单键；界面另有固定的 Ctrl+Shift+R）
     Count,
 };
 constexpr std::size_t kCommandCount = static_cast<std::size_t>(Command::Count);

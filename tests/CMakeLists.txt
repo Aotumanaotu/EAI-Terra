@@ -29,6 +29,7 @@
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
+# M3-07c：查看器记录与回放（graphics.viewer_record_selftest）；记录采样率设置（settings.store 扩充）。
 # M3-07b：资源库（library.store）；Headless --library / --list-records（headless.list_records）。
 # M3-07a：SHA-256（core.sha256）；实验记录（record.file、record.rerun）；Headless --record / --rerun（headless.record_motion 等）。
 # M3-06：关节与接触验证（robots.validation）；实体质量（模型描述修订 5）。
@@ -604,6 +605,14 @@ if(TERRA_BUILD_RENDER)
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json"
                 --motion "${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json")
     set_tests_properties(graphics.viewer_motion_selftest PROPERTIES LABELS graphics)
+    # M3-07c：记录与回放——第 6 帧开始记录（动作从头播放），中间停止（加入构建目录中的资源库）并回放；
+    # 检查记录可复现（逐位相同）、已加入资源库、回放画面与记录逐位相同
+    add_test(NAME graphics.viewer_record_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/scene/keyframe_arm.terra-scene.json"
+                --motion "${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json"
+                --record-self-test --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_record/library.sqlite3")
+    set_tests_properties(graphics.viewer_record_selftest PROPERTIES LABELS graphics)
 
     add_test(NAME graphics.viewer_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe

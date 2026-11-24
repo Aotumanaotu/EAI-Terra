@@ -26,7 +26,7 @@ constexpr const char* kCapturePopup = "###KeyCapture";
 constexpr TextId kCommandText[] = {
     TextId::CmdCameraForward, TextId::CmdCameraBack, TextId::CmdCameraLeft,  TextId::CmdCameraRight,  TextId::CmdCameraUp,
     TextId::CmdCameraDown,    TextId::CmdCameraBoost, TextId::CmdCameraReset, TextId::CmdAppFullscreen,
-    TextId::CmdSimPlayPause,  TextId::CmdSimStep,     TextId::CmdSimReset,
+    TextId::CmdSimPlayPause,  TextId::CmdSimStep,     TextId::CmdSimReset,    TextId::CmdSimRecord,
 };
 static_assert(sizeof(kCommandText) / sizeof(kCommandText[0]) == st::kCommandCount, "kCommandText 必须与 Command 一一对应");
 

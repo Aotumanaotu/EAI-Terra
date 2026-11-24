@@ -29,7 +29,7 @@ constexpr std::size_t kMaxLayoutBytes = 1024u * 1024u;
 constexpr const char* kCommandNames[] = {
     "camera.forward", "camera.back", "camera.left", "camera.right", "camera.up",
     "camera.down",    "camera.boost", "camera.reset", "app.fullscreen", "sim.playPause",
-    "sim.step",       "sim.reset",
+    "sim.step",       "sim.reset",    "sim.record",
 };
 static_assert(sizeof(kCommandNames) / sizeof(kCommandNames[0]) == kCommandCount, "kCommandNames 必须与 Command 一一对应");
 
@@ -451,6 +451,7 @@ KeyMap::KeyMap() {
     slots_[ci(Command::SimPlayPause)] = {K::Space, K::Unknown};
     slots_[ci(Command::SimStep)] = {K::Period, K::Unknown};
     slots_[ci(Command::SimReset)] = {K::Unknown, K::Unknown};
+    slots_[ci(Command::SimRecord)] = {K::Unknown, K::Unknown};
 }
 
 const KeySlots& KeyMap::operator[](Command command) const noexcept { return slots_[ci(command) % kCommandCount]; }

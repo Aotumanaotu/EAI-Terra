@@ -14,11 +14,14 @@
 //   --scene      （M2-07）打开场景文件（JSON）：组合物理世界、运行仿真，视口显示由快照驱动的场景（代替演示场景）；
 //                场景有错误时打印诊断并返回 4。场景文件中的 view.camera 作为初始相机
 //   --demo-drive （M2-07）演示：给场景中的所有执行器施加正弦控制（幅度为控制范围的 60%），用于观看运动
+//   --library    （M3-07c）资源库文件（实验记录的索引）；默认 $TERRA_LIBRARY 或 ~/.local/share/eai-terra/library.sqlite3
+//   --record-self-test （M3-07c）自检时测试记录与回放（与 --self-test、--motion 同用）
 //   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
 //                自检时在第 3 帧打开（代替按播放），并与“动作 → PD 层 → setControl → step”的纯物理对照逐位比较
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
@@ -296,9 +299,17 @@ struct AppState {
     // M3-07c：资源库与实验记录
     std::unique_ptr<terra::library::Library> library;
     std::string libraryPath;
-    bool showRecords = false;
+    // M3-07d：底部“时间轴”标签页（与日志、统计并列），记录列表合并在其中
+    bool showTimeline = true;
+    bool focusTimeline = false;    // 下一帧把“时间轴”标签页切到前面（菜单 文件 → 实验记录…）
     bool recordsOnlyScene = true;
-    std::vector<terra::library::RecordEntry> recordList;  // 打开“实验记录”窗口或重新扫描时刷新
+    bool recordListStale = true;   // 切换场景、保存记录后在下一次绘制时刷新
+    std::array<char, 64> actuatorFilter{};  // 执行器面板的名字过滤
+    // 执行器面板本帧显示的实测与目标（自检用：回放时应等于记录中的值）
+    std::map<std::uint32_t, std::pair<double, std::optional<double>>> actuatorShown;
+    std::uint64_t actuatorShownStep = 0;  // 回放时面板对应的步序号
+    bool selfTestPressRecord = false;     // 自检：本帧在工具栏上按一下录制按钮
+    std::vector<terra::library::RecordEntry> recordList;
     std::optional<std::string> replayRequest;            // 请求回放的记录（帧末处理：可能需要切换场景）
     std::string lastRecordPath;                          // 最近一次保存的记录（自检用）
     bool closeRequest = false;
@@ -331,6 +342,7 @@ void buildDefaultLayout(ImGuiID dockspace) {
     ImGui::DockBuilderDockWindow("###Actuators", right);
     ImGui::DockBuilderDockWindow("###Log", bottom);
     ImGui::DockBuilderDockWindow("###Stats", bottom);
+    ImGui::DockBuilderDockWindow("###Timeline", bottom);
     ImGui::DockBuilderDockWindow("###Viewport", center);
     ImGui::DockBuilderFinish(dockspace);
 }
@@ -359,6 +371,7 @@ struct SimulatedScene {
     // M3-07c：实验记录（正在记录时非空）与回放（回放时非空；回放期间不推进物理）
     std::unique_ptr<terra::simulation::RecordWriter> recorder;
     std::uint64_t recordSampleEvery = 10;
+    double recordStartTime = 0.0;  // 开始记录时的仿真时间（工具栏的录制时长、时间轴上的录制区段）
     struct Replay {
         terra::simulation::Record record;
         std::string path;
@@ -386,6 +399,42 @@ struct SimulatedScene {
         const double span = next->simulationTime - older.simulationTime;
         const double alpha = span > 0 ? (t - older.simulationTime) / span : 1.0;
         return terra::simulation::interpolatePoses(older, *next, std::clamp(alpha, 0.0, 1.0));
+    }
+    // 回放时刻 t 的关节状态（M3-07d，执行器面板用；记录中的状态不含执行器输出）：落在采样点上时就是该份状态，
+    // 否则在相邻两份之间对关节位置与速度逐分量线性插值（面板只用到铰链与滑动关节的第一个分量）
+    terra::data::PhysicsSnapshot replaySnapshot() const {
+        const auto& states = replay->record.states;
+        const double t = replay->time;
+        auto next = std::lower_bound(states.begin(), states.end(), t,
+                                     [](const terra::data::PhysicsSnapshot& s, double at) { return s.simulationTime < at; });
+        if (next == states.end()) next = states.end() - 1;
+        if (next->simulationTime == t || next == states.begin()) return *next;
+        const auto& older = *(next - 1);
+        const double span = next->simulationTime - older.simulationTime;
+        const double alpha = std::clamp(span > 0 ? (t - older.simulationTime) / span : 1.0, 0.0, 1.0);
+        terra::data::PhysicsSnapshot s = older;
+        s.simulationTime = t;
+        const auto lerp = [alpha](double a, double b) { return a + (b - a) * alpha; };
+        for (std::size_t j = 0; j < s.joints.size() && j < next->joints.size(); ++j) {
+            auto& js = s.joints[j];
+            for (std::size_t k = 0; k < js.position.size(); ++k) js.position[k] = lerp(older.joints[j].position[k], next->joints[j].position[k]);
+            for (std::size_t k = 0; k < js.velocity.size(); ++k) js.velocity[k] = lerp(older.joints[j].velocity[k], next->joints[j].velocity[k]);
+        }
+        return s;
+    }
+    // 回放时刻 t 对应的步序号：落在采样点上时就是该份状态的步序号，否则为前一份的步序号加上经过的整步数
+    std::uint64_t replayStep() const {
+        const auto& states = replay->record.states;
+        const double t = replay->time;
+        auto next = std::lower_bound(states.begin(), states.end(), t,
+                                     [](const terra::data::PhysicsSnapshot& s, double at) { return s.simulationTime < at; });
+        if (next == states.end()) return states.back().stepIndex;
+        if (next->simulationTime == t || next == states.begin()) return next->stepIndex;
+        const auto& older = *(next - 1);
+        const double dt = replay->record.header.timestep;
+        if (dt <= 0.0) return older.stepIndex;
+        const auto passed = static_cast<std::uint64_t>(std::floor((t - older.simulationTime) / dt + 1e-9));
+        return std::min(older.stepIndex + passed, next->stepIndex);
     }
     std::unique_ptr<vw::SceneView> view;
     bool demoDrive = false;
@@ -527,6 +576,7 @@ bool openScene(Frame& f, const std::string& requested) {
     SimulatedScene& sim = *f.simulated;
     sim.instance = std::move(*result.scene);
     sim.path = path;
+    f.state.recordListStale = true;  // 时间轴默认只列当前场景的记录
     sim.runner = std::make_unique<terra::simulation::SimulationRunner>(*sim.instance.world);
     sim.runner->setHomeKeyframe(sim.instance.homeKeyframe);
     sim.pd = terra::simulation::PdLayer(sim.instance.world->description(), sim.instance.pd);
@@ -611,7 +661,7 @@ void stopRecording(Frame& f, const char* reason) {
     if (auto* lib = recordLibrary(f)) {
         if (const auto error = lib->addRecord(path)) f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + *error);
     }
-    if (f.state.showRecords) refreshRecordList(f);
+    f.state.recordListStale = true;
 }
 
 void simReset(Frame& f) {
@@ -755,6 +805,7 @@ void startRecording(Frame& f) {
         return;
     }
     sim.recorder->state(*sim.instance.world->snapshot());
+    sim.recordStartTime = sim.instance.world->simulationTime();
     SimulatedScene* self = &sim;
     sim.runner->setControlObserver([self](std::uint64_t step, const std::vector<terra::physics::ActuatorCommand>& commands) {
         if (self->recorder) self->recorder->control(step, commands);
@@ -765,6 +816,13 @@ void startRecording(Frame& f) {
     f.state.log.push_back(std::string{tr(TextId::LogRecordStarted)} + f.state.lastRecordPath);
     std::printf("INFO 开始记录：%s（每 %llu 步采样一次）\n", f.state.lastRecordPath.c_str(),
                 static_cast<unsigned long long>(sim.recordSampleEvery));
+}
+
+// 开始 / 停止记录（M3-07d）：工具栏按钮、时间轴、菜单、Ctrl+Shift+R 与可设置的按键共用；回放期间不可用
+void toggleRecording(Frame& f) {
+    if (!f.simulated || f.simulated->replay) return;
+    if (f.simulated->recorder) stopRecording(f, "stopped");
+    else startRecording(f);
 }
 
 // 回放：读入记录；场景与当前不同时先打开记录中的场景；回放期间不推进物理，画面由记录的状态给出
@@ -817,35 +875,160 @@ const char* shapeText(terra::data::GeomShape shape) {
     return "";
 }
 
-// 视口上方的仿真工具栏：播放 / 暂停、单步、重置、速度
-void simulationToolbar(Frame& f) {
-    if (!f.simulated) return;
-    SimulatedScene& sim = *f.simulated;
-    const bool paused = sim.runner->paused();
-    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 4.0f, ImGui::GetCursorPosY() + 3.0f));
-    if (ImGui::Button(paused ? tr(TextId::SimPlay) : tr(TextId::SimPause))) sim.togglePlay();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!paused);
-    if (ImGui::Button(tr(TextId::SimStep))) sim.runner->stepOnce();
+// ---- 图形按钮与播放控制（M3-07d）----
+// 按钮上的图形由绘制接口画出，不依赖图标字体；颜色取当前主题，录制与超限用红色。
+
+constexpr ImU32 kRecordRed = IM_COL32(222, 72, 60, 255);
+
+enum class Icon { Play, Pause, Step, Reset, Record, Stop };
+
+bool iconButton(const char* id, Icon icon, bool enabled, const std::string& tooltip) {
+    const float size = ImGui::GetFrameHeight();
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::Button(id, ImVec2(size, size));
     ImGui::EndDisabled();
+    const ImVec2 lo = ImGui::GetItemRectMin();
+    const ImVec2 hi = ImGui::GetItemRectMax();
+    const ImVec2 c((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+    const float r = size * 0.22f;
+    const ImU32 col = ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    switch (icon) {
+        case Icon::Play:
+            dl->AddTriangleFilled(ImVec2(c.x - r * 0.7f, c.y - r), ImVec2(c.x - r * 0.7f, c.y + r), ImVec2(c.x + r, c.y), col);
+            break;
+        case Icon::Pause:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.8f, c.y - r), ImVec2(c.x - r * 0.25f, c.y + r), col);
+            dl->AddRectFilled(ImVec2(c.x + r * 0.25f, c.y - r), ImVec2(c.x + r * 0.8f, c.y + r), col);
+            break;
+        case Icon::Step:  // ▶|
+            dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x - r, c.y + r), ImVec2(c.x + r * 0.45f, c.y), col);
+            dl->AddRectFilled(ImVec2(c.x + r * 0.6f, c.y - r), ImVec2(c.x + r, c.y + r), col);
+            break;
+        case Icon::Reset:  // |◀
+            dl->AddRectFilled(ImVec2(c.x - r, c.y - r), ImVec2(c.x - r * 0.6f, c.y + r), col);
+            dl->AddTriangleFilled(ImVec2(c.x + r, c.y - r), ImVec2(c.x + r, c.y + r), ImVec2(c.x - r * 0.45f, c.y), col);
+            break;
+        case Icon::Record: dl->AddCircleFilled(c, r, enabled ? kRecordRed : col); break;
+        case Icon::Stop: dl->AddRectFilled(ImVec2(c.x - r * 0.8f, c.y - r * 0.8f), ImVec2(c.x + r * 0.8f, c.y + r * 0.8f), kRecordRed, 1.5f); break;
+    }
+    if (!tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip.c_str());
+    return pressed && enabled;
+}
+
+// 当前窗口内容区右边界（窗口坐标；ImGui 1.93 已去掉 GetWindowContentRegionMax）
+float contentRight() { return ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x; }
+
+// 在同一行靠右放宽度为 width 的内容（放不下时紧跟在前一项之后）
+void sameLineRight(float width) {
     ImGui::SameLine();
-    if (ImGui::Button(tr(TextId::SimReset))) simReset(f);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
-    char current[16];
-    std::snprintf(current, sizeof current, "%g×", SimulatedScene::kSimSpeeds[sim.speedIndex]);
-    if (ImGui::BeginCombo((std::string{"##"} + tr(TextId::SimSpeed)).c_str(), current)) {
-        for (int i = 0; i < static_cast<int>(sizeof(SimulatedScene::kSimSpeeds) / sizeof(SimulatedScene::kSimSpeeds[0])); ++i) {
-            char option[16];
-            std::snprintf(option, sizeof option, "%g×", SimulatedScene::kSimSpeeds[i]);
-            if (ImGui::Selectable(option, i == sim.speedIndex)) sim.setSpeed(i);
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), contentRight() - width));
+}
+
+// mm:ss.ss
+std::string clockText(double seconds) {
+    const double t = std::max(0.0, seconds);
+    const int minutes = static_cast<int>(t / 60.0);
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%02d:%05.2f", minutes, t - 60.0 * minutes);
+    return buf;
+}
+
+std::string withKey(TextId id, const char* key) { return std::string{tr(id)} + "    " + key; }
+
+template <std::size_t N>
+bool speedCombo(const char* id, double current, const double (&speeds)[N], double& chosen) {
+    char text[16];
+    std::snprintf(text, sizeof text, "%g×", current);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("0.25×").x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f);
+    bool changed = false;
+    if (ImGui::BeginCombo(id, text, ImGuiComboFlags_HeightLarge)) {
+        for (const double speed : speeds) {
+            std::snprintf(text, sizeof text, "%g×", speed);
+            if (ImGui::Selectable(text, speed == current)) {
+                chosen = speed;
+                changed = true;
+            }
         }
         ImGui::EndCombo();
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr(TextId::SimSpeed));
+    return changed;
+}
+
+constexpr double kReplaySpeeds[] = {0.1, 0.25, 0.5, 1.0, 2.0, 4.0};
+
+// 播放 / 暂停、单步、重置、速度与录制：视口工具栏与时间轴标签页共用（M3-07d 评审问题 2：两处都放）。
+// 回放时控制回放；录制按钮在回放时不可用。pressRecord 为真时等同于按下录制按钮（自检用，走与点击完全相同的路径）。
+void transportControls(Frame& f, bool pressRecord = false) {
+    SimulatedScene& sim = *f.simulated;
+    const float gap = ImGui::GetStyle().ItemSpacing.x * 0.35f;
+    if (sim.replay) {
+        auto& replay = *sim.replay;
+        if (iconButton("##play", replay.playing ? Icon::Pause : Icon::Play, true, tr(replay.playing ? TextId::ReplayPause : TextId::ReplayPlay))) {
+            if (!replay.playing && replay.time >= replay.duration) replay.time = replay.record.states.front().simulationTime;
+            replay.playing = !replay.playing;
+        }
+        ImGui::SameLine(0, gap);
+        iconButton("##step", Icon::Step, false, tr(TextId::SimStep));
+        ImGui::SameLine(0, gap);
+        if (iconButton("##reset", Icon::Reset, true, tr(TextId::TimelineToStart))) replay.time = replay.record.states.front().simulationTime;
+        ImGui::SameLine();
+        double speed = replay.speed;
+        if (speedCombo("##speed", replay.speed, kReplaySpeeds, speed)) replay.speed = speed;
+    } else {
+        const bool paused = sim.runner->paused();
+        if (iconButton("##play", paused ? Icon::Play : Icon::Pause, true, withKey(paused ? TextId::SimPlay : TextId::SimPause,
+                                                                               in::keyName(f.settings.current.keys[st::Command::SimPlayPause][0])))) {
+            sim.togglePlay();
+        }
+        ImGui::SameLine(0, gap);
+        if (iconButton("##step", Icon::Step, paused, tr(TextId::SimStep))) sim.runner->stepOnce();
+        ImGui::SameLine(0, gap);
+        if (iconButton("##reset", Icon::Reset, true, withKey(TextId::SimReset, "Ctrl+R"))) simReset(f);
+        ImGui::SameLine();
+        double speed = SimulatedScene::kSimSpeeds[sim.speedIndex];
+        if (speedCombo("##speed", speed, SimulatedScene::kSimSpeeds, speed)) {
+            for (int i = 0; i < static_cast<int>(std::size(SimulatedScene::kSimSpeeds)); ++i) {
+                if (SimulatedScene::kSimSpeeds[i] == speed) sim.setSpeed(i);
+            }
+        }
+    }
     ImGui::SameLine();
-    const char* status = sim.runner->faulted() ? tr(TextId::StatusFaulted) : paused ? tr(TextId::StatusPaused) : tr(TextId::StatusRunning);
+    const bool recording = sim.recorder != nullptr;
+    const bool clicked = iconButton("##record", recording ? Icon::Stop : Icon::Record, !sim.replay,
+                                    withKey(recording ? TextId::SimRecordStop : TextId::SimRecordStart, "Ctrl+Shift+R"));
+    if (clicked || pressRecord) toggleRecording(f);
+    // 按下后记录可能已经结束（recorder 已释放）：按当前状态显示，不能沿用按下前的 recording
+    if (sim.recorder) {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, kRecordRed);
+        ImGui::Text("%s  %.1f MB", clockText(sim.instance.world->simulationTime() - sim.recordStartTime).c_str(),
+                    static_cast<double>(sim.recorder->bytes()) / (1024.0 * 1024.0));
+        ImGui::PopStyleColor();
+    }
+}
+
+// 视口上方的仿真工具栏：播放控制与录制在左，状态与时间在右
+void simulationToolbar(Frame& f) {
+    if (!f.simulated) return;
+    SimulatedScene& sim = *f.simulated;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + 4.0f, ImGui::GetCursorPosY() + 3.0f));
+    ImGui::PushID("toolbar");
+    transportControls(f, std::exchange(f.state.selfTestPressRecord, false));
+    ImGui::PopID();
+    const char* status = sim.replay                ? tr(TextId::StatusReplay)
+                         : sim.runner->faulted()   ? tr(TextId::StatusFaulted)
+                         : sim.runner->paused()    ? tr(TextId::StatusPaused)
+                                                   : tr(TextId::StatusRunning);
+    char text[96];
+    std::snprintf(text, sizeof text, "%s   %s", status,
+                  clockText(sim.replay ? sim.replay->time : sim.instance.world->simulationTime()).c_str());
+    sameLineRight(ImGui::CalcTextSize(text).x + 8.0f);
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("%s  %.3f s", status, sim.instance.world->simulationTime());
+    if (sim.replay) ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", text);
+    else ImGui::TextUnformatted(text);
 }
 
 void sceneErrorWindow(Frame& f) {
@@ -942,7 +1125,7 @@ void applySettings(Frame& f) {
         }
         using CommandAction = std::pair<st::Command, const char*>;
         for (const auto& [command, action] : {CommandAction{st::Command::SimPlayPause, "sim_play"}, CommandAction{st::Command::SimStep, "sim_step"},
-                                              CommandAction{st::Command::SimReset, "sim_reset"}}) {
+                                              CommandAction{st::Command::SimReset, "sim_reset"}, CommandAction{st::Command::SimRecord, "sim_record"}}) {
             if (auto error = f.input.setBindings(kAppMap, action, vw::buttonBindings(next.keys[command]))) f.state.log.push_back(*error);
         }
     }
@@ -994,6 +1177,8 @@ void shortcuts(Frame& f) {
                                                                                                : f.settings.current.ui.recentScenes.front(),
                                                     kSceneSuffix);
     if (chord(ImGuiKey_R)) simReset(f);  // 固定快捷键；另可在偏好设置中给“仿真：重置”分配单键
+    // M3-07d：Ctrl+Shift+R 开始 / 停止记录（组合键要求修饰键完全一致，与 Ctrl+R 不会同时触发）；另可分配单键
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_R)) toggleRecording(f);
 }
 
 void menuBar(Frame& f) {
@@ -1011,9 +1196,10 @@ void menuBar(Frame& f) {
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem(tr(TextId::MenuFileCloseScene), nullptr, false, f.simulated.has_value())) f.state.closeRequest = true;
-        if (ImGui::MenuItem(tr(TextId::MenuFileRecords), nullptr, f.state.showRecords)) {
-            f.state.showRecords = !f.state.showRecords;
-            if (f.state.showRecords) refreshRecordList(f);
+        if (ImGui::MenuItem(tr(TextId::MenuFileRecords))) {
+            f.state.showTimeline = true;
+            f.state.focusTimeline = true;
+            f.state.recordListStale = true;
         }
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuFileQuit), "Alt+F4")) f.state.quit = true;
@@ -1029,10 +1215,8 @@ void menuBar(Frame& f) {
         if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
         // M3-07c：实验记录与采样率
         ImGui::Separator();
-        if (!sim.recorder) {
-            if (ImGui::MenuItem(tr(TextId::SimRecordStart), nullptr, false, !sim.replay)) startRecording(f);
-        } else if (ImGui::MenuItem(tr(TextId::SimRecordStop))) {
-            stopRecording(f, "stopped");
+        if (ImGui::MenuItem(sim.recorder ? tr(TextId::SimRecordStop) : tr(TextId::SimRecordStart), "Ctrl+Shift+R", false, !sim.replay)) {
+            toggleRecording(f);
         }
         if (ImGui::BeginMenu(tr(TextId::SimRecordRate), !sim.recorder)) {
             for (const double hz : {10.0, 25.0, 50.0, 100.0, 250.0, 500.0}) {
@@ -1123,6 +1307,7 @@ void menuBar(Frame& f) {
         ImGui::MenuItem(tr(TextId::PanelLog), nullptr, &panels.showLog);
         ImGui::MenuItem(tr(TextId::PanelStats), nullptr, &panels.showStats);
         ImGui::MenuItem(tr(TextId::PanelActuators), nullptr, &f.state.showActuators);
+        ImGui::MenuItem(tr(TextId::PanelTimeline), nullptr, &f.state.showTimeline);
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuWindowResetLayout))) {
             f.settings.current.ui.layout.clear();
@@ -1544,28 +1729,167 @@ const char* actuatorKindText(terra::data::ActuatorKind kind, bool pd) {
     return "";
 }
 
+// ---- 执行器面板（M3-07d）：每个执行器一个“实测 + 目标”控件，回放时与时间轴同步 ----
+
+struct ActuatorReading {
+    double measured = 0.0;
+    std::optional<double> target;  // 回放中 PD 层接管的执行器没有记录目标（记录的是 PD 层的输出）
+    std::optional<std::pair<double, double>> range;
+    bool outOfRange = false;
+};
+
+// 实测量按执行器类型（评审问题 3）：位置执行器与 PD 层取关节位置，速度执行器取关节速度，力矩执行器取输出
+// （除以增益，与控制量同一单位），不作用在铰链或滑动关节上的执行器取目标本身。
+// recorded 非空时为回放：snap 是记录中该时刻的状态，目标取记录中该时刻生效的控制量。
+ActuatorReading actuatorReading(const SimulatedScene& sim, std::size_t i, const terra::data::PhysicsSnapshot& snap,
+                                const std::map<std::uint32_t, std::vector<double>>* recorded) {
+    using terra::data::ActuatorKind;
+    using terra::data::JointType;
+    const auto& d = sim.instance.world->description();
+    const auto& a = d.actuators[i];
+    const bool pd = sim.pd.manages(a.id);
+    const terra::data::JointState* joint = nullptr;
+    if (d.joint(a.joint) != nullptr && a.joint.value >= 1 && a.joint.value <= snap.joints.size()) {
+        const auto& js = snap.joints[a.joint.value - 1];
+        if (js.type == JointType::Hinge || js.type == JointType::Slide) joint = &js;
+    }
+    ActuatorReading r;
+    if (recorded != nullptr) {
+        const auto it = recorded->find(a.id.value);
+        if (!pd && it != recorded->end() && !it->second.empty()) r.target = it->second[0];
+    } else if (const auto pending = sim.panelTargets.find(a.id.value); pending != sim.panelTargets.end()) {
+        r.target = pending->second;
+    } else if (pd) {
+        r.target = sim.pd.target(a.id).value_or(joint != nullptr ? joint->position[0] : 0.0);
+    } else if (i < snap.actuators.size() && !snap.actuators[i].controls.empty()) {
+        r.target = snap.actuators[i].controls[0];
+    }
+    if (joint != nullptr && (pd || a.kind == ActuatorKind::Position)) {
+        r.measured = joint->position[0];
+    } else if (joint != nullptr && a.kind == ActuatorKind::Velocity) {
+        r.measured = joint->velocity[0];
+    } else if (a.kind == ActuatorKind::Motor && i < snap.actuators.size()) {
+        r.measured = a.gain != 0.0 ? snap.actuators[i].force / a.gain : snap.actuators[i].force;
+    } else {
+        r.measured = r.target.value_or(0.0);
+    }
+    r.range = pd ? sim.pd.targetRange(a) : terra::simulation::controlRange(a);
+    if (r.range) r.outOfRange = r.measured < r.range->first - 1e-9 || r.measured > r.range->second + 1e-9;
+    return r;
+}
+
+// 填充条表示实测量（从 0 或范围下限起），竖线表示目标；超出范围时填充条为红色。
+// 可编辑时在条上按下或拖动即把目标设为该处的值（返回新目标）；双击可输入精确值。
+std::optional<double> actuatorBar(const ActuatorReading& r, bool editable, const std::string& tooltip) {
+    double lo = -1.0;
+    double hi = 1.0;
+    if (r.range && r.range->second > r.range->first) {
+        lo = r.range->first;
+        hi = r.range->second;
+    } else {
+        const double m = 1.25 * std::max({1.0, std::fabs(r.measured), std::fabs(r.target.value_or(0.0))});
+        lo = -m;
+        hi = m;
+    }
+    const float height = std::round(ImGui::GetFontSize() * 0.55f);
+    ImGui::InvisibleButton("##bar", ImVec2(std::max(ImGui::GetContentRegionAvail().x, 1.0f), height + 4.0f));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 lo2 = ImGui::GetItemRectMin();
+    const ImVec2 hi2 = ImGui::GetItemRectMax();
+    const ImVec2 p0(lo2.x, lo2.y + 2.0f);
+    const ImVec2 p1(hi2.x, hi2.y - 2.0f);
+    const auto xOf = [&](double v) {
+        return p0.x + static_cast<float>((std::clamp(v, lo, hi) - lo) / (hi - lo)) * (p1.x - p0.x);
+    };
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float rounding = height * 0.5f;
+    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(editable && (hovered || active) ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg), rounding);
+    const double origin = lo < 0.0 && hi > 0.0 ? 0.0 : lo;
+    const float x0 = xOf(origin);
+    const float x1 = xOf(r.measured);
+    const ImU32 fill = r.outOfRange ? kRecordRed : ImGui::GetColorU32(ImGuiCol_SliderGrab);
+    if (std::fabs(x1 - x0) >= 1.0f) dl->AddRectFilled(ImVec2(std::min(x0, x1), p0.y), ImVec2(std::max(x0, x1), p1.y), fill, rounding);
+    if (origin == 0.0 && lo < 0.0) dl->AddLine(ImVec2(x0, p0.y), ImVec2(x0, p1.y), ImGui::GetColorU32(ImGuiCol_Border));
+    if (r.target) {
+        const float xt = xOf(*r.target);
+        const ImU32 col = ImGui::GetColorU32(editable ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        dl->AddRectFilled(ImVec2(xt - 1.5f, lo2.y), ImVec2(xt + 1.5f, hi2.y), col, 1.0f);
+    }
+    if (hovered && !tooltip.empty()) ImGui::SetTooltip("%s", tooltip.c_str());
+    if (!editable) return std::nullopt;
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    std::optional<double> chosen;
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) ImGui::OpenPopup("##exact");
+    if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const double alpha = std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - p0.x) / std::max(p1.x - p0.x, 1.0f)), 0.0, 1.0);
+        chosen = lo + alpha * (hi - lo);
+    }
+    if (ImGui::BeginPopup("##exact")) {
+        static double exact = 0.0;
+        if (ImGui::IsWindowAppearing()) {
+            exact = r.target.value_or(r.measured);
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+        if (ImGui::InputDouble("##value", &exact, 0.0, 0.0, "%.4f", ImGuiInputTextFlags_EnterReturnsTrue)) {
+            chosen = r.range ? std::clamp(exact, r.range->first, r.range->second) : exact;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    return chosen;
+}
+
+bool containsNoCase(const std::string& text, const char* pattern) {
+    if (pattern == nullptr || *pattern == '\0') return true;
+    const auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+    std::string a = text;
+    std::string b = pattern;
+    std::transform(a.begin(), a.end(), a.begin(), lower);
+    std::transform(b.begin(), b.end(), b.begin(), lower);
+    return a.find(b) != std::string::npos;
+}
+
 void actuatorPanel(Frame& f) {
     if (!f.state.showActuators) return;
     bool visible = true;
+    f.state.actuatorShown.clear();
     if (ImGui::Begin(label(TextId::PanelActuators, "Actuators").c_str(), &visible)) {
         if (!f.simulated) {
             ImGui::TextDisabled("%s", tr(TextId::OutlinerNoScene));
         } else {
             SimulatedScene& sim = *f.simulated;
             const auto& d = sim.instance.world->description();
-            const auto snap = sim.instance.world->snapshot();
-            const bool locked = sim.motion && sim.motion->playing();
-            if (locked) ImGui::TextWrapped("%s", tr(TextId::ActuatorsLocked));
-            ImGui::BeginDisabled(locked);
+            const auto live = sim.instance.world->snapshot();
+            // 回放时实测取记录中的关节状态，目标取记录中该时刻生效的控制量（第 s 步的状态反映第 s-1 步之前下发的控制量）
+            std::optional<terra::data::PhysicsSnapshot> replayed;
+            std::map<std::uint32_t, std::vector<double>> recorded;
+            if (sim.replay) {
+                replayed = sim.replaySnapshot();
+                const std::uint64_t step = sim.replayStep();
+                f.state.actuatorShownStep = step;
+                recorded = terra::simulation::controlsAt(sim.replay->record, step > 0 ? step - 1 : 0);
+            }
+            const terra::data::PhysicsSnapshot& snap = replayed ? *replayed : *live;
+            const bool locked = sim.replay || (sim.motion && sim.motion->playing());
+            if (sim.replay) ImGui::TextDisabled("%s", tr(TextId::ActuatorsReplay));
+            else if (locked) ImGui::TextDisabled("%s", tr(TextId::ActuatorsLocked));
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputTextWithHint("##filter", tr(TextId::ActuatorsFilter), f.state.actuatorFilter.data(), f.state.actuatorFilter.size());
             std::string instance;
+            bool open = true;
             for (std::size_t i = 0; i < d.actuators.size(); ++i) {
                 const auto& a = d.actuators[i];
                 const auto slash = a.name.find('/');
                 const std::string prefix = slash == std::string::npos ? std::string{} : a.name.substr(0, slash);
                 if (i == 0 || prefix != instance) {
                     instance = prefix;
-                    ImGui::SeparatorText(instance.empty() ? "-" : instance.c_str());
+                    ImGui::PushID(instance.c_str());
+                    open = ImGui::CollapsingHeader(instance.empty() ? "-" : instance.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+                    ImGui::PopID();
                 }
+                if (!open || !containsNoCase(a.name, f.state.actuatorFilter.data())) continue;
                 const std::string shortName = slash == std::string::npos ? a.name : a.name.substr(slash + 1);
                 ImGui::PushID(static_cast<int>(a.id.value));
                 if (a.inputs.size() != 1) {
@@ -1574,48 +1898,44 @@ void actuatorPanel(Frame& f) {
                     continue;
                 }
                 const bool pd = sim.pd.manages(a.id);
-                double value = 0.0;
-                if (const auto pending = sim.panelTargets.find(a.id.value); pending != sim.panelTargets.end()) {
-                    value = pending->second;
-                } else if (pd) {
-                    const auto* j = d.joint(a.joint);
-                    value = sim.pd.target(a.id).value_or(j ? snap->joints[a.joint.value - 1].position[0] : 0.0);
-                } else if (i < snap->actuators.size() && !snap->actuators[i].controls.empty()) {
-                    value = snap->actuators[i].controls[0];
-                }
+                const ActuatorReading r = actuatorReading(sim, i, snap, sim.replay ? &recorded : nullptr);
+                f.state.actuatorShown[a.id.value] = {r.measured, r.target};
+                // 第一行：名字、类型与单位，右侧“实测 → 目标”
+                const char* unit = actuatorUnit(a, d, pd);
                 ImGui::TextUnformatted(shortName.c_str());
                 ImGui::SameLine();
-                ImGui::TextDisabled("%s %s", actuatorKindText(a.kind, pd), actuatorUnit(a, d, pd));
-                const auto range = pd ? sim.pd.targetRange(a) : terra::simulation::controlRange(a);
-                ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 5.0f);
-                bool changed = false;
-                if (range) {
-                    double lo = range->first;
-                    double hi = range->second;
-                    changed = ImGui::SliderScalar("##target", ImGuiDataType_Double, &value, &lo, &hi, "%.3f",
-                                                  ImGuiSliderFlags_AlwaysClamp);
-                } else {
-                    changed = ImGui::DragScalar("##target", ImGuiDataType_Double, &value, 0.01f, nullptr, nullptr, "%.3f");
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s %.2f", tr(TextId::ActuatorForce), i < snap->actuators.size() ? snap->actuators[i].force : 0.0);
-                if (changed && !locked) {
-                    sim.panelTargets[a.id.value] = value;
+                ImGui::TextDisabled("%s%s%s", actuatorKindText(a.kind, pd), *unit ? " · " : "", unit);
+                char numbers[64];
+                if (r.target) std::snprintf(numbers, sizeof numbers, "%.3f → %.3f", r.measured, *r.target);
+                else std::snprintf(numbers, sizeof numbers, "%.3f", r.measured);
+                const float w = ImGui::CalcTextSize(numbers).x;
+                sameLineRight(w);
+                if (r.outOfRange) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kRecordRed), "%s", numbers);
+                else ImGui::TextUnformatted(numbers);
+                // 第二行：控件；悬停时显示细节
+                std::string tip = a.name + "\n" + tr(TextId::ActuatorMeasured) + "  " + std::to_string(r.measured);
+                if (r.target) tip += std::string{"\n"} + tr(TextId::ActuatorTarget) + "  " + std::to_string(*r.target);
+                if (r.range) tip += std::string{"\n"} + tr(TextId::ActuatorRange) + "  [" + std::to_string(r.range->first) + ", " + std::to_string(r.range->second) + "]";
+                if (!sim.replay && i < live->actuators.size()) tip += std::string{"\n"} + tr(TextId::ActuatorForce) + "  " + std::to_string(live->actuators[i].force);
+                tip += std::string{"\n"} + tr(TextId::ActuatorGear) + "  " + std::to_string(a.gear);
+                if (r.outOfRange) tip += std::string{"\n"} + tr(TextId::ActuatorOutOfRange);
+                if (!locked) tip += std::string{"\n"} + tr(TextId::ActuatorDragHint);
+                if (const auto value = actuatorBar(r, !locked, tip); value && (!r.target || *value != *r.target)) {
+                    sim.panelTargets[a.id.value] = *value;
                     if (pd) {
-                        sim.pd.setTarget(a.id, value);
+                        sim.pd.setTarget(a.id, *value);
                     } else {
-                        sim.runner->scheduleNext({{a.id, {value}}});
+                        sim.runner->scheduleNext({{a.id, {*value}}});
                     }
                 }
                 ImGui::PopID();
             }
-            ImGui::EndDisabled();
             // 已经出现在快照中的面板目标不再单独保存（PD 层的目标始终由 PD 层保存）
             for (auto it = sim.panelTargets.begin(); it != sim.panelTargets.end();) {
                 const auto index = static_cast<std::size_t>(it->first - 1);
                 const bool pd = sim.pd.manages(terra::data::ActuatorId{it->first});
-                const bool applied = pd || (index < snap->actuators.size() && !snap->actuators[index].controls.empty() &&
-                                            snap->actuators[index].controls[0] == it->second);
+                const bool applied = pd || (index < live->actuators.size() && !live->actuators[index].controls.empty() &&
+                                            live->actuators[index].controls[0] == it->second);
                 it = applied ? sim.panelTargets.erase(it) : std::next(it);
             }
         }
@@ -1624,93 +1944,302 @@ void actuatorPanel(Frame& f) {
     if (!visible) f.state.showActuators = false;
 }
 
-// 实验记录窗口（M3-07c）：资源库中的记录（可只看当前场景），回放、重新扫描记录目录
-void recordsWindow(Frame& f) {
-    if (!f.state.showRecords) return;
-    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 52.0f, ImGui::GetFontSize() * 18.0f), ImGuiCond_FirstUseEver);
-    bool visible = true;
-    if (ImGui::Begin(label(TextId::PanelRecords, "Records").c_str(), &visible, ImGuiWindowFlags_NoDocking)) {
-        if (ImGui::Checkbox(tr(TextId::RecordsOnlyScene), &f.state.recordsOnlyScene)) refreshRecordList(f);
-        ImGui::SameLine();
-        if (ImGui::Button(tr(TextId::RecordsRescan))) {
-            if (auto* lib = recordLibrary(f)) {
-                const auto result = lib->rebuild({recordsDirectory(f)});
-                for (const auto& e : result.errors) f.state.log.push_back(e);
-            }
-            refreshRecordList(f);
-        }
-        if (f.state.recordList.empty()) {
-            ImGui::TextDisabled("%s", tr(TextId::RecordsEmpty));
-        } else if (ImGui::BeginTable("records", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
-                                                       ImGuiTableFlags_Resizable)) {
-            for (const TextId id : {TextId::RecordsColTime, TextId::RecordsColScene, TextId::RecordsColMotion, TextId::RecordsColSteps,
-                                    TextId::RecordsColDuration, TextId::RecordsColResult, TextId::RecordsColSize}) {
-                ImGui::TableSetupColumn(tr(id));
-            }
-            ImGui::TableSetupColumn("");
-            ImGui::TableHeadersRow();
-            for (const auto& r : f.state.recordList) {
-                ImGui::PushID(static_cast<int>(r.id));
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(r.created.c_str());
-                ImGui::TableSetColumnIndex(1);
-                ImGui::TextUnformatted(std::filesystem::path{r.scene}.filename().string().c_str());
-                ImGui::TableSetColumnIndex(2);
-                ImGui::TextUnformatted(r.motion.empty() ? "-" : std::filesystem::path{r.motion}.filename().string().c_str());
-                ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%s", r.steps ? std::to_string(*r.steps).c_str() : "-");
-                ImGui::TableSetColumnIndex(4);
-                if (r.simulationTime) ImGui::Text("%.2f", *r.simulationTime);
-                else ImGui::TextUnformatted("-");
-                ImGui::TableSetColumnIndex(5);
-                ImGui::TextUnformatted(r.reason.c_str());
-                ImGui::TableSetColumnIndex(6);
-                ImGui::Text("%.1f MB", static_cast<double>(r.bytes) / (1024.0 * 1024.0));
-                ImGui::TableSetColumnIndex(7);
-                if (ImGui::SmallButton(tr(TextId::RecordsReplay))) f.state.replayRequest = r.path;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", r.path.c_str());
-                ImGui::PopID();
-            }
-            ImGui::EndTable();
-        }
+// ---- 时间轴标签页（M3-07d）：播放控制、实时 / 回放、时间刻度与记录列表 ----
+
+struct TimelineMarker {
+    double time = 0.0;
+    bool error = false;
+    std::string text;
+};
+
+// 主刻度的间隔（s）与其中的次刻度数：按每秒像素数选第一个能放下时间标签的间隔
+std::pair<double, int> rulerStep(double pixelsPerSecond, float labelWidth) {
+    static constexpr std::pair<double, int> kSteps[] = {{0.01, 5}, {0.02, 4}, {0.05, 5}, {0.1, 5},  {0.2, 4},  {0.5, 5},
+                                                        {1.0, 5},  {2.0, 4},  {5.0, 5},  {10.0, 5}, {15.0, 3}, {30.0, 6},
+                                                        {60.0, 6}, {120.0, 4}, {300.0, 5}, {600.0, 5}, {1800.0, 6}, {3600.0, 6}};
+    for (const auto& s : kSteps) {
+        if (s.first * pixelsPerSecond >= labelWidth) return s;
     }
-    ImGui::End();
-    if (!visible) f.state.showRecords = false;
+    return kSteps[std::size(kSteps) - 1];
 }
 
-// 回放时间轴（M3-07c）：播放 / 暂停、拖动、倍速、退出回放
-void replayWindow(Frame& f) {
-    if (!f.simulated || !f.simulated->replay) return;
-    auto& replay = *f.simulated->replay;
-    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40.0f, 0.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin(label(TextId::PanelReplay, "Replay").c_str(), nullptr, ImGuiWindowFlags_NoDocking)) {
-        ImGui::TextDisabled("%s", std::filesystem::path{replay.path}.filename().string().c_str());
-        if (ImGui::Button(replay.playing ? tr(TextId::ReplayPause) : tr(TextId::ReplayPlay))) {
-            if (!replay.playing && replay.time >= replay.duration) replay.time = 0.0;
-            replay.playing = !replay.playing;
+std::string rulerLabel(double t, double step) {
+    char buf[32];
+    if (step >= 60.0) {
+        const auto total = static_cast<long long>(std::llround(t));
+        std::snprintf(buf, sizeof buf, "%lld:%02lld", total / 60, total % 60);
+    } else {
+        std::snprintf(buf, sizeof buf, step >= 1.0 ? "%.0fs" : step >= 0.1 ? "%.1fs" : "%.2fs", t);
+    }
+    return buf;
+}
+
+// 时间刻度：上面是主刻度的时间标签与刻度线，下面是轨道（band 为高亮的区段，markers 为事件）；播放头贯穿两者。
+// draggable 时可以在刻度上按下或拖动播放头，返回新的时间。
+std::optional<double> timeRuler(double t0, double t1, double playhead, std::optional<std::pair<double, double>> band, ImU32 bandColor,
+                                const std::vector<TimelineMarker>& markers, bool draggable) {
+    if (!(t1 > t0)) t1 = t0 + 1.0;
+    const float font = ImGui::GetFontSize();
+    const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+    const float labelH = font + 2.0f;
+    const float tickH = font * 0.45f;
+    const float trackH = font * 1.1f;
+    ImGui::InvisibleButton("##ruler", ImVec2(width, labelH + tickH + trackH));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    const float inset = 6.0f;  // 两端留出播放头的位置
+    const float x0 = a.x + inset;
+    const float x1 = b.x - inset;
+    const auto xOf = [&](double t) { return x0 + static_cast<float>((std::clamp(t, t0, t1) - t0) / (t1 - t0)) * (x1 - x0); };
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+    const ImU32 faint = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImU32 grid = ImGui::GetColorU32(ImGuiCol_Border);
+    const float tickTop = a.y + labelH;
+    const float trackTop = tickTop + tickH;
+    // 轨道
+    dl->AddRectFilled(ImVec2(x0, trackTop), ImVec2(x1, b.y), ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+    if (band) dl->AddRectFilled(ImVec2(xOf(band->first), trackTop + 3.0f), ImVec2(xOf(band->second), b.y - 3.0f), bandColor, 2.0f);
+    // 刻度
+    const auto [step, sub] = rulerStep((x1 - x0) / (t1 - t0), ImGui::CalcTextSize("00:00").x + font * 1.5f);
+    const double minor = step / sub;
+    for (auto k = static_cast<long long>(std::ceil(t0 / minor - 1e-9)); static_cast<double>(k) * minor <= t1 + 1e-9; ++k) {
+        const double t = static_cast<double>(k) * minor;
+        const float x = xOf(t);
+        const bool major = k % sub == 0;
+        dl->AddLine(ImVec2(x, major ? tickTop - 2.0f : tickTop + tickH * 0.45f), ImVec2(x, trackTop), major ? faint : grid);
+        if (major) {
+            const std::string s = rulerLabel(t, step);
+            const float tw = ImGui::CalcTextSize(s.c_str()).x;
+            const float lx = std::max(a.x, std::min(x - tw * 0.5f, b.x - tw));
+            dl->AddText(ImVec2(lx, a.y), faint, s.c_str());
+            dl->AddLine(ImVec2(x, trackTop), ImVec2(x, b.y), (grid & 0x00FFFFFFu) | 0x30000000u);
         }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 14.0f);
-        double lo = 0.0;
-        double hi = replay.duration;
-        if (ImGui::SliderScalar("##time", ImGuiDataType_Double, &replay.time, &lo, &hi, "%.3f s", ImGuiSliderFlags_AlwaysClamp)) {
-            replay.playing = false;
+    }
+    // 事件：轨道上方的小三角，悬停时显示内容
+    std::string hoveredMarker;
+    for (const auto& m : markers) {
+        const float x = xOf(m.time);
+        const ImU32 col = m.error ? kRecordRed : text;
+        dl->AddTriangleFilled(ImVec2(x - 4.0f, trackTop), ImVec2(x + 4.0f, trackTop), ImVec2(x, trackTop + 6.0f), col);
+        if (hovered && std::fabs(ImGui::GetIO().MousePos.x - x) <= 5.0f) hoveredMarker = m.text;
+    }
+    // 播放头
+    const ImU32 head = ImGui::GetColorU32(ImGuiCol_CheckMark);
+    const float xp = xOf(playhead);
+    dl->AddLine(ImVec2(xp, a.y + labelH * 0.5f), ImVec2(xp, b.y), head, 2.0f);
+    dl->AddTriangleFilled(ImVec2(xp - 5.0f, tickTop - 5.0f), ImVec2(xp + 5.0f, tickTop - 5.0f), ImVec2(xp, tickTop + 2.0f), head);
+    if (!hoveredMarker.empty()) ImGui::SetTooltip("%s", hoveredMarker.c_str());
+    if (!draggable) return std::nullopt;
+    if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const double alpha = std::clamp(static_cast<double>((ImGui::GetIO().MousePos.x - x0) / std::max(x1 - x0, 1.0f)), 0.0, 1.0);
+        return t0 + alpha * (t1 - t0);
+    }
+    return std::nullopt;
+}
+
+// 两段式切换按钮（实时 | 回放）中的一段
+bool segment(const char* text, bool selected, bool enabled) {
+    if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::Button(text);
+    ImGui::EndDisabled();
+    if (selected) ImGui::PopStyleColor();
+    return pressed && enabled && !selected;
+}
+
+// 记录的创建时间（UTC，ISO 8601）换成本地时间“MM-DD HH:MM:SS”；读不出时原样返回
+std::string localTimeText(const std::string& iso) {
+    std::tm utc{};
+    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &utc.tm_year, &utc.tm_mon, &utc.tm_mday, &utc.tm_hour, &utc.tm_min, &utc.tm_sec) != 6) {
+        return iso;
+    }
+    utc.tm_year -= 1900;
+    utc.tm_mon -= 1;
+    const std::time_t t = timegm(&utc);
+    std::tm local{};
+    localtime_r(&t, &local);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%m-%d %H:%M:%S", &local);
+    return buf;
+}
+
+const char* recordReasonText(const std::string& reason) {
+    if (reason == "completed") return tr(TextId::RecordReasonCompleted);
+    if (reason == "stopped") return tr(TextId::RecordReasonStopped);
+    if (reason == "error") return tr(TextId::RecordReasonError);
+    if (reason == "incomplete") return tr(TextId::RecordReasonIncomplete);
+    return reason.c_str();
+}
+
+void recordTable(Frame& f) {
+    const bool scene = f.simulated.has_value();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s  (%zu)", tr(f.state.recordsOnlyScene && scene ? TextId::TimelineRecordsScene : TextId::TimelineRecordsAll),
+                        f.state.recordList.size());
+    bool all = !f.state.recordsOnlyScene;
+    const char* allText = tr(TextId::TimelineAllScenes);
+    const char* rescanText = tr(TextId::RecordsRescan);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float right = ImGui::CalcTextSize(allText).x + ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + style.ItemSpacing.x +
+                        ImGui::CalcTextSize(rescanText).x + style.FramePadding.x * 2.0f;
+    sameLineRight(right);
+    if (ImGui::Checkbox(allText, &all)) {
+        f.state.recordsOnlyScene = !all;
+        f.state.recordListStale = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(rescanText)) {
+        if (auto* lib = recordLibrary(f)) {
+            const auto result = lib->rebuild({recordsDirectory(f)});
+            for (const auto& e : result.errors) f.state.log.push_back(e);
         }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
-        if (ImGui::BeginCombo(tr(TextId::ReplaySpeed), (std::to_string(replay.speed).substr(0, 4) + "×").c_str())) {
-            for (const double speed : {0.1, 0.25, 0.5, 1.0, 2.0, 4.0}) {
-                char option[16];
-                std::snprintf(option, sizeof option, "%g×", speed);
-                if (ImGui::Selectable(option, replay.speed == speed)) replay.speed = speed;
+        f.state.recordListStale = true;
+    }
+    if (f.state.recordList.empty()) {
+        ImGui::TextDisabled("%s", tr(TextId::RecordsEmpty));
+        return;
+    }
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH |
+                                  ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("records", 8, flags, ImVec2(0.0f, 0.0f))) return;
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColTime), ImGuiTableColumnFlags_None, 1.3f);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColScene), ImGuiTableColumnFlags_None, 1.6f);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColMotion), ImGuiTableColumnFlags_None, 1.4f);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColDuration), ImGuiTableColumnFlags_None, 0.8f);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColSteps), ImGuiTableColumnFlags_None, 0.8f);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColSize), ImGuiTableColumnFlags_None, 0.8f);
+    ImGui::TableSetupColumn(tr(TextId::RecordsColResult), ImGuiTableColumnFlags_None, 0.9f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, ImGui::GetFrameHeight());
+    ImGui::TableHeadersRow();
+    const std::string replaying = f.simulated && f.simulated->replay ? f.simulated->replay->path : std::string{};
+    const auto stem = [](const std::string& path) {
+        const std::string name = std::filesystem::path{path}.filename().string();
+        return name.substr(0, name.find('.'));
+    };
+    for (const auto& r : f.state.recordList) {
+        ImGui::PushID(static_cast<int>(r.id));
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::AlignTextToFramePadding();
+        if (ImGui::Selectable(localTimeText(r.created).c_str(), r.path == replaying,
+                              ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap) &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            f.state.replayRequest = r.path;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", r.path.c_str());
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(stem(r.scene).c_str());
+        ImGui::TableSetColumnIndex(2);
+        if (r.motion.empty()) ImGui::TextDisabled("-");
+        else ImGui::TextUnformatted(stem(r.motion).c_str());
+        ImGui::TableSetColumnIndex(3);
+        if (r.simulationTime) ImGui::Text("%.1f s", *r.simulationTime);
+        else ImGui::TextDisabled("-");
+        ImGui::TableSetColumnIndex(4);
+        if (r.steps) ImGui::Text("%llu", static_cast<unsigned long long>(*r.steps));
+        else ImGui::TextDisabled("-");
+        ImGui::TableSetColumnIndex(5);
+        ImGui::Text("%.1f MB", static_cast<double>(r.bytes) / (1024.0 * 1024.0));
+        ImGui::TableSetColumnIndex(6);
+        if (r.reason == "error" || r.reason == "incomplete") ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kRecordRed), "%s", recordReasonText(r.reason));
+        else ImGui::TextUnformatted(recordReasonText(r.reason));
+        ImGui::TableSetColumnIndex(7);
+        if (iconButton("##replay", Icon::Play, true, tr(TextId::RecordsReplay))) f.state.replayRequest = r.path;
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
+void timelinePanel(Frame& f) {
+    if (!f.state.showTimeline) return;
+    // 已保存的布局中没有这个标签页时，首次显示并入日志（或统计）所在的停靠组；默认布局中已经安排好
+    for (const char* sibling : {"###Log", "###Stats"}) {
+        const ImGuiWindow* w = ImGui::FindWindowByName(sibling);
+        if (w != nullptr && w->DockId != 0) {
+            ImGui::SetNextWindowDockID(w->DockId, ImGuiCond_FirstUseEver);
+            break;
+        }
+    }
+    if (f.state.focusTimeline) {
+        ImGui::SetNextWindowFocus();
+        f.state.focusTimeline = false;
+    }
+    if (f.state.recordListStale) {
+        refreshRecordList(f);
+        f.state.recordListStale = false;
+    }
+    bool visible = true;
+    if (ImGui::Begin(label(TextId::PanelTimeline, "Timeline").c_str(), &visible)) {
+        if (!f.simulated) {
+            ImGui::TextDisabled("%s", tr(TextId::TimelineNoScene));
+        } else {
+            SimulatedScene& sim = *f.simulated;
+            // 第一行：播放控制与录制 │ 实时 | 回放 │ 右侧时间
+            ImGui::PushID("timeline");
+            transportControls(f);
+            ImGui::PopID();
+            ImGui::SameLine(0.0f, ImGui::GetFontSize() * 1.5f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, ImGui::GetStyle().ItemSpacing.y));
+            if (segment(tr(TextId::TimelineLive), !sim.replay, true)) sim.replay.reset();
+            ImGui::SameLine();
+            if (segment(tr(TextId::TimelineReplay), sim.replay.has_value(), !f.state.recordList.empty() && !sim.recorder)) {
+                f.state.replayRequest = f.state.recordList.front().path;
             }
-            ImGui::EndCombo();
+            ImGui::PopStyleVar();
+            char clock[96];
+            if (sim.replay) {
+                std::snprintf(clock, sizeof clock, "%s / %s", clockText(sim.replay->time).c_str(), clockText(sim.replay->duration).c_str());
+            } else {
+                std::snprintf(clock, sizeof clock, "%s   %s %llu", clockText(sim.instance.world->simulationTime()).c_str(), tr(TextId::StatusStep),
+                              static_cast<unsigned long long>(sim.instance.world->stepIndex()));
+            }
+            const float cw = ImGui::CalcTextSize(clock).x;
+            sameLineRight(cw);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(clock);
+            if (sim.replay) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", std::filesystem::path{sim.replay->path}.filename().string().c_str());
+            }
+            // 第二行：时间刻度。回放：记录的范围，可拖动；实时：仿真时间，录制区段为红色
+            ImGui::Spacing();
+            if (sim.replay) {
+                auto& replay = *sim.replay;
+                const auto& first = replay.record.states.front();
+                const double dt = replay.record.header.timestep;
+                std::vector<TimelineMarker> markers;
+                for (const auto& e : replay.record.events) {
+                    TimelineMarker m;
+                    m.time = first.simulationTime + static_cast<double>(e.step - std::min(e.step, first.stepIndex)) * dt;
+                    m.error = e.kind == "error";
+                    m.text = e.kind + (e.detail.empty() ? "" : "：" + e.detail);
+                    markers.push_back(std::move(m));
+                }
+                const ImU32 band = (ImGui::GetColorU32(ImGuiCol_CheckMark) & 0x00FFFFFFu) | 0x50000000u;
+                if (const auto t = timeRuler(first.simulationTime, replay.duration, replay.time,
+                                             std::make_pair(first.simulationTime, replay.duration), band, markers, true)) {
+                    replay.time = *t;
+                    replay.playing = false;
+                }
+            } else {
+                const double now = sim.instance.world->simulationTime();
+                const double end = std::max(10.0, 10.0 * std::ceil(now * 1.1 / 10.0));
+                std::optional<std::pair<double, double>> band;
+                if (sim.recorder) band = std::make_pair(sim.recordStartTime, now);
+                timeRuler(0.0, end, now, band, (kRecordRed & 0x00FFFFFFu) | 0x90000000u, {}, false);
+            }
+            ImGui::Spacing();
         }
-        ImGui::SameLine();
-        if (ImGui::Button(tr(TextId::ReplayExit))) f.simulated->replay.reset();
+        ImGui::Separator();
+        recordTable(f);
     }
     ImGui::End();
+    if (!visible) f.state.showTimeline = false;
 }
 
 void logPanel(Frame& f) {
@@ -1840,10 +2369,9 @@ void buildUi(Frame& f) {
     outlinerPanel(f);
     detailsPanel(f);
     actuatorPanel(f);
-    recordsWindow(f);
-    replayWindow(f);
     logPanel(f);
     statsPanel(f);
+    timelinePanel(f);  // 在日志之后：首次显示时并入日志所在的停靠组
     helpWindows(f);
     vw::drawSettingsWindow(f.state.settingsWindow, f.settings.current, f.state.monitors, f.uiCtx.scale(), f.settings.path,
                            f.state.log);
@@ -2092,6 +2620,11 @@ struct SceneSelfTestRecord {
     std::uint64_t stepAtPause = 0;
     double timeAtPause = -1.0;
     bool stepRequested = false;
+    // M3-07c：记录与回放自检
+    bool recordTest = false;
+    std::size_t replayIndex = 0;  // 回放跳到的状态下标
+    bool toggleStarted = false;   // M3-07d：开始 / 停止切换（工具栏、快捷键共用的路径）确实开始与停止了记录
+    bool toggleStopped = false;
 };
 SceneSelfTestRecord sceneRecord;
 
@@ -2109,6 +2642,25 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
     if (frame == total / 2) {
         if (const auto* e = sim.instance.world->description().findEntity("cart_a/chassis")) f.state.selectedEntity = e->id;
     }
+    if (sceneRecord.recordTest) {
+        // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
+        // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
+        if (frame == 6) f.state.selfTestPressRecord = true;
+        if (frame == 7) sceneRecord.toggleStarted = f.simulated->recorder != nullptr;
+        if (frame == total / 2) f.state.selfTestPressRecord = true;
+        if (frame == total / 2 + 1) {
+            sceneRecord.toggleStopped = sceneRecord.toggleStarted && f.simulated->recorder == nullptr;
+            startReplay(f, f.state.lastRecordPath);
+        }
+        if (frame == total / 2 + 3 && f.simulated->replay) {
+            auto& replay = *f.simulated->replay;
+            sceneRecord.replayIndex = replay.record.states.size() / 2;
+            replay.time = replay.record.states[sceneRecord.replayIndex].simulationTime;
+            replay.playing = false;
+            ImGui::SetWindowFocus("###Actuators");  // 执行器面板与详情同在右侧一组：切到前面才会绘制
+        }
+        return;
+    }
     if (frame == total * 3 / 4) {
         sim.runner->pause();
         sceneRecord.stepAtPause = sim.instance.world->stepIndex();
@@ -2120,7 +2672,90 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
     }
 }
 
+// 记录与回放自检（M3-07c）：查看器中记录的一段运行能复现（逐位相同）、已加入资源库、回放的画面与记录逐位相同
+int recordSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const std::string path = f.state.lastRecordPath;
+    std::printf("INFO 记录文件：%s\n", path.c_str());
+    const auto read = terra::simulation::readRecord(path);
+    check(read.record.has_value() && read.errors.empty() && read.warnings.empty(), "记录可以读回");
+    if (read.record) {
+        const auto& rec = *read.record;
+        check(rec.summary && rec.summary->reason == "stopped" && rec.states.size() > 2 && !rec.controls.empty(),
+              "记录完整：" + std::to_string(rec.states.size()) + " 份状态、" + std::to_string(rec.controls.size()) + " 行控制量，结束原因 stopped");
+        check(rec.header.sampleEvery == 10, "默认 50 Hz：步长 0.002 s 时每 10 步采样一次（实际 " + std::to_string(rec.header.sampleEvery) + "）");
+        check(rec.header.startKeyframe == "arm/rest" && !rec.header.motionPath.empty(), "记录从动作的起始关键帧开始");
+        const auto rerun = terra::simulation::rerunRecord(rec, terra::physics::mujoco::composeWorld);
+        check(rerun.ran && rerun.bitwise, "查看器中记录的运行可以复现，" + std::to_string(rerun.compared) + " 个采样点逐位相同" +
+                                              (rerun.firstDifferenceStep ? "（第一个不同的在第 " + std::to_string(*rerun.firstDifferenceStep) + " 步）" : ""));
+        if (auto* lib = recordLibrary(f)) {
+            const auto entry = lib->record(path);
+            check(entry && entry->reason == "stopped" && entry->steps == rec.summary->steps, "记录已加入资源库：" + lib->path());
+        } else {
+            check(false, "资源库可以打开");
+        }
+        if (f.simulated && f.simulated->replay) {
+            const auto& expected = rec.states.at(sceneRecord.replayIndex);
+            const auto poses = f.simulated->replayPoses();
+            bool same = poses.size() == expected.entities.size();
+            for (std::size_t i = 0; same && i < poses.size(); ++i) {
+                const auto& p = poses[i];
+                const auto& q = expected.entities[i].pose;
+                same = p.position.x == q.position.x && p.position.y == q.position.y && p.position.z == q.position.z &&
+                       p.orientation.w == q.orientation.w && p.orientation.x == q.orientation.x && p.orientation.y == q.orientation.y &&
+                       p.orientation.z == q.orientation.z;
+            }
+            check(same, "回放到第 " + std::to_string(expected.stepIndex) + " 步：画面位姿与记录逐位相同");
+            check(f.simulated->instance.world->stepIndex() == 0 || f.simulated->runner->paused(), "回放期间不推进物理");
+            // M3-07d：回放时执行器面板与记录同步——实测按类型取记录中的关节状态，目标为记录中该时刻生效的控制量
+            const auto& d = f.simulated->instance.world->description();
+            const auto controls = terra::simulation::controlsAt(rec, expected.stepIndex > 0 ? expected.stepIndex - 1 : 0);
+            std::size_t compared = 0;
+            bool synced = f.state.actuatorShownStep == expected.stepIndex;
+            for (const auto& a : d.actuators) {
+                const auto shown = f.state.actuatorShown.find(a.id.value);
+                if (shown == f.state.actuatorShown.end() || a.joint.value == 0) continue;
+                const auto& js = expected.joints.at(a.joint.value - 1);
+                const auto ctrl = controls.find(a.id.value);
+                const std::optional<double> target =
+                    ctrl != controls.end() && !ctrl->second.empty() ? std::optional<double>(ctrl->second[0]) : std::nullopt;
+                double measured = target.value_or(0.0);  // 记录中没有执行器输出：力矩执行器显示目标
+                if (a.kind == terra::data::ActuatorKind::Position) measured = js.position[0];
+                if (a.kind == terra::data::ActuatorKind::Velocity) measured = js.velocity[0];
+                const bool match = shown->second.first == measured && shown->second.second == target;
+                if (!match) {
+                    std::printf("INFO 执行器 %s：面板 %.17g / %s，记录 %.17g / %s\n", a.name.c_str(), shown->second.first,
+                                shown->second.second ? std::to_string(*shown->second.second).c_str() : "-", measured,
+                                target ? std::to_string(*target).c_str() : "-");
+                }
+                synced = synced && match;
+                ++compared;
+            }
+            check(synced && compared == d.actuators.size(), "回放时执行器面板跟随记录：" + std::to_string(compared) +
+                                                                " 个执行器的实测与目标都等于记录中第 " + std::to_string(expected.stepIndex) + " 步的值");
+        } else {
+            check(false, "回放已开始");
+        }
+        check(sceneRecord.toggleStarted && sceneRecord.toggleStopped, "工具栏录制按钮开始并停止了记录（停止后同一帧的绘制不出错）");
+        bool listed = false;
+        const std::string normalized = std::filesystem::absolute(path).lexically_normal().string();
+        for (const auto& r : f.state.recordList) listed = listed || r.path == normalized;
+        check(listed, "时间轴的记录列表中有刚保存的记录（" + std::to_string(f.state.recordList.size()) + " 条）");
+        const ImGuiWindow* timeline = ImGui::FindWindowByName("###Timeline");
+        const ImGuiWindow* logWindow = ImGui::FindWindowByName("###Log");
+        check(timeline != nullptr && logWindow != nullptr && timeline->DockNode != nullptr && timeline->DockNode == logWindow->DockNode,
+              "“时间轴”标签页与“日志”停靠在同一组");
+    }
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    return failures == 0 ? 0 : 1;
+}
+
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.recordTest) return recordSelfTest(f);
     int failures = 0;
     const auto check = [&](bool ok, const std::string& what) {
         std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
@@ -2241,7 +2876,8 @@ int main(int argc, char** argv) {
     if (!parseOptions(argc, argv, options)) {
         std::fprintf(stderr,
                      "用法：terra_viewer [--seconds N] [--frames N] [--language zh|en] [--settings 文件] [--self-test] "
-                     "[--expect-renderer 子串] [--scene 场景文件] [--motion 动作文件] [--demo-drive]\n");
+                     "[--expect-renderer 子串] [--scene 场景文件] [--motion 动作文件] [--demo-drive] [--library 库文件] "
+                     "[--record-self-test]\n");
         return 2;
     }
 
@@ -2333,7 +2969,8 @@ int main(int argc, char** argv) {
     using CommandAction = std::pair<st::Command, const char*>;
     for (const auto& [command, actionName] : {CommandAction{st::Command::SimPlayPause, "sim_play"},
                                               CommandAction{st::Command::SimStep, "sim_step"},
-                                              CommandAction{st::Command::SimReset, "sim_reset"}}) {
+                                              CommandAction{st::Command::SimReset, "sim_reset"},
+                                              CommandAction{st::Command::SimRecord, "sim_record"}}) {
         in::ActionDefinition a;
         a.name = actionName;
         a.type = in::ActionType::Button;
@@ -2345,6 +2982,7 @@ int main(int argc, char** argv) {
     const in::ActionHandle simPlayAction = input.findAction(kAppMap, "sim_play");
     const in::ActionHandle simStepAction = input.findAction(kAppMap, "sim_step");
     const in::ActionHandle simResetAction = input.findAction(kAppMap, "sim_reset");
+    const in::ActionHandle simRecordAction = input.findAction(kAppMap, "sim_record");
 
     auto rendererMade = r::SceneRenderer::create(ctx);
     if (!rendererMade.renderer) {
@@ -2358,6 +2996,7 @@ int main(int argc, char** argv) {
     EnvironmentLibrary environments(TERRA_ASSETS_DIR);
 
     AppState state;
+    state.libraryPath = options.libraryPath;  // M3-07c：空表示默认位置
     state.autoUiScale = autoUiScale;
     state.monitors = monitors;
     state.log.push_back(tr(TextId::LogStarted));
@@ -2391,7 +3030,10 @@ int main(int argc, char** argv) {
         ensureDemoAssets(frame);
     }
     // 动作文件（M3-04c）：自检时在第 3 帧打开（代替按播放），否则启动时打开并开始播放
-    if (options.selfTest && simulated) sceneRecord.motionPath = options.motionPath;
+    if (options.selfTest && simulated) {
+        sceneRecord.motionPath = options.motionPath;
+        sceneRecord.recordTest = options.recordSelfTest;
+    }
     if (!options.motionPath.empty() && !(options.selfTest && simulated)) {
         if (!openMotion(frame, options.motionPath)) {
             for (const auto& line : state.sceneErrors) std::fprintf(stderr, "%s\n", line.c_str());
@@ -2458,6 +3100,7 @@ int main(int argc, char** argv) {
             }
             if (keyboardFree && input.state(simStepAction).pressed && simulated->runner->paused()) simulated->runner->stepOnce();
             if (keyboardFree && input.state(simResetAction).pressed) simReset(frame);
+            if (keyboardFree && input.state(simRecordAction).pressed) toggleRecording(frame);
             if (options.selfTest) sceneSelfTestScript(frame, frames, options.frames);
             if (simulated && simulated->replay) {
                 // 回放：不推进物理，只推进回放时间

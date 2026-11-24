@@ -402,6 +402,17 @@ void testSimulationSettings() {
               "版本 2 不迁移");
     }
 
+    // M3-07c：记录采样率（默认 50 Hz，范围 1–1000）
+    {
+        check(st::Settings{}.ui.recordSampleHz == 50.0, "记录采样率默认 50 Hz");
+        st::Settings custom;
+        custom.ui.recordSampleHz = 100.0;
+        const auto back = st::fromJson(st::toJson(custom));
+        check(back.settings.ui.recordSampleHz == 100.0 && back.warnings.empty(), "记录采样率往返");
+        const auto bad = st::fromJson(R"({"version": 3, "interface": {"recordSampleHz": 0}})");
+        check(bad.settings.ui.recordSampleHz == 50.0 && contains(bad.warnings, "interface.recordSampleHz"), "采样率 0 → 默认 50，并警告");
+    }
+
     // 最近打开的场景
     st::InterfaceSettings ui;
     for (int i = 0; i < 10; ++i) st::rememberScene(ui, "/s/" + std::to_string(i) + ".json");

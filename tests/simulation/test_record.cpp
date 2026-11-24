@@ -157,6 +157,16 @@ void testFile(const std::string& dir) {
                   !s.diagnostics.finite && s.diagnostics.solverIterations == 4,
               "接触与诊断往返");
     }
+    // M3-07d：某一步生效的控制量
+    {
+        const auto at1 = sim::controlsAt(rec, 1);
+        const auto at2 = sim::controlsAt(rec, 2);
+        const auto at25 = sim::controlsAt(rec, 25);
+        check(at1.at(1) == std::vector<double>{1.0} && at1.at(2) == std::vector<double>{2.0}, "第 1 步：a = 1、b = 2");
+        check(at2.at(2) == std::vector<double>{2.5} && at2.at(1) == std::vector<double>{1.0}, "第 2 步：b 变为 2.5，a 保持 1");
+        check(at25.at(1) == std::vector<double>{4.0} && at25.at(2) == std::vector<double>{2.5}, "第 25 步：a = 4、b = 2.5");
+        check(sim::controlsAt(rec, 0).size() == 2 && sim::controlsAt(sim::Record{}, 5).empty(), "第 0 步与空记录");
+    }
     check(rec.events.size() == 1 && rec.events[0].kind == "error" && rec.events[0].detail == "示例", "事件往返");
     check(rec.summary && rec.summary->steps == 20 && rec.summary->reason == "completed", "摘要往返");
 

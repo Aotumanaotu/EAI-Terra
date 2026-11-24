@@ -15,6 +15,7 @@
 // 复现时不再运行它们），在每个采样点与记录比较位姿：同一机器、同一构建应逐位相同；跨机器按容差比较（评审问题 3）。
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -122,6 +123,10 @@ struct RecordInfo {
     std::optional<RecordSummary> summary;
 };
 std::optional<RecordInfo> readRecordInfo(const std::string& path, std::string& error);
+
+// 第 step 步时生效的控制量（M3-07d，回放时执行器面板的目标）：每个执行器取步序号 ≤ step 的最后一次记录；
+// 从未记录过的执行器不在结果中。键为 ActuatorId 的值。
+std::map<std::uint32_t, std::vector<double>> controlsAt(const Record& record, std::uint64_t step);
 
 struct RerunOptions {
     double positionTolerance = 1e-6;  // m

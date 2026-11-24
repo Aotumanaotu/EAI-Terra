@@ -441,6 +441,15 @@ std::optional<RecordInfo> readRecordInfo(const std::string& path, std::string& e
     return info;
 }
 
+std::map<std::uint32_t, std::vector<double>> controlsAt(const Record& record, std::uint64_t step) {
+    std::map<std::uint32_t, std::vector<double>> out;
+    for (const auto& c : record.controls) {
+        if (c.step > step) break;
+        for (const auto& command : c.commands) out[command.actuator.value] = command.values;
+    }
+    return out;
+}
+
 // ---- 复现 ----
 
 RerunResult rerunRecord(const Record& record, const terra::scene::WorldFactory& factory, const RerunOptions& options) {

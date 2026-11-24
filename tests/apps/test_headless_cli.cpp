@@ -135,6 +135,19 @@ void testRecord() {
     expectError({"--record="}, "不能为空");
     check(usageText().find("--rerun") != std::string::npos && usageText().find("6 复现超出容差") != std::string::npos,
           "帮助中有 --rerun 与退出码 6");
+    // M3-07b：--library / --list-records
+    {
+        const ParseResult r = parse({"--list-records", "--library", "lib.sqlite3", "--scene", "s.json"});
+        check(r.ok() && r.options.listRecords && r.options.libraryPath == "lib.sqlite3" && r.options.scenePath == "s.json",
+              "--list-records + --library + --scene（筛选）：" + r.error);
+    }
+    {
+        const ParseResult r = parse({"--scene", "s.json", "--steps", "1", "--record", "r.jsonl", "--library", "lib.sqlite3"});
+        check(r.ok() && r.options.libraryPath == "lib.sqlite3", "--record + --library：" + r.error);
+    }
+    expectError({"--list-records", "--steps", "1"}, "--list-records 只能与");
+    expectError({"--scene", "s.json", "--steps", "1", "--library", "lib.sqlite3"}, "--library 只用于");
+    expectError({"--list-records", "--list-records"}, "重复的参数 --list-records");
 }
 
 void testUsageErrors() {

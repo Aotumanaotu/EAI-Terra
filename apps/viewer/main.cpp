@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iterator>
 #include <map>
@@ -42,7 +43,13 @@
 #include "terra/core/fatal.hpp"
 #include "terra/physics/mujoco/mujoco_backend.hpp"
 #include "terra/scene/scene.hpp"
+#include "terra/simulation/interpolation.hpp"
 #include "terra/simulation/motion.hpp"
+#include "terra/simulation/record.hpp"
+#include "terra/library/library.hpp"
+#include "terra/core/build_info.hpp"
+#include "terra/core/sha256.hpp"
+#include "terra/physics/mujoco/backend_info.hpp"
 #include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/runner.hpp"
 #include "terra/core/system_monitor.hpp"
@@ -91,6 +98,8 @@ struct Options {
     std::optional<ui::Language> language;
     std::string scenePath;
     std::string motionPath;  // M3-04c：动作文件（需要同时给出场景，或动作文件自带推荐场景）
+    std::string libraryPath;  // M3-07c：资源库文件；空表示默认位置（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
+    bool recordSelfTest = false;  // M3-07c：自检时测试记录与回放（第 5 帧开始记录，中间停止并回放）
     bool demoDrive = false;
 };
 
@@ -115,6 +124,10 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.scenePath = argv[++i];
         } else if (a == "--motion" && hasValue) {
             o.motionPath = argv[++i];
+        } else if (a == "--library" && hasValue) {
+            o.libraryPath = argv[++i];
+        } else if (a == "--record-self-test") {
+            o.recordSelfTest = true;
         } else if (a == "--demo-drive") {
             o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -279,7 +292,15 @@ struct AppState {
     ui::FileBrowser motionBrowser;
     std::optional<std::string> motionRequest;  // 请求打开的动作文件（帧末处理：可能需要先打开推荐场景）
     bool showActuators = true;
-    std::string errorTitle;  // 错误弹窗的标题（场景或动作）
+    std::string errorTitle;  // 错误弹窗的标题（场景、动作或记录）
+    // M3-07c：资源库与实验记录
+    std::unique_ptr<terra::library::Library> library;
+    std::string libraryPath;
+    bool showRecords = false;
+    bool recordsOnlyScene = true;
+    std::vector<terra::library::RecordEntry> recordList;  // 打开“实验记录”窗口或重新扫描时刷新
+    std::optional<std::string> replayRequest;            // 请求回放的记录（帧末处理：可能需要切换场景）
+    std::string lastRecordPath;                          // 最近一次保存的记录（自检用）
     bool closeRequest = false;
     bool demoAssetsLoaded = false;
     std::optional<st::EnvironmentSetting> sceneEnvironment;  // 场景文件 view.environment：只影响本次会话，不写入设置
@@ -335,6 +356,37 @@ struct SimulatedScene {
     std::string motionPath;
     std::map<std::uint32_t, double> panelTargets;  // 面板设置过、但还没有出现在快照中的目标（暂停时也能立即显示）
     std::vector<terra::simulation::MotionCatalogEntry> motionCatalog;  // assets/motions/ 中推荐场景为本场景的动作
+    // M3-07c：实验记录（正在记录时非空）与回放（回放时非空；回放期间不推进物理）
+    std::unique_ptr<terra::simulation::RecordWriter> recorder;
+    std::uint64_t recordSampleEvery = 10;
+    struct Replay {
+        terra::simulation::Record record;
+        std::string path;
+        double time = 0.0;      // 回放时间（s，相对记录开始）
+        double duration = 0.0;  // 最后一份状态的时间
+        bool playing = false;
+        double speed = 1.0;
+    };
+    std::optional<Replay> replay;
+
+    // 回放时刻 t 的实体位姿：落在采样点上时直接取该份状态（逐位相同），否则在相邻两份之间插值
+    std::vector<terra::data::Pose> replayPoses() const {
+        const auto& states = replay->record.states;
+        std::vector<terra::data::Pose> poses;
+        if (states.empty()) return poses;
+        const double t = replay->time;
+        auto next = std::lower_bound(states.begin(), states.end(), t,
+                                     [](const terra::data::PhysicsSnapshot& s, double at) { return s.simulationTime < at; });
+        if (next == states.end()) next = states.end() - 1;
+        if (next->simulationTime == t || next == states.begin()) {
+            for (const auto& e : next->entities) poses.push_back(e.pose);
+            return poses;
+        }
+        const auto& older = *(next - 1);
+        const double span = next->simulationTime - older.simulationTime;
+        const double alpha = span > 0 ? (t - older.simulationTime) / span : 1.0;
+        return terra::simulation::interpolatePoses(older, *next, std::clamp(alpha, 0.0, 1.0));
+    }
     std::unique_ptr<vw::SceneView> view;
     bool demoDrive = false;
     std::string path;               // 场景文件（绝对路径）
@@ -387,7 +439,7 @@ struct SimulatedScene {
         options.highlight = highlight;
         options.groups = groups;
         options.collision = collision;
-        return view->items(instance, terra::scene::visualPoses(instance, runner->displayPoses()), options);
+        return view->items(instance, terra::scene::visualPoses(instance, replay ? replayPoses() : runner->displayPoses()), options);
     }
 };
 
@@ -437,8 +489,11 @@ void ensureDemoAssets(Frame& f) {
     f.state.demoAssetsLoaded = true;
 }
 
+void stopRecording(Frame& f, const char* reason);
+
 void closeScene(Frame& f) {
     if (!f.simulated) return;
+    stopRecording(f, "stopped");
     f.simulated.reset();
     f.state.selectedEntity = {};
     f.state.sceneEnvironment.reset();
@@ -466,6 +521,7 @@ bool openScene(Frame& f, const std::string& requested) {
         f.state.showSceneErrors = true;
         return false;
     }
+    stopRecording(f, "stopped");
     f.simulated.reset();  // 先释放旧场景的 GPU 资源
     f.simulated.emplace();
     SimulatedScene& sim = *f.simulated;
@@ -509,8 +565,58 @@ bool openScene(Frame& f, const std::string& requested) {
     return true;
 }
 
+// ---- 实验记录（M3-07c）----
+
+constexpr const char* kRecordSuffix = ".terra-record.jsonl";
+
+terra::library::Library* recordLibrary(Frame& f) {
+    if (!f.state.library) {
+        std::string error, warning;
+        const std::string path = f.state.libraryPath.empty() ? terra::library::defaultLibraryPath() : f.state.libraryPath;
+        f.state.library = terra::library::Library::open(path, error, &warning);
+        if (!warning.empty()) f.state.log.push_back(warning);
+        if (!f.state.library) f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + error);
+    }
+    return f.state.library.get();
+}
+
+std::string recordsDirectory(Frame& f) {
+    if (auto* lib = recordLibrary(f)) return (std::filesystem::path{lib->path()}.parent_path() / "records").string();
+    return terra::library::defaultRecordsDirectory();
+}
+
+void refreshRecordList(Frame& f) {
+    f.state.recordList.clear();
+    if (auto* lib = recordLibrary(f)) {
+        f.state.recordList = lib->records(f.state.recordsOnlyScene && f.simulated ? f.simulated->path : std::string{});
+    }
+}
+
+// 结束记录：写摘要、加入资源库。重置、切换场景、开始回放、出错时都会自动结束（一份记录对应一段连续运行）
+void stopRecording(Frame& f, const char* reason) {
+    if (!f.simulated || !f.simulated->recorder) return;
+    SimulatedScene& sim = *f.simulated;
+    const std::string path = sim.recorder->path();
+    const bool ok = sim.recorder->finish(sim.instance.world->stepIndex(), sim.instance.world->simulationTime(), reason);
+    sim.recorder.reset();
+    sim.runner->setControlObserver(nullptr);
+    sim.runner->setStepObserver(nullptr);
+    if (!ok) {
+        f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + path);
+        return;
+    }
+    f.state.lastRecordPath = path;
+    f.state.log.push_back(std::string{tr(TextId::LogRecordSaved)} + path);
+    std::printf("INFO 记录已保存：%s\n", path.c_str());
+    if (auto* lib = recordLibrary(f)) {
+        if (const auto error = lib->addRecord(path)) f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + *error);
+    }
+    if (f.state.showRecords) refreshRecordList(f);
+}
+
 void simReset(Frame& f) {
     if (!f.simulated) return;
+    stopRecording(f, "stopped");
     f.simulated->runner->reset();
     f.simulated->pd.clearTargets();
     f.simulated->panelTargets.clear();
@@ -519,7 +625,9 @@ void simReset(Frame& f) {
 }
 
 void simResetToKeyframe(Frame& f, std::size_t index) {
-    if (!f.simulated || !f.simulated->runner->resetToKeyframe(index)) return;
+    if (!f.simulated) return;
+    stopRecording(f, "stopped");
+    if (!f.simulated->runner->resetToKeyframe(index)) return;
     f.simulated->pd.clearTargets();
     f.simulated->panelTargets.clear();
     if (f.simulated->motion) f.simulated->motion->stop();
@@ -541,6 +649,7 @@ std::string motionIssueText(const terra::simulation::MotionIssue& issue) {
 // 从头播放：按起始关键帧重置（没有时从当前状态开始），清除 PD 与面板目标，从当前步开始并运行
 void startMotion(Frame& f) {
     if (!f.simulated || !f.simulated->motion) return;
+    stopRecording(f, "stopped");
     SimulatedScene& sim = *f.simulated;
     if (const auto key = sim.motion->motion().startKeyframe) sim.runner->resetToKeyframe(*key);
     sim.pd.clearTargets();
@@ -594,6 +703,105 @@ bool openMotion(Frame& f, const std::string& requested) {
     return true;
 }
 
+// 开始记录：先回到可复现的起点——有动作时从头播放动作（按其起始关键帧重置，没有起始关键帧时先回到场景的初始状态），
+// 否则重置到场景的初始状态；然后写记录头与第 0 步的状态。记录文件在资源库旁的 records/ 中。
+void startRecording(Frame& f) {
+    if (!f.simulated || f.simulated->recorder || f.simulated->replay) return;
+    SimulatedScene& sim = *f.simulated;
+    std::string startKeyframe;
+    if (sim.motion) {
+        if (const auto key = sim.motion->motion().startKeyframe) {
+            startKeyframe = sim.instance.world->description().keyframes[*key].name;
+        } else {
+            simReset(f);
+        }
+        startMotion(f);
+    } else {
+        simReset(f);
+    }
+    const auto& d = sim.instance.world->description();
+    const double hz = f.settings.current.ui.recordSampleHz;
+    sim.recordSampleEvery = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::llround(1.0 / (hz * d.timestep))));
+    auto header = terra::simulation::makeRecordHeader(d, sim.recordSampleEvery);
+    const terra::BuildInfo& info = terra::buildInfo();
+    header.terraVersion = std::string{info.version};
+    header.compiler = std::string{info.compilerId} + " " + std::string{info.compilerVersion};
+    const auto backend = terra::physics::mujoco::backendInfo();
+    header.physicsBackend = std::string{backend.name} + " " + std::string{backend.libraryVersionString};
+    header.platform = "linux x86_64";
+    {
+        const std::time_t now = std::time(nullptr);
+        std::tm utc{};
+        gmtime_r(&now, &utc);
+        char buf[32];
+        std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &utc);
+        header.created = buf;
+        std::strftime(buf, sizeof buf, "%Y%m%d-%H%M%S", &utc);
+        const std::string stem = std::filesystem::path{sim.path}.filename().string();
+        const std::string base = stem.substr(0, stem.find('.'));
+        f.state.lastRecordPath = recordsDirectory(f) + "/" + base + "-" + buf + kRecordSuffix;
+    }
+    header.scenePath = sim.path;
+    header.sceneSha256 = terra::sha256File(sim.path).value_or("");
+    if (sim.motion) {
+        header.motionPath = sim.motionPath;
+        header.motionSha256 = terra::sha256File(sim.motionPath).value_or("");
+    }
+    header.startKeyframe = startKeyframe;
+    std::string error;
+    sim.recorder = terra::simulation::RecordWriter::create(f.state.lastRecordPath, header, error);
+    if (!sim.recorder) {
+        f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + error);
+        return;
+    }
+    sim.recorder->state(*sim.instance.world->snapshot());
+    SimulatedScene* self = &sim;
+    sim.runner->setControlObserver([self](std::uint64_t step, const std::vector<terra::physics::ActuatorCommand>& commands) {
+        if (self->recorder) self->recorder->control(step, commands);
+    });
+    sim.runner->setStepObserver([self](const terra::data::PhysicsSnapshot& snapshot) {
+        if (self->recorder && snapshot.stepIndex % self->recordSampleEvery == 0) self->recorder->state(snapshot);
+    });
+    f.state.log.push_back(std::string{tr(TextId::LogRecordStarted)} + f.state.lastRecordPath);
+    std::printf("INFO 开始记录：%s（每 %llu 步采样一次）\n", f.state.lastRecordPath.c_str(),
+                static_cast<unsigned long long>(sim.recordSampleEvery));
+}
+
+// 回放：读入记录；场景与当前不同时先打开记录中的场景；回放期间不推进物理，画面由记录的状态给出
+bool startReplay(Frame& f, const std::string& path) {
+    const auto read = terra::simulation::readRecord(path);
+    std::vector<std::string> lines;
+    for (const auto& e : read.errors) lines.push_back(std::string{tr(TextId::IssueError)} + " " + e);
+    if (!read.record || read.record->states.empty()) {
+        if (lines.empty()) lines.push_back(path);
+        f.state.sceneErrors = lines;
+        f.state.errorTitle = "record";
+        f.state.showSceneErrors = true;
+        return false;
+    }
+    for (const auto& w : read.warnings) f.state.log.push_back(w);
+    const auto& h = read.record->header;
+    if (!f.simulated || f.simulated->path != h.scenePath) {
+        if (!openScene(f, h.scenePath)) return false;
+    }
+    SimulatedScene& sim = *f.simulated;
+    stopRecording(f, "stopped");
+    if (terra::sha256File(h.scenePath).value_or("") != h.sceneSha256) {
+        f.state.log.push_back(std::string{tr(TextId::LogReplaySceneChanged)} + h.scenePath);
+    }
+    sim.runner->pause();
+    if (sim.motion) sim.motion->stop();
+    SimulatedScene::Replay replay;
+    replay.record = *read.record;
+    replay.path = path;
+    replay.duration = replay.record.states.back().simulationTime;
+    replay.playing = true;
+    sim.replay = std::move(replay);
+    f.state.log.push_back(std::string{tr(TextId::LogReplayStarted)} + path);
+    std::printf("INFO 开始回放：%s（%zu 份状态，%.3f 秒）\n", path.c_str(), sim.replay->record.states.size(), sim.replay->duration);
+    return true;
+}
+
 const char* shapeText(terra::data::GeomShape shape) {
     using S = terra::data::GeomShape;
     switch (shape) {
@@ -642,8 +850,9 @@ void simulationToolbar(Frame& f) {
 
 void sceneErrorWindow(Frame& f) {
     // 场景与动作共用一个弹窗；标题按最近一次失败的来源
-    const std::string title = f.state.errorTitle == "motion" ? label(TextId::MotionErrorTitle, "SceneErrors")
-                                                              : label(TextId::SceneErrorTitle, "SceneErrors");
+    const std::string title = f.state.errorTitle == "motion"   ? label(TextId::MotionErrorTitle, "SceneErrors")
+                              : f.state.errorTitle == "record" ? label(TextId::RecordErrorTitle, "SceneErrors")
+                                                               : label(TextId::SceneErrorTitle, "SceneErrors");
     if (f.state.showSceneErrors) {
         ImGui::OpenPopup(title.c_str());
         f.state.showSceneErrors = false;
@@ -802,6 +1011,10 @@ void menuBar(Frame& f) {
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem(tr(TextId::MenuFileCloseScene), nullptr, false, f.simulated.has_value())) f.state.closeRequest = true;
+        if (ImGui::MenuItem(tr(TextId::MenuFileRecords), nullptr, f.state.showRecords)) {
+            f.state.showRecords = !f.state.showRecords;
+            if (f.state.showRecords) refreshRecordList(f);
+        }
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuFileQuit), "Alt+F4")) f.state.quit = true;
         ImGui::EndMenu();
@@ -814,6 +1027,22 @@ void menuBar(Frame& f) {
         }
         if (ImGui::MenuItem(tr(TextId::SimStep), key(st::Command::SimStep), false, sim.runner->paused())) sim.runner->stepOnce();
         if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
+        // M3-07c：实验记录与采样率
+        ImGui::Separator();
+        if (!sim.recorder) {
+            if (ImGui::MenuItem(tr(TextId::SimRecordStart), nullptr, false, !sim.replay)) startRecording(f);
+        } else if (ImGui::MenuItem(tr(TextId::SimRecordStop))) {
+            stopRecording(f, "stopped");
+        }
+        if (ImGui::BeginMenu(tr(TextId::SimRecordRate), !sim.recorder)) {
+            for (const double hz : {10.0, 25.0, 50.0, 100.0, 250.0, 500.0}) {
+                char option[16];
+                std::snprintf(option, sizeof option, "%g Hz", hz);
+                if (ImGui::MenuItem(option, nullptr, f.settings.current.ui.recordSampleHz == hz)) f.settings.current.ui.recordSampleHz = hz;
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
         const auto& keyframes = sim.instance.world->description().keyframes;
         if (ImGui::BeginMenu(tr(TextId::SimResetToKeyframe), !keyframes.empty())) {
             for (std::size_t k = 0; k < keyframes.size(); ++k) {
@@ -942,6 +1171,15 @@ void statusBar(Frame& f) {
                             static_cast<unsigned long long>(sim.instance.world->stepIndex()), tr(TextId::StatusRealtime),
                             sim.realtimeFactor, tr(TextId::StatusOverload),
                             static_cast<unsigned long long>(sim.runner->clock().overloadCount()));
+                if (sim.recorder) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "  |  %s %.1f MB", tr(TextId::StatusRecording),
+                                       static_cast<double>(sim.recorder->bytes()) / (1024.0 * 1024.0));
+                }
+                if (sim.replay) {
+                    ImGui::SameLine();
+                    ImGui::Text("  |  %s %.2f / %.2f s", tr(TextId::StatusReplay), sim.replay->time, sim.replay->duration);
+                }
                 if (sim.motion) {
                     const auto step = sim.instance.world->stepIndex();
                     const double dt = sim.instance.world->description().timestep;
@@ -1386,6 +1624,95 @@ void actuatorPanel(Frame& f) {
     if (!visible) f.state.showActuators = false;
 }
 
+// 实验记录窗口（M3-07c）：资源库中的记录（可只看当前场景），回放、重新扫描记录目录
+void recordsWindow(Frame& f) {
+    if (!f.state.showRecords) return;
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 52.0f, ImGui::GetFontSize() * 18.0f), ImGuiCond_FirstUseEver);
+    bool visible = true;
+    if (ImGui::Begin(label(TextId::PanelRecords, "Records").c_str(), &visible, ImGuiWindowFlags_NoDocking)) {
+        if (ImGui::Checkbox(tr(TextId::RecordsOnlyScene), &f.state.recordsOnlyScene)) refreshRecordList(f);
+        ImGui::SameLine();
+        if (ImGui::Button(tr(TextId::RecordsRescan))) {
+            if (auto* lib = recordLibrary(f)) {
+                const auto result = lib->rebuild({recordsDirectory(f)});
+                for (const auto& e : result.errors) f.state.log.push_back(e);
+            }
+            refreshRecordList(f);
+        }
+        if (f.state.recordList.empty()) {
+            ImGui::TextDisabled("%s", tr(TextId::RecordsEmpty));
+        } else if (ImGui::BeginTable("records", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
+                                                       ImGuiTableFlags_Resizable)) {
+            for (const TextId id : {TextId::RecordsColTime, TextId::RecordsColScene, TextId::RecordsColMotion, TextId::RecordsColSteps,
+                                    TextId::RecordsColDuration, TextId::RecordsColResult, TextId::RecordsColSize}) {
+                ImGui::TableSetupColumn(tr(id));
+            }
+            ImGui::TableSetupColumn("");
+            ImGui::TableHeadersRow();
+            for (const auto& r : f.state.recordList) {
+                ImGui::PushID(static_cast<int>(r.id));
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(r.created.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(std::filesystem::path{r.scene}.filename().string().c_str());
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextUnformatted(r.motion.empty() ? "-" : std::filesystem::path{r.motion}.filename().string().c_str());
+                ImGui::TableSetColumnIndex(3);
+                ImGui::Text("%s", r.steps ? std::to_string(*r.steps).c_str() : "-");
+                ImGui::TableSetColumnIndex(4);
+                if (r.simulationTime) ImGui::Text("%.2f", *r.simulationTime);
+                else ImGui::TextUnformatted("-");
+                ImGui::TableSetColumnIndex(5);
+                ImGui::TextUnformatted(r.reason.c_str());
+                ImGui::TableSetColumnIndex(6);
+                ImGui::Text("%.1f MB", static_cast<double>(r.bytes) / (1024.0 * 1024.0));
+                ImGui::TableSetColumnIndex(7);
+                if (ImGui::SmallButton(tr(TextId::RecordsReplay))) f.state.replayRequest = r.path;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", r.path.c_str());
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+    }
+    ImGui::End();
+    if (!visible) f.state.showRecords = false;
+}
+
+// 回放时间轴（M3-07c）：播放 / 暂停、拖动、倍速、退出回放
+void replayWindow(Frame& f) {
+    if (!f.simulated || !f.simulated->replay) return;
+    auto& replay = *f.simulated->replay;
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 40.0f, 0.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin(label(TextId::PanelReplay, "Replay").c_str(), nullptr, ImGuiWindowFlags_NoDocking)) {
+        ImGui::TextDisabled("%s", std::filesystem::path{replay.path}.filename().string().c_str());
+        if (ImGui::Button(replay.playing ? tr(TextId::ReplayPause) : tr(TextId::ReplayPlay))) {
+            if (!replay.playing && replay.time >= replay.duration) replay.time = 0.0;
+            replay.playing = !replay.playing;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 14.0f);
+        double lo = 0.0;
+        double hi = replay.duration;
+        if (ImGui::SliderScalar("##time", ImGuiDataType_Double, &replay.time, &lo, &hi, "%.3f s", ImGuiSliderFlags_AlwaysClamp)) {
+            replay.playing = false;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5.0f);
+        if (ImGui::BeginCombo(tr(TextId::ReplaySpeed), (std::to_string(replay.speed).substr(0, 4) + "×").c_str())) {
+            for (const double speed : {0.1, 0.25, 0.5, 1.0, 2.0, 4.0}) {
+                char option[16];
+                std::snprintf(option, sizeof option, "%g×", speed);
+                if (ImGui::Selectable(option, replay.speed == speed)) replay.speed = speed;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr(TextId::ReplayExit))) f.simulated->replay.reset();
+    }
+    ImGui::End();
+}
+
 void logPanel(Frame& f) {
     bool& visible = f.settings.current.ui.showLog;
     if (!visible) return;
@@ -1513,6 +1840,8 @@ void buildUi(Frame& f) {
     outlinerPanel(f);
     detailsPanel(f);
     actuatorPanel(f);
+    recordsWindow(f);
+    replayWindow(f);
     logPanel(f);
     statsPanel(f);
     helpWindows(f);
@@ -2123,17 +2452,35 @@ int main(int argc, char** argv) {
         controller.update(camera, dt);
         if (simulated) {
             const bool keyboardFree = !uiContext.wantsTextInput() && !state.settingsWindow.capturingKey();
-            if (keyboardFree && input.state(simPlayAction).pressed) simulated->togglePlay();
+            if (keyboardFree && input.state(simPlayAction).pressed) {
+                if (simulated->replay) simulated->replay->playing = !simulated->replay->playing;
+                else simulated->togglePlay();
+            }
             if (keyboardFree && input.state(simStepAction).pressed && simulated->runner->paused()) simulated->runner->stepOnce();
             if (keyboardFree && input.state(simResetAction).pressed) simReset(frame);
             if (options.selfTest) sceneSelfTestScript(frame, frames, options.frames);
-            simulated->drive();
-            const double before = simulated->instance.world->simulationTime();
-            const auto stepped = simulated->runner->update(dt);
-            const double rate = dt > 0 ? (simulated->instance.world->simulationTime() - before) / dt : 0.0;
-            simulated->realtimeFactor = simulated->runner->paused() ? 0.0 : simulated->realtimeFactor * 0.9 + rate * 0.1;
-            if (stepped.error) state.log.push_back(std::string{tr(TextId::StatusFaulted)} + "：" + stepped.error->message);
-            for (const auto& e : stepped.controlErrors) state.log.push_back(e.message);
+            if (simulated && simulated->replay) {
+                // 回放：不推进物理，只推进回放时间
+                auto& replay = *simulated->replay;
+                if (replay.playing) {
+                    replay.time = std::min(replay.duration, replay.time + dt * replay.speed);
+                    if (replay.time >= replay.duration) replay.playing = false;
+                }
+            } else if (simulated) {
+                simulated->drive();
+                const double before = simulated->instance.world->simulationTime();
+                const auto stepped = simulated->runner->update(dt);
+                const double rate = dt > 0 ? (simulated->instance.world->simulationTime() - before) / dt : 0.0;
+                simulated->realtimeFactor = simulated->runner->paused() ? 0.0 : simulated->realtimeFactor * 0.9 + rate * 0.1;
+                if (stepped.error) {
+                    state.log.push_back(std::string{tr(TextId::StatusFaulted)} + "：" + stepped.error->message);
+                    if (simulated->recorder) {
+                        simulated->recorder->event(stepped.error->step, "error", stepped.error->message);
+                        stopRecording(frame, "error");
+                    }
+                }
+                for (const auto& e : stepped.controlErrors) state.log.push_back(e.message);
+            }
         }
 
         if (options.selfTest && options.frames > 0) {
@@ -2183,6 +2530,11 @@ int main(int argc, char** argv) {
             const std::string path = *state.motionRequest;
             state.motionRequest.reset();
             openMotion(frame, path);
+        }
+        if (state.replayRequest) {
+            const std::string path = *state.replayRequest;
+            state.replayRequest.reset();
+            startReplay(frame, path);
         }
 
         ++frames;

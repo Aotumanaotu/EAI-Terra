@@ -153,8 +153,8 @@ import sys
 path, name = sys.argv[1], sys.argv[2]
 mutations = {
     "控制量不去重": (
-        "        if (it != impl_->last.end() && it->second == c.values) continue;",
-        "        (void)it;"),
+        "            if (it != last.end() && it->second == values) continue;",
+        "            (void)it;"),
     "复现不下发控制量": (
         "            if (const auto error = world.setControl(record.controls[nextControl].commands)) {",
         "            if (const auto error = std::optional<tp::ControlError>{}) {"),

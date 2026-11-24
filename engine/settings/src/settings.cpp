@@ -122,7 +122,8 @@ private:
 
 void readInterface(Reader& r, const Json& j, InterfaceSettings& s) {
     const std::string path = "interface";
-    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes"});
+    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes", "recordSampleHz"});
+    r.real(j, "recordSampleHz", path, ranges::kRecordSampleHz, s.recordSampleHz);
     if (const auto it = j.find("recentScenes"); it != j.end()) {
         if (!it->is_array()) {
             r.warn("interface.recentScenes：应为字符串数组，已忽略");
@@ -497,7 +498,7 @@ bool operator==(const VideoModeSetting& a, const VideoModeSetting& b) noexcept {
 bool operator==(const InterfaceSettings& a, const InterfaceSettings& b) noexcept {
     return a.language == b.language && a.uiScale == b.uiScale && a.showOutliner == b.showOutliner &&
            a.showDetails == b.showDetails && a.showLog == b.showLog && a.showStats == b.showStats && a.layout == b.layout &&
-           a.recentScenes == b.recentScenes;
+           a.recentScenes == b.recentScenes && a.recordSampleHz == b.recordSampleHz;
 }
 
 bool operator==(const DisplaySettings& a, const DisplaySettings& b) noexcept {
@@ -546,6 +547,7 @@ std::string toJson(const Settings& s) {
     ui["layout"] = s.ui.layout;
     ui["recentScenes"] = Json::array();
     for (const auto& path : s.ui.recentScenes) ui["recentScenes"].push_back(path);
+    ui["recordSampleHz"] = s.ui.recordSampleHz;
     root["interface"] = ui;
 
     Json display;

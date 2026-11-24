@@ -27,6 +27,7 @@
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/record.hpp"
+#include "terra/library/library.hpp"
 #include "terra/core/sha256.hpp"
 
 namespace {
@@ -145,7 +146,36 @@ int rerun(const RunOptions& options) {
     return result.withinTolerance() ? kExitOk : kExitRerunMismatch;
 }
 
+// --list-records（M3-07b）：每行一个 record
+int listRecords(const RunOptions& options) {
+    std::string error, warning;
+    const std::string path = options.libraryPath.empty() ? terra::library::defaultLibraryPath() : options.libraryPath;
+    auto library = terra::library::Library::open(path, error, &warning);
+    if (!warning.empty()) diagnose("资源库警告：" + warning);
+    if (!library) {
+        diagnose("资源库无法打开：" + error);
+        return kExitInternal;
+    }
+    std::string scene;
+    if (!options.scenePath.empty()) {
+        std::error_code ec;
+        scene = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
+    }
+    bool ok = true;
+    for (const auto& r : library->records(scene)) {
+        std::string json = "{\"type\":\"record\",\"path\":\"" + jsonEscape(r.path) + "\",\"created\":\"" + jsonEscape(r.created) +
+                           "\",\"scene\":\"" + jsonEscape(r.scene) + "\",\"motion\":\"" + jsonEscape(r.motion) +
+                           "\",\"steps\":" + (r.steps ? std::to_string(*r.steps) : std::string{"null"}) +
+                           ",\"time\":" + (r.simulationTime ? formatNumber(*r.simulationTime) : std::string{"null"}) +
+                           ",\"reason\":\"" + jsonEscape(r.reason) + "\",\"bytes\":" + std::to_string(r.bytes) +
+                           ",\"sha256\":\"" + r.fileSha256 + "\"}";
+        ok = ok && emit(json);
+    }
+    return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
+}
+
 int run(const RunOptions& requested) {
+    if (requested.listRecords) return listRecords(requested);
     if (!requested.rerunPath.empty()) return rerun(requested);
     if (!backendUsable()) {
         return kExitUnavailable;
@@ -298,6 +328,18 @@ int run(const RunOptions& requested) {
     if (recorder && !recorder->finish(world.stepIndex(), world.simulationTime(), "completed")) {
         diagnose("写入实验记录失败：" + options.recordPath);
         return kExitInternal;
+    }
+    // 加入资源库索引（M3-07b）：失败只警告，记录文件本身已完整写出
+    if (recorder) {
+        std::string error, warning;
+        const std::string path = options.libraryPath.empty() ? terra::library::defaultLibraryPath() : options.libraryPath;
+        auto library = terra::library::Library::open(path, error, &warning);
+        if (!warning.empty()) diagnose("资源库警告：" + warning);
+        if (!library) {
+            diagnose("记录未加入资源库（" + error + "）");
+        } else if (const auto failed = library->addRecord(options.recordPath)) {
+            diagnose("记录未加入资源库（" + *failed + "）");
+        }
     }
     ok = ok && emit(summaryToJson(world.runEpoch(), world.stepIndex(), world.simulationTime()));
 

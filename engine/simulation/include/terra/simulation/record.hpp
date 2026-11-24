@@ -115,6 +115,14 @@ struct RecordReadResult {
 
 RecordReadResult readRecord(const std::string& path);
 
+// 只读记录头与摘要（第一行与最后一个非空行），用于建立索引（M3-07b）：不解析中间的状态，大文件也很快。
+// 失败时返回空，error 为原因；没有 summary 时 summary 为空（记录没有正常结束）。
+struct RecordInfo {
+    RecordHeader header;
+    std::optional<RecordSummary> summary;
+};
+std::optional<RecordInfo> readRecordInfo(const std::string& path, std::string& error);
+
 struct RerunOptions {
     double positionTolerance = 1e-6;  // m
     double rotationTolerance = 1e-6;  // rad

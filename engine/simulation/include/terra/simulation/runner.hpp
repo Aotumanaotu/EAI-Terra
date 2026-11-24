@@ -61,6 +61,11 @@ public:
     void setController(Controller controller) { controller_ = std::move(controller); }
     bool hasController() const noexcept { return static_cast<bool>(controller_); }
 
+    // 控制观察者（M3-07c，实验记录）：每次 setControl 被接受后调用，参数为当时的步序号与实际下发的命令
+    // （排队的命令与每步控制器的输出都经过这里）；被拒绝的命令不调用
+    using ControlObserver = std::function<void(std::uint64_t step, const std::vector<terra::physics::ActuatorCommand>& commands)>;
+    void setControlObserver(ControlObserver observer) { controlObserver_ = std::move(observer); }
+
     // 每完成一步调用一次（记录、Headless 输出等）；在推进的线程上调用
     void setStepObserver(std::function<void(const terra::data::PhysicsSnapshot&)> observer) {
         observer_ = std::move(observer);
@@ -86,6 +91,7 @@ private:
     std::shared_ptr<const terra::data::PhysicsSnapshot> current_;
     std::function<void(const terra::data::PhysicsSnapshot&)> observer_;
     Controller controller_;
+    ControlObserver controlObserver_;
     std::uint64_t late_ = 0;
     std::optional<std::size_t> home_;
 };

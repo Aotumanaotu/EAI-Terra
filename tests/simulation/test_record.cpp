@@ -122,9 +122,13 @@ void testFile(const std::string& dir) {
     w->control(2, {{a, {1.0}}, {b, {2.5}}});  // 只写 b
     w->state(snapshot(10, 0.6));
     w->event(10, "error", "示例");
-    check(w->finish(10, 0.02, "completed"), "写完");
+    // 同一步内两次下发（查看器：排队的命令、再是每步控制器）：合并为一行，后下发的覆盖先下发的，没有变化的执行器不写
+    w->control(20, {{a, {3.0}}});
+    w->control(20, {{a, {4.0}}, {b, {2.5}}});
+    check(w->finish(20, 0.04, "completed"), "写完");
     const std::string text = readText(path);
-    check(countLines(text, "\"type\":\"control\"") == 2, "控制量只在变化时写（3 次调用写 2 行）");
+    check(countLines(text, "\"type\":\"control\"") == 3, "控制量只在变化时写，同一步合并（5 次调用写 3 行）");
+    check(text.find("\"step\":20,\"actuators\":[[1,[4.0]]]") != std::string::npos, "同一步内后下发的覆盖先下发的；b 没有变化不写");
     check(text.find("\"step\":2,\"actuators\":[[2,[2.5]]]") != std::string::npos, "第 2 步只写变化的执行器 b");
     check(text.rfind("{\"type\":\"header\",\"format\":\"terra.record\",\"version\":1", 0) == 0, "第一行是记录头");
 
@@ -135,7 +139,7 @@ void testFile(const std::string& dir) {
     check(rec.header.sceneSha256 == h.sceneSha256 && rec.header.startKeyframe == "arm/rest" && rec.header.actuators == h.actuators &&
               rec.header.gravity.z == -9.81 && rec.header.sampleEvery == 10 && rec.header.created == h.created,
           "记录头往返");
-    check(rec.controls.size() == 2 && rec.controls[1].step == 2 && rec.controls[1].commands.size() == 1 &&
+    check(rec.controls.size() == 3 && rec.controls[1].step == 2 && rec.controls[1].commands.size() == 1 &&
               rec.controls[1].commands[0].actuator == b && rec.controls[1].commands[0].values == std::vector<double>{2.5},
           "控制量往返");
     check(rec.states.size() == 2, "两份状态");
@@ -154,7 +158,7 @@ void testFile(const std::string& dir) {
               "接触与诊断往返");
     }
     check(rec.events.size() == 1 && rec.events[0].kind == "error" && rec.events[0].detail == "示例", "事件往返");
-    check(rec.summary && rec.summary->steps == 10 && rec.summary->reason == "completed", "摘要往返");
+    check(rec.summary && rec.summary->steps == 20 && rec.summary->reason == "completed", "摘要往返");
 
     // 格式错误
     const auto expectError = [&](const std::string& content, const std::string& part, const std::string& what) {

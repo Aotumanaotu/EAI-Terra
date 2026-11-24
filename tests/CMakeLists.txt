@@ -29,6 +29,7 @@
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
 # M3-04c：预定义动作（robots.motions）；查看器播放动作的自检（graphics.viewer_motion_selftest）。
+# M3-07b：资源库（library.store）；Headless --library / --list-records（headless.list_records）。
 # M3-07a：SHA-256（core.sha256）；实验记录（record.file、record.rerun）；Headless --record / --rerun（headless.record_motion 等）。
 # M3-06：关节与接触验证（robots.validation）；实体质量（模型描述修订 5）。
 # M3-05：Headless --motion（headless.run_motion 等）；Headless 与查看器路径逐位一致（motion.consistency、motion.consistency_go2）。
@@ -155,12 +156,19 @@ terra_add_cli_test(motion_and_model EXPECT 2 STDERR "不能与 --model 同用"
 terra_add_cli_test(record_motion EXPECT 0
     STDOUT "[{].type.:.summary.,.run_epoch.:2,.steps.:1250,"
     ARGS --motion ${PROJECT_SOURCE_DIR}/assets/tests/motion/arm_swing.terra-motion.json --sample-every 10
-         --record ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl)
+         --record ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl
+         --library ${CMAKE_CURRENT_BINARY_DIR}/headless_record/library.sqlite3)
 set_tests_properties(headless.record_motion PROPERTIES FIXTURES_SETUP headless_record)
 terra_add_cli_test(rerun_motion EXPECT 0
     STDOUT "[{].type.:.rerun.,[^\n]*.steps.:1250,.compared.:126,.bitwise.:true,.max_position_error.:0,.max_rotation_error.:0,[^\n]*.within_tolerance.:true"
     ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl)
 set_tests_properties(headless.rerun_motion PROPERTIES FIXTURES_REQUIRED headless_record)
+# M3-07b：记录完成后已加入资源库；按场景筛选列出
+terra_add_cli_test(list_records EXPECT 0
+    STDOUT "[{].type.:.record.,.path.:[^\n]*headless_record/arm.terra-record.jsonl.,[^\n]*keyframe_arm[^\n]*.steps.:1250,[^\n]*.reason.:.completed."
+    ARGS --list-records --library ${CMAKE_CURRENT_BINARY_DIR}/headless_record/library.sqlite3
+         --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/keyframe_arm.terra-scene.json)
+set_tests_properties(headless.list_records PROPERTIES FIXTURES_REQUIRED headless_record)
 terra_add_cli_test(rerun_missing EXPECT 4 STDERR "记录文件不存在"
     ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/no_such.terra-record.jsonl)
 terra_add_cli_test(rerun_with_scene EXPECT 2 STDERR "--rerun 不能与"
@@ -332,6 +340,12 @@ target_link_libraries(test_record_rerun PRIVATE terra::simulation terra::core te
 target_compile_definitions(test_record_rerun PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests" TERRA_RECORD_RERUN=1)
 terra_configure_target(test_record_rerun)
 add_test(NAME record.rerun COMMAND test_record_rerun rerun "${CMAKE_CURRENT_BINARY_DIR}/record_rerun_tmp")
+
+# 资源库（M3-07b）：SQLite 中的实验记录索引
+add_executable(test_library library/test_library.cpp)
+target_link_libraries(test_library PRIVATE terra::library terra::sqlite)
+terra_configure_target(test_library)
+add_test(NAME library.store COMMAND test_library "${CMAKE_CURRENT_BINARY_DIR}/library_tmp")
 
 # PD 控制层与快照的执行器状态（M3-04b）
 add_executable(test_pd_layer simulation/test_pd_layer.cpp)

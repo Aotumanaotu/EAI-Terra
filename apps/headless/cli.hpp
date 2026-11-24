@@ -35,6 +35,8 @@ struct RunOptions {
     std::string motionPath;                 // M3-05：动作文件；不给 --scene 时使用动作文件中的推荐场景；不能与 --model 同用
     std::string recordPath;                 // M3-07：把本次运行写成实验记录（*.terra-record.jsonl）；需要场景（--scene 或 --motion）
     std::string rerunPath;                  // M3-07：按实验记录重新仿真并比较；不能与其他运行参数同用
+    std::string libraryPath;                // M3-07b：资源库文件（SQLite）；空表示默认位置（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
+    bool listRecords = false;               // M3-07b：列出库中的实验记录（可用 --scene 筛选）后退出
     double positionTolerance = 1e-6;        // M3-07：--tolerance 位置,姿态（m,rad），只用于 --rerun
     double rotationTolerance = 1e-6;
     std::optional<std::uint64_t> steps;     // 与 duration 二选一

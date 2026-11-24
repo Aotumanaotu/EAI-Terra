@@ -205,8 +205,32 @@ struct RecordWriter::Impl {
     std::ofstream out;
     RecordHeader header;
     std::map<std::uint32_t, std::vector<double>> last;  // 每个执行器最近一次记录的控制量
+    // 同一步内可能多次下发（查看器：排队的命令、再是每步控制器的输出），合并后写一行；后下发的覆盖先下发的，
+    // 与 MuJoCo 中最终的控制量一致（M3-07c）
+    std::optional<std::uint64_t> pendingStep;
+    std::map<std::uint32_t, std::vector<double>> pending;
     std::uint64_t bytes = 0;
     bool finished = false;
+
+    void flush() {
+        if (!pendingStep) return;
+        Json actuators = Json::array();
+        for (const auto& [id, values] : pending) {
+            auto it = last.find(id);
+            if (it != last.end() && it->second == values) continue;
+            last[id] = values;
+            actuators.push_back(Json::array({id, values}));
+        }
+        if (!actuators.empty()) {
+            Json j;
+            j["type"] = "control";
+            j["step"] = *pendingStep;
+            j["actuators"] = std::move(actuators);
+            line(j);
+        }
+        pendingStep.reset();
+        pending.clear();
+    }
 
     void line(const Json& j) {
         const std::string text = j.dump();
@@ -240,24 +264,18 @@ std::unique_ptr<RecordWriter> RecordWriter::create(const std::string& path, cons
 }
 
 void RecordWriter::control(std::uint64_t step, const std::vector<tp::ActuatorCommand>& commands) {
-    Json actuators = Json::array();
-    for (const auto& c : commands) {
-        auto it = impl_->last.find(c.actuator.value);
-        if (it != impl_->last.end() && it->second == c.values) continue;
-        impl_->last[c.actuator.value] = c.values;
-        actuators.push_back(Json::array({c.actuator.value, c.values}));
-    }
-    if (actuators.empty()) return;
-    Json j;
-    j["type"] = "control";
-    j["step"] = step;
-    j["actuators"] = std::move(actuators);
-    impl_->line(j);
+    if (impl_->pendingStep && *impl_->pendingStep != step) impl_->flush();
+    impl_->pendingStep = step;
+    for (const auto& c : commands) impl_->pending[c.actuator.value] = c.values;
 }
 
-void RecordWriter::state(const td::PhysicsSnapshot& snapshot) { impl_->line(stateJson(snapshot)); }
+void RecordWriter::state(const td::PhysicsSnapshot& snapshot) {
+    impl_->flush();
+    impl_->line(stateJson(snapshot));
+}
 
 void RecordWriter::event(std::uint64_t step, const std::string& kind, const std::string& detail) {
+    impl_->flush();
     Json j;
     j["type"] = "event";
     j["step"] = step;
@@ -268,6 +286,7 @@ void RecordWriter::event(std::uint64_t step, const std::string& kind, const std:
 
 bool RecordWriter::finish(std::uint64_t steps, double time, const std::string& reason) {
     if (impl_->finished) return good();
+    impl_->flush();
     Json j;
     j["type"] = "summary";
     j["steps"] = steps;
@@ -370,6 +389,56 @@ RecordReadResult readRecord(const std::string& path) {
     if (record.states.empty()) result.warnings.push_back("记录中没有状态采样");
     result.record = std::move(record);
     return result;
+}
+
+std::optional<RecordInfo> readRecordInfo(const std::string& path, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::error_code ec;
+        error = fs::exists(path, ec) ? "无法读取记录文件：" + path : "记录文件不存在：" + path;
+        return std::nullopt;
+    }
+    std::string first;
+    if (!std::getline(in, first) || first.empty()) {
+        error = "记录文件为空：" + path;
+        return std::nullopt;
+    }
+    RecordInfo info;
+    try {
+        const Json j = Json::parse(first);
+        if (j.value("type", std::string{}) != "header" || j.value("format", std::string{}) != "terra.record") {
+            error = "不是 Terra 实验记录（第一行不是记录头）：" + path;
+            return std::nullopt;
+        }
+        if (j.value("version", 0) > kRecordVersion) {
+            error = "记录版本高于本程序支持的版本，请更新程序：" + path;
+            return std::nullopt;
+        }
+        info.header = readHeader(j);
+    } catch (const std::exception& e) {
+        error = "第 1 行：" + std::string{e.what()};
+        return std::nullopt;
+    }
+    // 最后一个非空行：从文件末尾向前读一段
+    in.clear();
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    const std::streamoff chunk = std::min<std::streamoff>(size, 65536);
+    in.seekg(size - chunk);
+    std::string tail(static_cast<std::size_t>(chunk), '\0');
+    in.read(tail.data(), chunk);
+    while (!tail.empty() && (tail.back() == '\n' || tail.back() == '\r')) tail.pop_back();
+    const std::size_t start = tail.rfind('\n');
+    const std::string last = start == std::string::npos ? tail : tail.substr(start + 1);
+    try {
+        const Json j = Json::parse(last);
+        if (j.value("type", std::string{}) == "summary") {
+            info.summary = RecordSummary{j.at("steps").get<std::uint64_t>(), number(j.at("time")), j.at("reason").get<std::string>()};
+        }
+    } catch (const std::exception&) {
+        // 最后一行不完整（如写入中断）：当作没有摘要
+    }
+    return info;
 }
 
 // ---- 复现 ----

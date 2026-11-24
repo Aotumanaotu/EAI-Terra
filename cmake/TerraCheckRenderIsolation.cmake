@@ -7,6 +7,7 @@
 #   nlohmann/  只允许在 engine/settings/src/、engine/scene/src/、engine/simulation/src/ 与 tests/（M1-14、M2-05、M3-04：JSON 库不进入任何公共头文件）
 #   stb_    只允许在 engine/render/src/ 与 tests/（M1-08b）
 #   cgltf   只允许在 engine/asset/src/ 与 tests/（M1-09）
+#   sqlite3 只允许在 engine/library/src/ 与 tests/（M3-07b，D-112）
 #   mujoco/ 在 engine/ 中只允许在 MuJoCo 后端 engine/physics/backends/mujoco/src/（M2-04：terra_scene 等不得直接使用 MuJoCo）
 # 另外，engine/input/ 与 engine/platform/include/（接口层）不得包含任何上述头文件。
 if(NOT DEFINED SOURCE_DIR)
@@ -23,6 +24,7 @@ set(json_allowed "/engine/settings/src/|/engine/scene/src/|/engine/simulation/sr
 set(stb_allowed "/engine/render/src/|/tests/")
 set(cgltf_allowed "/engine/asset/src/|/tests/")
 set(mujoco_allowed "/engine/physics/backends/mujoco/src/")
+set(sqlite_allowed "/engine/library/src/|/tests/")
 
 set(violations "")
 set(checked 0)
@@ -46,6 +48,9 @@ foreach(f IN LISTS files)
         endif()
         if(line MATCHES "[<\"]cgltf" AND NOT rel MATCHES "${cgltf_allowed}")
             list(APPEND violations "${rel}: ${line}（cgltf 只能在资产模块的实现中使用）")
+        endif()
+        if(line MATCHES "[<\"]sqlite3" AND NOT rel MATCHES "${sqlite_allowed}")
+            list(APPEND violations "${rel}: ${line}（SQLite 只能在资源库模块的实现中使用，M3-07b）")
         endif()
         if(line MATCHES "[<\"]stb_" AND NOT rel MATCHES "${stb_allowed}")
             list(APPEND violations "${rel}: ${line}（stb_image 只能在渲染实现中使用）")

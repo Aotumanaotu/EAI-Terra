@@ -96,6 +96,14 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     for (int i = 1; i < argc; ++i) {
         std::string_view arg{argv[i]};
 
+        if (arg == "--list-records") {
+            if (options.listRecords) {
+                result.error = "重复的参数 --list-records";
+                return result;
+            }
+            options.listRecords = true;
+            continue;
+        }
         if (arg == "--dry-run") {
             if (options.dryRun) {
                 result.error = "重复的参数 --dry-run";
@@ -115,7 +123,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 
         const bool takesValue = name == "--model" || name == "--scene" || name == "--motion" || name == "--steps" ||
                                 name == "--duration" || name == "--sample-every" || name == "--record" || name == "--rerun" ||
-                                name == "--tolerance";
+                                name == "--tolerance" || name == "--library";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
             return result;
@@ -134,7 +142,17 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             ++i;
         }
 
-        if (name == "--record" || name == "--rerun") {
+        if (name == "--library") {
+            if (!options.libraryPath.empty()) {
+                result.error = "重复的参数 --library";
+                return result;
+            }
+            if (value->empty()) {
+                result.error = "--library 的值不能为空";
+                return result;
+            }
+            options.libraryPath = std::string{*value};
+        } else if (name == "--record" || name == "--rerun") {
             bool& seen = name == "--record" ? seenRecord : seenRerun;
             if (seen) {
                 result.error = "重复的参数 " + std::string{name};
@@ -229,6 +247,18 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         }
     }
 
+    if (options.listRecords) {
+        // 列出库中的记录：只能配合 --library 与（作为筛选条件的）--scene
+        if (seenModel || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps || options.durationSeconds ||
+            options.dryRun || seenSampleEvery) {
+            result.error = "--list-records 只能与 --library、--scene（按场景筛选）同用";
+        }
+        return result;
+    }
+    if (!options.libraryPath.empty() && !seenRecord) {
+        result.error = "--library 只用于 --record 与 --list-records";
+        return result;
+    }
     if (seenRerun) {
         // 复现：一切由记录给出，不能再指定运行参数
         if (seenModel || seenScene || seenMotion || seenRecord || options.steps || options.durationSeconds || options.dryRun ||
@@ -263,6 +293,7 @@ std::string usageText() {
            "  terra_headless [--scene <场景文件>] --motion <动作文件> [--steps N | --duration 秒] [--sample-every N]\n"
            "  terra_headless ... [--record <记录文件>]          （与 --scene 或 --motion 组合：写出实验记录）\n"
            "  terra_headless --rerun <记录文件> [--tolerance 位置,姿态]\n"
+           "  terra_headless --list-records [--scene <场景文件>] [--library <库文件>]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
@@ -276,6 +307,9 @@ std::string usageText() {
            "  --rerun <路径>       按实验记录重新仿真：加载记录中的场景，下发记录的控制量，在每个采样点比较位姿；\n"
            "                       输出一行 {\"type\":\"rerun\",...}；超出容差时退出码 6\n"
            "  --tolerance p,r      复现容差：位置（m）与姿态（rad），默认 1e-6,1e-6\n"
+           "  --library <路径>     资源库文件（M3-07b，SQLite）：--record 完成后把记录加入索引；默认 $TERRA_LIBRARY，\n"
+           "                       否则 ~/.local/share/eai-terra/library.sqlite3。索引失败只警告，不影响记录文件\n"
+           "  --list-records       列出库中的实验记录（每行一个 {\"type\":\"record\",...}，按创建时间从新到旧）\n"
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"

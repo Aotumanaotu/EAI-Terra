@@ -1,0 +1,9 @@
+# SQLite 源码锁定记录（M3-07b，D-112）。由 scripts/sqlite/check_sqlite.sh 读取并复核。
+# 状态：已锁定（2026-11-24）。合并版源码（amalgamation），公有领域（见 README.md），直接提交在仓库中，构建不联网。
+# 文件取自官方发布的 zip，未做任何修改。官方下载页给出的是 zip 的 SHA3-256，这里另记 zip 与各文件的 SHA-256。
+SQLITE_VERSION=3.54.1
+SQLITE_ZIP_URL=https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip
+SQLITE_ZIP_SHA3_256=92281c86e2957f9b9305890f9ac04204caa7b677cc868dc326d942689df28e30
+SQLITE_ZIP_SHA256=0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9
+SQLITE_C_SHA256=0c657666d819f261cc4007526ad57e1669de9949df7a8ea847aa284a2bf0ee52
+SQLITE_H_SHA256=d6c84557261893439b341d2e6c35187ae3ea24fbfd843ad94616f72d89242b8c

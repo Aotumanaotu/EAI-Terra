@@ -30,13 +30,21 @@ FrameResult SimulationRunner::update(double wallSeconds) {
         // 先交出所有在这一步（或更早）生效的命令，按安排的先后顺序
         for (auto it = queue_.begin(); it != queue_.end() && it->first <= index;) {
             if (it->first < index) ++late_;
-            if (auto error = world_.setControl(it->second)) result.controlErrors.push_back(std::move(*error));
+            if (auto error = world_.setControl(it->second)) {
+                result.controlErrors.push_back(std::move(*error));
+            } else if (controlObserver_) {
+                controlObserver_(index, it->second);
+            }
             it = queue_.erase(it);
         }
         if (controller_) {
             const auto commands = controller_(index);
             if (!commands.empty()) {
-                if (auto error = world_.setControl(commands)) result.controlErrors.push_back(std::move(*error));
+                if (auto error = world_.setControl(commands)) {
+                    result.controlErrors.push_back(std::move(*error));
+                } else if (controlObserver_) {
+                    controlObserver_(index, commands);
+                }
             }
         }
         if (auto error = world_.step()) {

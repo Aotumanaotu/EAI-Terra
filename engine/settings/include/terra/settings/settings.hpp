@@ -37,6 +37,8 @@ struct InterfaceSettings {
     // M2-08：最近打开的场景文件（绝对路径），最新的在前，最多 kMaxRecentScenes 个
     static constexpr std::size_t kMaxRecentScenes = 8;
     std::vector<std::string> recentScenes;
+    // M3-07c：查看器记录实验时的状态采样率（Hz，默认 50，用户 2026-11-24：客户端可设置），范围见 ranges::kRecordSampleHz
+    double recordSampleHz = 50.0;
 };
 
 // 把 path 放到最近打开列表的最前面（去重，超出上限的丢弃）
@@ -126,6 +128,7 @@ constexpr Range kExposure{-10.0, 10.0};
 constexpr Range kEnvironmentIntensity{0.0, 5.0};
 constexpr Range kEnvironmentRotation{0.0, 360.0};
 constexpr Range kBackgroundBlur{0.0, 1.0};
+constexpr Range kRecordSampleHz{1.0, 1000.0};  // M3-07c
 }  // namespace ranges
 
 // ---- 按键 ----

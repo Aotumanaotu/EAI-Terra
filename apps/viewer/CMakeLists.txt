@@ -13,7 +13,7 @@ terra_configure_target(terra_viewer_scene)
 add_executable(terra_viewer main.cpp viewer_settings.cpp)
 target_link_libraries(terra_viewer PRIVATE terra::viewer_scene terra::ui terra::render terra::asset terra::view terra::settings
                                            terra::platform_glfw terra::core
-                                           terra::scene terra::simulation terra::physics_mujoco)
+                                           terra::scene terra::simulation terra::library terra::physics_mujoco)
 # M2-07 起查看器运行物理（开发计划 9.5 节第 7 条）：查看器程序链接 MuJoCo 后端；渲染、界面、资产库仍不链接物理。
 target_compile_definitions(terra_viewer PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
 terra_configure_target(terra_viewer)

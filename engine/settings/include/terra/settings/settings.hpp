@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -42,6 +43,8 @@ struct InterfaceSettings {
     // M4-08c：资源库位置（目录，其中有 library.sqlite3、records/、assets/）；空 = 默认（$TERRA_LIBRARY 或 XDG 数据目录）。
     // 命令行 --library 优先
     std::string libraryLocation;
+    // M4-08d：每个场景上次使用的显示配置（场景文件 → .terviz 文件，均为绝对路径）；打开场景时自动恢复
+    std::map<std::string, std::string> sceneDisplays;
 };
 
 // 把 path 放到最近打开列表的最前面（去重，超出上限的丢弃）

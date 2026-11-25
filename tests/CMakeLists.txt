@@ -733,6 +733,12 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe
                 --library-self-test --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_library/library.sqlite3")
     set_tests_properties(graphics.viewer_library_selftest PROPERTIES LABELS graphics)
+    # M4-08d：显示配置——传感器面板弹出的仿真曲线、保存到资源库、重开场景后自动恢复、导出 .terviz 与 .rviz
+    add_test(NAME graphics.viewer_viz_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 300 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --viz-self-test
+                --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_viz/library.sqlite3")
+    set_tests_properties(graphics.viewer_viz_selftest PROPERTIES LABELS graphics)
     # M4-07：第 6 帧开始记录（保存相机图像），中间停止并回放到一帧有图像的时刻；资源库在构建目录中
     add_test(NAME graphics.viewer_sensor_record_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
@@ -860,6 +866,16 @@ else()
     terra_configure_target(test_ros2_monitor)
     add_test(NAME ros2.monitor COMMAND test_ros2_monitor "${CMAKE_CURRENT_SOURCE_DIR}/ros2/publish_known.py")
     set_tests_properties(ros2.monitor PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 120)
+    # M4-08d：查看器开启桥接后，ROS2 面板看到桥接发布的话题：消息、图像、曲线、TF 树；保存、恢复、导出（.rviz 含 Image 与 TF）
+    if(TERRA_BUILD_RENDER)
+        add_test(NAME graphics.viewer_ros2_panel_selftest
+            COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 300 --self-test --expect-renderer llvmpipe
+                    --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --viz-self-test
+                    --ros2 "${PROJECT_SOURCE_DIR}/assets/ros2/profiles/generic.terra-ros2.json"
+                    --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_ros2_panel/library.sqlite3")
+        set_tests_properties(graphics.viewer_ros2_panel_selftest PROPERTIES LABELS "graphics;ros2" RUN_SERIAL TRUE TIMEOUT 240
+                             ENVIRONMENT "ROS_DOMAIN_ID=163;ROS_LOCALHOST_ONLY=1")
+    endif()
 
     # ---- 宇树配置（M4-06b）：需要宇树消息包 ----
     if(TERRA_ROS2_UNITREE)

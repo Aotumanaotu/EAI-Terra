@@ -122,7 +122,7 @@ private:
 
 void readInterface(Reader& r, const Json& j, InterfaceSettings& s) {
     const std::string path = "interface";
-    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes", "recordSampleHz", "libraryLocation"});
+    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes", "recordSampleHz", "libraryLocation", "sceneDisplays"});
     r.real(j, "recordSampleHz", path, ranges::kRecordSampleHz, s.recordSampleHz);
     if (const auto it = j.find("recentScenes"); it != j.end()) {
         if (!it->is_array()) {
@@ -134,6 +134,16 @@ void readInterface(Reader& r, const Json& j, InterfaceSettings& s) {
                     continue;
                 }
                 if (s.recentScenes.size() < InterfaceSettings::kMaxRecentScenes) s.recentScenes.push_back(item.get<std::string>());
+            }
+        }
+    }
+    if (const auto it = j.find("sceneDisplays"); it != j.end()) {  // M4-08d
+        if (!it->is_object()) {
+            r.warn("interface.sceneDisplays：应为对象（场景 → 显示配置），已忽略");
+        } else {
+            for (auto d = it->begin(); d != it->end(); ++d) {
+                if (d.value().is_string() && !d.key().empty() && !d.value().get<std::string>().empty()) s.sceneDisplays[d.key()] = d.value().get<std::string>();
+                else r.warn("interface.sceneDisplays：忽略不是路径的项");
             }
         }
     }
@@ -503,7 +513,8 @@ bool operator==(const VideoModeSetting& a, const VideoModeSetting& b) noexcept {
 bool operator==(const InterfaceSettings& a, const InterfaceSettings& b) noexcept {
     return a.language == b.language && a.uiScale == b.uiScale && a.showOutliner == b.showOutliner &&
            a.showDetails == b.showDetails && a.showLog == b.showLog && a.showStats == b.showStats && a.layout == b.layout &&
-           a.recentScenes == b.recentScenes && a.recordSampleHz == b.recordSampleHz && a.libraryLocation == b.libraryLocation;
+           a.recentScenes == b.recentScenes && a.recordSampleHz == b.recordSampleHz && a.libraryLocation == b.libraryLocation &&
+           a.sceneDisplays == b.sceneDisplays;
 }
 
 bool operator==(const DisplaySettings& a, const DisplaySettings& b) noexcept {
@@ -554,6 +565,8 @@ std::string toJson(const Settings& s) {
     for (const auto& path : s.ui.recentScenes) ui["recentScenes"].push_back(path);
     ui["recordSampleHz"] = s.ui.recordSampleHz;
     ui["libraryLocation"] = s.ui.libraryLocation;
+    ui["sceneDisplays"] = Json::object();
+    for (const auto& [scene, display] : s.ui.sceneDisplays) ui["sceneDisplays"][scene] = display;
     root["interface"] = ui;
 
     Json display;

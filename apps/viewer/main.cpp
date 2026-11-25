@@ -20,6 +20,8 @@
 //   --import-self-test <文件> （M4-08a）自检时经导入向导导入该模型（第 12 帧分析、第 14 帧导入并打开），检查打开的场景
 //                与导入目录（与 --self-test、--library 同用；导入目录在资源库目录下的 assets/ 中）
 //   --sensor-record-self-test （M4-07）自检时检查传感器的记录（含相机图像）、复现与回放（与 --self-test、--scene、--library 同用）
+//   --viz-self-test （M4-08d）自检显示配置：仿真曲线；有 --ros2 时另检查 ROS2 面板（消息、图像、曲线、TF 树）；保存、重开场景后恢复、
+//                导出 .terviz 与 .rviz（与 --self-test、--scene、--library 同用）
 //   --library-self-test （M4-08c）自检资源库面板与欢迎页：列出内置场景；单击卡片打开场景、当前场景高亮；收藏写入资源库；
 //                快速打开按名字筛选并打开；动作卡片打开推荐场景并播放；隐藏（与 --self-test、--library 同用，不给 --scene）
 //   --ros2       （M4-06a）打开场景后开启 ROS2 桥接，使用给出的通信配置（*.terra-ros2.json）；构建时没有 ROS2 时提示安装并返回 3
@@ -40,6 +42,7 @@
 #include <ctime>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -90,6 +93,9 @@
 #include "import_wizard.hpp"
 #include "library_panel.hpp"
 #include "terra/library/pack.hpp"
+#include "terra/viz/exporter.hpp"
+#include "terra/viz/viz_config.hpp"
+#include "viz_panel.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
 #ifdef TERRA_WITH_ROS2
@@ -126,6 +132,7 @@ struct Options {
     std::string importSelfTestPath;     // M4-08a：自检时导入的模型
     bool sensorRecordSelfTest = false;  // M4-07：自检时检查传感器的记录、复现与回放（与 --self-test、--scene、--library 同用）
     bool librarySelfTest = false;       // M4-08c：自检资源库面板、欢迎页与快速打开
+    bool vizSelfTest = false;           // M4-08d：自检显示配置与 ROS2 面板
     std::string ros2Profile;      // M4-06a：开启 ROS2 桥接的通信配置
     bool demoDrive = false;
 };
@@ -163,6 +170,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.sensorRecordSelfTest = true;
         } else if (a == "--library-self-test") {
             o.librarySelfTest = true;
+        } else if (a == "--viz-self-test") {
+            o.vizSelfTest = true;
         } else if (a == "--ros2" && hasValue) {
             o.ros2Profile = argv[++i];
         } else if (a == "--demo-drive") {
@@ -364,6 +373,20 @@ struct AppState {
     std::string activeLibraryFile;  // 当前使用的库文件（位置改变时重新打开）
     std::vector<terra::library::ScanRoot> extraScanRoots;  // 自检：另扫描测试夹具
     ui::FileBrowser packBrowser;
+    // M4-08d：显示配置（ROS2 面板、消息、曲线、图像、TF 树窗口）
+    vw::VizPanelState viz;
+    ui::FileBrowser vizBrowser;
+    std::optional<std::pair<terra::viz::VizConfig, std::string>> pendingDisplay;  // 打开场景后应用：配置（导入）或文件（以某一份打开）
+    struct VizTest {
+        int phase = 0;
+        double phaseStart = 0.0;
+        bool ros2 = false;          // 本次自检含 ROS2（--ros2 开启了桥接）
+        std::string imuTopic, imageTopic;
+        bool simPlot = false, message = false, image = false, plot = false, tf = false, saved = false, registered = false;
+        bool restored = false, exported = false, rvizHasImage = false;
+        std::size_t savedWindows = 0;
+        std::string savedPath;
+    } vizTest;
     struct LibraryTest {
         std::size_t welcomeCards = 0, panelCards = 0, builtinScenes = 0, quickMatches = 0;
         bool cardOpened = false, highlighted = false, favoriteSaved = false, quickOpened = false, motionPlayed = false;
@@ -712,6 +735,7 @@ void closeScene(Frame& f) {
 
 // 打开场景：成功时替换当前场景（打开后暂停，按播放开始）；失败时保留当前场景，弹窗列出诊断。
 void startRos2(Frame& f);
+void restoreDisplay(Frame& f);  // M4-08d
 
 bool openScene(Frame& f, const std::string& requested) {
     std::error_code ec;
@@ -781,6 +805,7 @@ bool openScene(Frame& f, const std::string& requested) {
                 sim.instance.document.name.c_str(), d.modelInstances.size(), d.entities.size(), d.geoms.size(),
                 sim.instance.bindings.size(), sim.view->liveBindings(), d.timestep);
     startRos2(f);  // M4-06a：桥接开着时，新场景以同一配置重新开启
+    restoreDisplay(f);  // M4-08d：恢复该场景上次使用的显示配置
     return true;
 }
 
@@ -962,6 +987,220 @@ void importPackFile(Frame& f, const std::string& pack) {
     if (const std::string scene = firstSceneIn(r.directory); !scene.empty()) f.state.openRequest = scene;
 }
 
+// ---- 显示配置（M4-08d）----
+
+// 显示配置的目录：资源库目录下的 displays/<场景名>/
+std::string displaysDirectory(const Frame& f) { return (std::filesystem::path{libraryFilePath(f)}.parent_path() / "displays").string(); }
+
+std::string sceneStem(const std::string& scene) {
+    std::string name = std::filesystem::path{scene}.filename().string();
+    const std::string suffix = kSceneSuffix;
+    if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) name.resize(name.size() - suffix.size());
+    return name.empty() ? std::string{"scene"} : name;
+}
+
+// 当前场景的显示配置（资源库中关联到该场景的）
+std::vector<std::pair<std::string, std::string>> sceneDisplays(const Frame& f) {
+    std::vector<std::pair<std::string, std::string>> out;
+    if (!f.simulated) return out;
+    for (const auto& a : f.state.assetList) {
+        if (a.kind == terra::library::AssetKind::Display && !a.hidden && !a.related.empty() && a.related[0] == f.simulated->path) {
+            out.emplace_back(a.title, a.path);
+        }
+    }
+    return out;
+}
+
+bool loadDisplay(Frame& f, const std::string& path, bool remember) {
+    const auto r = terra::viz::readViz(path);
+    for (const auto& w : r.warnings) f.state.log.push_back(std::string{tr(TextId::LogVizLoaded)} + w);
+    if (!r.config) {
+        for (const auto& e : r.errors) f.state.log.push_back(std::string{tr(TextId::LogVizFailed)} + e);
+        return false;
+    }
+    vw::applyConfig(f.state.viz, *r.config, path);
+    if (remember && f.simulated) f.settings.current.ui.sceneDisplays[f.simulated->path] = path;
+    f.state.log.push_back(std::string{tr(TextId::LogVizLoaded)} + path);
+    std::printf("INFO 显示配置已恢复：%s（%zu 个窗口）\n", path.c_str(), r.config->windows.size());
+    return true;
+}
+
+// 打开场景后：有待应用的配置（导入、以某一份打开）时用它，否则恢复该场景上次使用的那一份；都没有时为空配置
+void restoreDisplay(Frame& f) {
+    auto& pending = f.state.pendingDisplay;
+    if (pending) {
+        const auto p = std::move(*pending);
+        pending.reset();
+        if (p.second.empty()) {
+            vw::applyConfig(f.state.viz, p.first, {});
+            f.state.viz.dirty = true;
+        } else {
+            loadDisplay(f, p.second, true);
+        }
+        return;
+    }
+    const auto& map = f.settings.current.ui.sceneDisplays;
+    std::error_code ec;
+    if (const auto it = map.find(f.simulated->path); it != map.end() && std::filesystem::exists(it->second, ec) && loadDisplay(f, it->second, false)) return;
+    terra::viz::VizConfig empty;
+    empty.scene = f.simulated->path;
+    vw::applyConfig(f.state.viz, std::move(empty), {});
+}
+
+// 保存：写入资源库目录下的 displays/<场景名>/<名字>.terviz，登记并记为该场景上次使用的配置
+void saveDisplay(Frame& f, std::string name) {
+    auto& viz = f.state.viz;
+    if (f.state.libraryMemoryOnly) {
+        f.state.log.push_back(std::string{tr(TextId::LogVizFailed)} + "自检没有给出 --library，不写用户目录");
+        return;
+    }
+    if (name.empty()) name = viz.config.name.empty() ? std::string{"默认"} : viz.config.name;
+    for (char& c : name) {
+        if (c == '/' || c == '\\' || c == ':') c = '_';
+    }
+    std::string path = viz.path;
+    if (path.empty() || name != viz.config.name) {
+        const std::string scene = f.simulated ? sceneStem(f.simulated->path) : std::string{"_"};
+        path = (std::filesystem::path{displaysDirectory(f)} / scene / (name + terra::viz::kVizSuffix)).string();
+    }
+    viz.config.name = name;
+    if (f.simulated) viz.config.scene = f.simulated->path;
+    vw::capturePlacement(viz);
+    if (const auto error = terra::viz::saveViz(viz.config, path)) {
+        f.state.log.push_back(std::string{tr(TextId::LogVizFailed)} + *error);
+        return;
+    }
+    viz.path = path;
+    viz.dirty = false;
+    if (f.simulated) f.settings.current.ui.sceneDisplays[f.simulated->path] = path;
+    writableLibrary(f);
+    f.state.assetsStale = true;
+    f.state.log.push_back(std::string{tr(TextId::LogVizSaved)} + path);
+    std::printf("INFO 显示配置已保存：%s（%zu 个窗口）\n", path.c_str(), viz.config.windows.size());
+}
+
+// 导入 .terviz：关联的场景存在且不是当前场景时先打开它；否则关联到当前场景（标为未保存）
+void importDisplay(Frame& f, const std::string& file) {
+    const auto r = terra::viz::readViz(file);
+    if (!r.config) {
+        for (const auto& e : r.errors) f.state.log.push_back(std::string{tr(TextId::LogVizFailed)} + e);
+        return;
+    }
+    auto config = *r.config;
+    std::error_code ec;
+    if (!config.scene.empty() && std::filesystem::exists(config.scene, ec) && (!f.simulated || f.simulated->path != config.scene)) {
+        f.state.pendingDisplay = std::make_pair(config, std::string{});
+        f.state.openRequest = config.scene;
+        return;
+    }
+    if (f.simulated) config.scene = f.simulated->path;
+    vw::applyConfig(f.state.viz, std::move(config), {});
+    f.state.viz.dirty = true;
+    f.state.log.push_back(std::string{tr(TextId::LogVizLoaded)} + file);
+}
+
+// 以资源库中的某一份显示配置打开（场景卡片右键）
+void openDisplayAsset(Frame& f, const std::string& file) {
+    const auto r = terra::viz::readViz(file);
+    if (!r.config || r.config->scene.empty()) {
+        importDisplay(f, file);
+        return;
+    }
+    if (f.simulated && f.simulated->path == r.config->scene) {
+        loadDisplay(f, file, true);
+        return;
+    }
+    f.state.pendingDisplay = std::make_pair(terra::viz::VizConfig{}, file);
+    f.state.openRequest = r.config->scene;
+}
+
+// 仿真来源的曲线（IMU 的比力与角速度）
+vw::SimPlotSource simPlotSource(Frame& f) {
+    vw::SimPlotSource source;
+    Frame* frame = &f;
+    source.sensors = [frame] {
+        std::vector<std::string> names;
+        if (frame->simulated) {
+            for (const auto& s : frame->simulated->instance.world->description().sensors) names.push_back(s.name);
+        }
+        return names;
+    };
+    source.samples = [frame](const std::string& sensor, const std::string& field) {
+        std::vector<std::pair<double, double>> out;
+        if (!frame->simulated) return out;
+        const auto& sensors = frame->simulated->instance.world->description().sensors;
+        static const char* const kFields[6] = {"acc.x", "acc.y", "acc.z", "gyro.x", "gyro.y", "gyro.z"};
+        std::size_t component = 6;
+        for (std::size_t c = 0; c < 6; ++c) {
+            if (field == kFields[c]) component = c;
+        }
+        for (std::size_t k = 0; k < sensors.size() && k < frame->simulated->imuHistory.size() && component < 6; ++k) {
+            if (sensors[k].name != sensor) continue;
+            for (const auto& s : frame->simulated->imuHistory[k]) out.emplace_back(s.time, static_cast<double>(s.values[component]));
+        }
+        return out;
+    };
+    return source;
+}
+
+// 传感器面板：把某个 IMU 的角速度弹出为曲线窗口（随显示配置保存）
+void popOutImuPlot(Frame& f, const std::string& imu) {
+    for (const char* field : {"gyro.x", "gyro.y", "gyro.z"}) {
+        terra::viz::PlotSeries series;
+        series.source = "sim";
+        series.sensor = imu;
+        series.field = field;
+        vw::addSeries(f.state.viz, series, imu);
+    }
+}
+
+void handleVizActions(Frame& f, const std::vector<vw::VizAction>& actions) {
+    for (const auto& a : actions) {
+        switch (a.type) {
+            case vw::VizAction::Type::Save: saveDisplay(f, f.state.viz.config.name); break;
+            case vw::VizAction::Type::SaveAs: saveDisplay(f, a.text); break;
+            case vw::VizAction::Type::Switch: loadDisplay(f, a.text, true); break;
+            case vw::VizAction::Type::Import: f.state.vizBrowser.open(displaysDirectory(f), terra::viz::kVizSuffix, ""); break;
+            case vw::VizAction::Type::CloseAll: {
+                f.state.viz.config.windows.clear();
+                f.state.viz.dirty = true;
+                break;
+            }
+        }
+    }
+}
+
+void vizPanels(Frame& f) {
+    const vw::SimPlotSource sim = simPlotSource(f);
+    vw::VizContext ctx;
+    if (f.simulated) ctx.currentScene = f.simulated->path;
+    ctx.displays = sceneDisplays(f);
+    ctx.defaultExportDir = (std::filesystem::path{libraryFilePath(f)}.parent_path() / "exports").string();
+    ctx.sim = &sim;
+    handleVizActions(f, vw::drawVizWindows(f.state.viz, ctx));
+    if (auto chosen = f.state.vizBrowser.draw(label(TextId::VizImportBrowserTitle, "VizBrowser").c_str())) importDisplay(f, *chosen);
+}
+
+bool ros2PanelOpen(const Frame& f) {
+    for (const auto& w : f.state.viz.config.windows) {
+        if (w.type == terra::viz::WindowType::Topics) return true;
+    }
+    return false;
+}
+
+void toggleRos2Panel(Frame& f, bool open) {
+    auto& windows = f.state.viz.config.windows;
+    if (open) {
+        terra::viz::VizWindow w;
+        w.type = terra::viz::WindowType::Topics;
+        vw::openWindow(f.state.viz, w);
+    } else {
+        windows.erase(std::remove_if(windows.begin(), windows.end(), [](const terra::viz::VizWindow& w) { return w.type == terra::viz::WindowType::Topics; }),
+                      windows.end());
+        f.state.viz.dirty = true;
+    }
+}
+
 void handleLibraryAction(Frame& f, const vw::LibraryAction& a) {
     using T = vw::LibraryAction::Type;
     namespace lib = terra::library;
@@ -1008,6 +1247,7 @@ void handleLibraryAction(Frame& f, const vw::LibraryAction& a) {
             break;
         }
         case T::Rescan: f.state.assetsStale = true; break;
+        case T::OpenDisplay: openDisplayAsset(f, a.path); break;  // M4-08d
     }
 }
 
@@ -1826,6 +2066,33 @@ void menuBar(Frame& f) {
         ImGui::MenuItem(tr(TextId::PanelActuators), nullptr, &f.state.showActuators);
         ImGui::MenuItem(tr(TextId::PanelTimeline), nullptr, &f.state.showTimeline);
         ImGui::MenuItem(tr(TextId::PanelSensors), nullptr, &f.state.showSensors);
+        // M4-08d：ROS2 面板（没有 ROS2 时禁用，悬停给出安装说明）与显示配置
+        {
+            bool ros2 = ros2PanelOpen(f);
+            if (ImGui::MenuItem(tr(TextId::PanelRos2), nullptr, &ros2, vw::ros2PanelAvailable())) toggleRos2Panel(f, ros2);
+            if (!vw::ros2PanelAvailable() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("%s", tr(TextId::Ros2Unavailable));
+            }
+        }
+        if (ImGui::BeginMenu(tr(TextId::MenuWindowDisplay))) {
+            auto& viz = f.state.viz;
+            for (const auto& [name, file] : sceneDisplays(f)) {
+                if (ImGui::MenuItem(name.c_str(), nullptr, file == viz.path)) loadDisplay(f, file, true);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(tr(TextId::VizSave), nullptr, false, viz.dirty || viz.path.empty())) saveDisplay(f, viz.config.name);
+            if (ImGui::MenuItem(tr(TextId::VizSaveAs))) {
+                viz.saveAsOpen = true;
+                std::snprintf(viz.saveName.data(), viz.saveName.size(), "%s", viz.config.name.c_str());
+            }
+            if (ImGui::MenuItem(tr(TextId::VizExport))) viz.exportOpen = true;
+            if (ImGui::MenuItem(tr(TextId::VizImport))) f.state.vizBrowser.open(displaysDirectory(f), terra::viz::kVizSuffix, "");
+            if (ImGui::MenuItem(tr(TextId::VizCloseAll), nullptr, false, !viz.config.windows.empty())) {
+                viz.config.windows.clear();
+                viz.dirty = true;
+            }
+            ImGui::EndMenu();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::MenuWindowResetLayout))) {
             f.settings.current.ui.layout.clear();
@@ -3098,6 +3365,7 @@ void sensorsPanel(Frame& f) {
                                             static_cast<unsigned long long>(sim.imuSamples[k]), history.back().time);
                         tripleCurve("##acc", history, 0, "m/s²", font * 5.0f);
                         tripleCurve("##gyro", history, 3, "rad/s", font * 5.0f);
+                        if (ImGui::SmallButton(tr(TextId::VizPopPlot))) popOutImuPlot(f, d.sensors[k].name);  // M4-08d
                     }
                 }
             }
@@ -3340,6 +3608,7 @@ void buildUi(Frame& f) {
     logPanel(f);
     statsPanel(f);
     timelinePanel(f);  // 在日志之后：首次显示时并入日志所在的停靠组
+    vizPanels(f);      // M4-08d：显示配置中的窗口（ROS2 面板、消息、曲线、图像、TF 树）
     helpWindows(f);
     vw::drawSettingsWindow(f.state.settingsWindow, f.settings.current, f.state.monitors, f.uiCtx.scale(), f.settings.path,
                            f.state.log);
@@ -3605,6 +3874,7 @@ struct SceneSelfTestRecord {
     bool recordTest = false;
     std::size_t replayIndex = 0;  // 回放跳到的状态下标
     bool sensorTest = false;      // M4-04：传感器自检（播放后不暂停、不单步）
+    bool vizTest = false;         // M4-08d：显示配置自检（播放后一直运行）
     bool sensorRecordTest = false;  // M4-07：传感器记录自检（第 6 帧开始记录并保存图像，中间停止并回放到一帧有图像的时刻）
     std::uint64_t replayCameraStep = 0;
     double replayCameraTime = -1.0;
@@ -3650,7 +3920,7 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
         }
         return;
     }
-    if (sceneRecord.sensorTest) return;  // M4-04：第 3 帧按播放后一直运行
+    if (sceneRecord.sensorTest || sceneRecord.vizTest) return;  // M4-04、M4-08d：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
         // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
         // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
@@ -3679,6 +3949,149 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
         sim.runner->stepOnce();
         sceneRecord.stepRequested = true;
     }
+}
+
+// ---- 显示配置与 ROS2 面板自检（M4-08d）----
+// 仿真来源的曲线（传感器面板“弹出为曲线窗口”）；有 --ros2 时另开 ROS2 面板，打开 IMU 的消息、图像、TF 树与 IMU 曲线；
+// 保存到资源库 → 关闭全部窗口并重开场景 → 自动恢复；按导出弹窗的默认值导出 .terviz 与 .rviz。
+void vizSelfTestScript(Frame& f, int frame) {
+    auto& t = f.state.vizTest;
+    auto& viz = f.state.viz;
+    const double now = f.platform.time();
+    const auto next = [&](int phase) {
+        t.phase = phase;
+        t.phaseStart = now;
+    };
+    if (!f.simulated || frame < 4) return;
+    switch (t.phase) {
+        case 0: {
+            // 仿真必须在运行（桥接按步发布）：带 --ros2 启动时已经在运行，第 3 帧的“播放 / 暂停”会把它暂停
+            if (f.simulated->runner->paused()) f.simulated->runner->resume();
+            const auto& sensors = f.simulated->instance.world->description().sensors;
+            if (!sensors.empty()) popOutImuPlot(f, sensors.front().name);
+            if (t.ros2) toggleRos2Panel(f, true);
+            next(1);
+            break;
+        }
+        case 1: {
+#ifdef TERRA_WITH_ROS2
+            if (t.ros2 && viz.monitor) {
+                for (const auto& topic : viz.monitor->topics()) {
+                    if (t.imuTopic.empty() && topic.type == "sensor_msgs/msg/Imu") t.imuTopic = topic.name;
+                    if (t.imageTopic.empty() && topic.type == "sensor_msgs/msg/Image" && topic.name.find("depth") == std::string::npos) t.imageTopic = topic.name;
+                }
+                if ((t.imuTopic.empty() || t.imageTopic.empty()) && now - t.phaseStart < 15.0) break;
+                std::printf("INFO 自检：IMU 话题 %s，图像话题 %s\n", t.imuTopic.c_str(), t.imageTopic.c_str());
+                terra::viz::VizWindow w;
+                w.type = terra::viz::WindowType::Message;
+                w.topic = t.imuTopic;
+                vw::openWindow(viz, w);
+                w.type = terra::viz::WindowType::Image;
+                w.topic = t.imageTopic;
+                vw::openWindow(viz, w);
+                terra::viz::VizWindow tf;
+                tf.type = terra::viz::WindowType::Tf;
+                vw::openWindow(viz, tf);
+                terra::viz::PlotSeries series;
+                series.topic = t.imuTopic;
+                series.field = "linear_acceleration.z";
+                vw::addSeries(viz, series, t.imuTopic);
+            }
+#endif
+            next(2);
+            break;
+        }
+        case 2: {
+            if (f.simulated->runner->paused()) f.simulated->runner->resume();
+            if (now - t.phaseStart < 3.0) break;
+            // ROS2：数据到达前最多再等 9 秒（桥接与监视器的发现需要时间）
+            if (t.ros2 && (viz.messageTrees == 0 || viz.imageUploads == 0) && now - t.phaseStart < 12.0) break;
+            t.simPlot = viz.plotPoints > 0;
+#ifdef TERRA_WITH_ROS2
+            if (t.ros2 && viz.monitor) {
+                t.message = viz.messageTrees > 0;
+                t.image = viz.imageUploads > 0;
+                t.plot = !viz.monitor->samples(t.imuTopic, "linear_acceleration.z").empty();
+                t.tf = !viz.monitor->transforms().empty();
+                std::printf("INFO 自检：消息树 %zu 次，图像上传 %zu 次，ROS2 曲线点 %zu，TF %zu 个；仿真 %llu 步\n", viz.messageTrees, viz.imageUploads,
+                            viz.monitor->samples(t.imuTopic, "linear_acceleration.z").size(), viz.monitor->transforms().size(),
+                            static_cast<unsigned long long>(f.simulated->instance.world->stepIndex()));
+                for (const std::string& topic : {t.imuTopic, t.imageTopic}) {
+                    const auto st = viz.monitor->stats(topic);
+                    const auto info = viz.monitor->topic(topic);
+                    std::printf("INFO 自检：%s 已订阅 %s，收到 %llu 条（%.1f Hz），类型问题“%s”，QoS %s\n", topic.c_str(), viz.monitor->watching(topic) ? "是" : "否",
+                                static_cast<unsigned long long>(st.messages), st.hz, viz.monitor->typeError(topic).c_str(), info ? info->qos.c_str() : "?");
+                }
+            }
+#endif
+            saveDisplay(f, "自检");
+            std::error_code ec;
+            t.savedPath = viz.path;
+            t.saved = !viz.path.empty() && std::filesystem::exists(viz.path, ec) && !viz.dirty;
+            t.savedWindows = viz.config.windows.size();
+            next(3);
+            break;
+        }
+        case 3: {
+            if (f.state.assetsStale) break;  // 等资源库重新扫描
+            for (const auto& a : f.state.assetList) {
+                if (a.kind == terra::library::AssetKind::Display && a.path == t.savedPath && !a.related.empty() && a.related[0] == f.simulated->path) t.registered = true;
+            }
+            vw::applyConfig(viz, terra::viz::VizConfig{}, {});
+            f.state.openRequest = f.simulated->path;  // 重开场景：应自动恢复
+            next(4);
+            break;
+        }
+        case 4: {
+            t.restored = viz.path == t.savedPath && viz.config.windows.size() == t.savedWindows && t.savedWindows > 0;
+            std::printf("INFO 自检：重开场景后显示配置 %s，%zu 个窗口（保存时 %zu 个）\n", viz.path.c_str(), viz.config.windows.size(), t.savedWindows);
+            f.simulated->runner->resume();
+            viz.exportSelfTest = true;
+            next(5);
+            break;
+        }
+        case 5: {
+            const auto dir = std::filesystem::path{libraryFilePath(f)}.parent_path() / "exports";
+            std::error_code ec;
+            const auto terviz = terra::viz::readViz((dir / "自检.terviz").string());
+            const bool rviz = std::filesystem::exists(dir / "自检.rviz", ec);
+            t.exported = terviz.config.has_value() && terviz.config->windows.size() == t.savedWindows && rviz;
+            if (rviz) {
+                std::ifstream in(dir / "自检.rviz");
+                const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+                t.rvizHasImage = text.find("rviz_default_plugins/Image") != std::string::npos && text.find("rviz_default_plugins/TF") != std::string::npos;
+            }
+            next(6);
+            break;
+        }
+        default: break;
+    }
+}
+
+int vizSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const auto& t = f.state.vizTest;
+    check(t.phase == 6, "自检的各阶段都完成（阶段 " + std::to_string(t.phase) + "）");
+    check(t.simPlot, "仿真来源的曲线（传感器面板弹出）有数据");
+    if (t.ros2) {
+        check(!t.imuTopic.empty() && !t.imageTopic.empty(), "ROS2 面板发现桥接发布的 IMU 与图像话题");
+        check(t.message, "消息窗口：运行时展开 IMU 消息");
+        check(t.image, "图像窗口：收到并显示相机图像");
+        check(t.plot, "ROS2 曲线：IMU 的 linear_acceleration.z 有数据");
+        check(t.tf, "TF 树：收到 /tf 或 /tf_static");
+    }
+    check(t.saved, "显示配置保存到资源库目录：" + t.savedPath);
+    check(t.registered, "显示配置登记到资源库，关联当前场景");
+    check(t.restored, "关闭全部窗口、重开场景后自动恢复");
+    check(t.exported, "导出 .terviz（可以再读入）与 .rviz");
+    if (t.ros2) check(t.rvizHasImage, ".rviz 中有 Image 与 TF 显示");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "显示配置自检通过\n" : "显示配置自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
 }
 
 // 记录与回放自检（M3-07c）：查看器中记录的一段运行能复现（逐位相同）、已加入资源库、回放的画面与记录逐位相同
@@ -4304,6 +4717,7 @@ int main(int argc, char** argv) {
     // M4-08c：自检没有给 --library 时只用内存中的库；欢迎页会盖住视口，只在资源库自检与正常使用时显示
     state.libraryMemoryOnly = options.selfTest && options.libraryPath.empty();
     state.showWelcome = !options.selfTest || options.librarySelfTest;
+    state.vizTest.ros2 = options.vizSelfTest && !options.ros2Profile.empty();
     if (options.librarySelfTest) {
         state.extraScanRoots = {{std::string{TERRA_ASSETS_DIR} + "/tests/scene", terra::library::AssetSource::User},
                                 {std::string{TERRA_ASSETS_DIR} + "/tests/motion", terra::library::AssetSource::User}};
@@ -4311,6 +4725,7 @@ int main(int argc, char** argv) {
     state.autoUiScale = autoUiScale;
     state.monitors = monitors;
     state.log.push_back(tr(TextId::LogStarted));
+    if (!vw::ros2PanelAvailable()) state.log.push_back(tr(TextId::Ros2Unavailable));  // M4-08d：提醒安装 ROS2
     state.log.push_back(std::string{tr(TextId::StatsRenderer)} + "：" + ctx.info().renderer);
     std::optional<SimulatedScene> simulated;
     if (loaded) {
@@ -4355,6 +4770,7 @@ int main(int argc, char** argv) {
         sceneRecord.recordTest = options.recordSelfTest;
         sceneRecord.sensorTest = options.sensorSelfTest;
         sceneRecord.sensorRecordTest = options.sensorRecordSelfTest;
+        sceneRecord.vizTest = options.vizSelfTest;
     }
     if (!options.motionPath.empty() && !(options.selfTest && simulated)) {
         if (!openMotion(frame, options.motionPath)) {
@@ -4408,6 +4824,7 @@ int main(int argc, char** argv) {
             if (ends(kSceneSuffix)) state.openRequest = dropped;
             else if (ends(".terra-motion.json")) state.motionRequest = dropped;
             else if (ends(terra::library::kPackSuffix)) importPackFile(frame, dropped);  // M4-08c
+            else if (ends(terra::viz::kVizSuffix)) importDisplay(frame, dropped);    // M4-08d
             else vw::beginImport(state.importWizard, dropped, importDirectory(frame));
         }
         const double now = platform.time();
@@ -4461,6 +4878,7 @@ int main(int argc, char** argv) {
         updateCameraPreviews(frame);  // M4-04：渲染本帧该采样的相机画面
 
         if (options.selfTest && options.librarySelfTest) librarySelfTestScript(frame, frames);  // M4-08c
+        if (options.selfTest && options.vizSelfTest) vizSelfTestScript(frame, frames);          // M4-08d
         if (options.selfTest && options.frames > 0) {
             // 自检脚本：第 4–7 帧依次打开偏好设置的四个页面，第 7 帧打开按键录制弹窗，第 8 帧取消录制、第 9 帧关闭窗口；
             // 中间帧切换为英文（经由设置）。
@@ -4528,10 +4946,13 @@ int main(int argc, char** argv) {
         }
 
         ++frames;
-        const bool lastFrame = (options.frames > 0 && frames >= options.frames) ||
+        // M4-08d：显示配置自检按墙钟等待话题与数据，没完成时最多延长到 4 倍帧数
+        const bool vizWaiting = options.vizSelfTest && state.vizTest.phase < 6 && frames < options.frames * 4;
+        const bool lastFrame = (options.frames > 0 && frames >= options.frames && !vizWaiting) ||
                                (options.seconds > 0.0 && now - start >= options.seconds);
         if (lastFrame && options.selfTest) {
-            result = options.librarySelfTest               ? librarySelfTest(frame)
+            result = options.vizSelfTest                   ? vizSelfTest(frame)
+                     : options.librarySelfTest             ? librarySelfTest(frame)
                      : !options.importSelfTestPath.empty() ? importSelfTest(frame)
                      : simulated                        ? sceneSelfTest(frame, options)
                                                         : selfTest(frame, uiContext, options);

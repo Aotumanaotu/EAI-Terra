@@ -1,0 +1,29 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "传感器噪声与分割图夹具（M4-09）",
+  "title": "噪声夹具",
+  "physics": {"gravity": [0, 0, -9.81]},
+  "noise": {"seed": 42},
+  "labels": {"room/*": "wall", "cam/*": "bench"},
+  "models": [
+    {"name": "bench", "mjcf": "imu_bench.xml", "position": [0, -20, 0]},
+    {"name": "room", "mjcf": "lidar_room.xml"},
+    {"name": "cam", "mjcf": "camera_bench.xml", "position": [0, 20, 0]}
+  ],
+  "sensors": [
+    {"type": "imu", "site": "bench/level_imu", "rateHz": 200,
+     "noise": {"gyro": {"noiseDensity": 0.01, "randomWalk": 0.001, "bias": [0.1, 0, 0]},
+               "accel": {"noiseDensity": 0.02, "biasStd": 0.05}}},
+    {"type": "imu", "site": "bench/tilt_imu", "rateHz": 200},
+    {"type": "lidar2d", "name": "room/scan", "entity": "room/base", "position": [0, 0, 0.1], "rotation": {"rpyDeg": [0, 0, 90]},
+     "angleMinDeg": -180, "angleMaxDeg": 179, "samples": 360, "rangeMin": 0.15, "rangeMax": 12, "rateHz": 10,
+     "noise": {"rangeStd": 0.01, "dropout": 0.05, "resolution": 0.001}},
+    {"type": "lidar2d", "name": "room/scan_a1", "entity": "room/base", "position": [0, 0, 0.1], "rotation": {"rpyDeg": [0, 0, 90]},
+     "angleMinDeg": -180, "angleMaxDeg": 179, "samples": 360, "rangeMin": 0.15, "rangeMax": 12, "rateHz": 10,
+     "noise": {"preset": "rplidar_a1m8"}},
+    {"type": "camera", "camera": "cam/eye", "width": 160, "height": 120, "rateHz": 30, "segmentation": true,
+     "noise": {"depthStd": 0.001, "depthStdQuadratic": 0.002, "dropout": 0.01, "pixelStd": 3}}
+  ],
+  "view": {"camera": {"position": [-6, -2, 5], "target": [0, 0, 0.5]}}
+}

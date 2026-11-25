@@ -1,6 +1,8 @@
 // 场景文件读取与校验（M2-05，M2-01 设计第 3 节）。nlohmann/json 只在本文件中使用，不进入公共头。
 
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -275,9 +277,134 @@ void readControllers(Reader& r, const Json& v, std::vector<PdControllerSpec>& ou
     }
 }
 
+// ---- 传感器噪声（M4-09）----
+
+#ifndef TERRA_SENSOR_PRESETS
+#define TERRA_SENSOR_PRESETS ""
+#endif
+
+// 雷达预设文件：环境变量 TERRA_SENSOR_PRESETS 优先，否则为构建时写入的 assets/sensors/lidar_presets.json
+std::string presetFile() {
+    if (const char* env = std::getenv("TERRA_SENSOR_PRESETS"); env != nullptr && *env != '\0') return env;
+    return TERRA_SENSOR_PRESETS;
+}
+
+// 非负的噪声参数（可给上限）
+void noiseNumber(Reader& r, const Json& j, const std::string& where, const char* key, double& target, double max = -1.0) {
+    if (!j.contains(key)) return;
+    const auto d = r.number(j[key], where + "/" + key);
+    if (!d) return;
+    if (*d < 0.0 || (max >= 0.0 && *d > max)) {
+        r.error(where + "/" + key, max >= 0.0 ? "应在 0 到 " + std::to_string(max) + " 之间" : std::string{"不能为负"});
+        return;
+    }
+    target = *d;
+}
+
+void noiseEnabled(Reader& r, const Json& j, const std::string& where, bool& target) {
+    if (!j.contains("enabled")) return;
+    if (const auto b = r.boolean(j["enabled"], where + "/enabled")) target = *b;
+}
+
+void readImuAxis(Reader& r, const Json& j, const std::string& where, ImuNoiseAxis& a) {
+    if (!r.object(j, where, {"noiseDensity", "randomWalk", "bias", "biasStd"})) return;
+    noiseNumber(r, j, where, "noiseDensity", a.noiseDensity);
+    noiseNumber(r, j, where, "randomWalk", a.randomWalk);
+    noiseNumber(r, j, where, "biasStd", a.biasStd);
+    if (j.contains("bias")) {
+        double b[3] = {0, 0, 0};
+        if (r.numbers(j["bias"], where + "/bias", 3, b)) a.bias = {b[0], b[1], b[2]};
+    }
+}
+
+void readImuNoise(Reader& r, const Json& j, const std::string& where, ImuNoise& n) {
+    if (!r.object(j, where, {"enabled", "gyro", "accel"})) return;
+    n.configured = true;
+    noiseEnabled(r, j, where, n.enabled);
+    if (j.contains("gyro")) readImuAxis(r, j["gyro"], where + "/gyro", n.gyro);
+    if (j.contains("accel")) readImuAxis(r, j["accel"], where + "/accel", n.accel);
+}
+
+void readLidarNoise(Reader& r, const Json& j, const std::string& where, LidarNoise& n) {
+    if (!r.object(j, where, {"enabled", "preset", "rangeStd", "rangeStdRelative", "dropout", "resolution"})) return;
+    n.configured = true;
+    noiseEnabled(r, j, where, n.enabled);
+    if (j.contains("preset")) {
+        if (const auto name = r.string(j["preset"], where + "/preset")) {
+            n.preset = *name;
+            const std::string file = presetFile();
+            std::ifstream in(file, std::ios::binary);
+            const Json presets = in ? Json::parse(in, nullptr, false) : Json{};
+            if (presets.is_discarded() || !presets.is_object() || !presets.contains("presets") || !presets["presets"].is_object()) {
+                r.error(where + "/preset", "无法读取雷达预设文件：" + (file.empty() ? std::string{"（未设置）"} : file));
+            } else if (!presets["presets"].contains(*name)) {
+                std::string list;
+                for (auto it = presets["presets"].begin(); it != presets["presets"].end(); ++it) list += (list.empty() ? "" : "、") + it.key();
+                r.error(where + "/preset", "没有雷达预设“" + *name + "”（可用：" + list + "）");
+            } else {
+                const Json& p = presets["presets"][*name];
+                if (p.contains("noise") && p["noise"].is_object()) {
+                    const Json& v = p["noise"];
+                    const std::string pw = where + "/preset(" + *name + ")";
+                    noiseNumber(r, v, pw, "rangeStd", n.rangeStd);
+                    noiseNumber(r, v, pw, "rangeStdRelative", n.rangeStdRelative);
+                    noiseNumber(r, v, pw, "dropout", n.dropout, 1.0);
+                    noiseNumber(r, v, pw, "resolution", n.resolution);
+                }
+            }
+        }
+    }
+    // 显式写的字段覆盖预设
+    noiseNumber(r, j, where, "rangeStd", n.rangeStd);
+    noiseNumber(r, j, where, "rangeStdRelative", n.rangeStdRelative);
+    noiseNumber(r, j, where, "dropout", n.dropout, 1.0);
+    noiseNumber(r, j, where, "resolution", n.resolution);
+}
+
+void readCameraNoise(Reader& r, const Json& j, const std::string& where, CameraNoise& n) {
+    if (!r.object(j, where, {"enabled", "depthStd", "depthStdQuadratic", "dropout", "pixelStd"})) return;
+    n.configured = true;
+    noiseEnabled(r, j, where, n.enabled);
+    noiseNumber(r, j, where, "depthStd", n.depthStd);
+    noiseNumber(r, j, where, "depthStdQuadratic", n.depthStdQuadratic);
+    noiseNumber(r, j, where, "dropout", n.dropout, 1.0);
+    noiseNumber(r, j, where, "pixelStd", n.pixelStd, 255.0);
+}
+
+void readNoiseSettings(Reader& r, const Json& j, NoiseSettings& n) {
+    if (!r.object(j, "/noise", {"seed", "enabled"})) return;
+    if (j.contains("seed")) {
+        if (!j["seed"].is_number_unsigned() && !(j["seed"].is_number_integer() && j["seed"].get<long long>() >= 0)) {
+            r.error("/noise/seed", "种子应为非负整数");
+        } else {
+            n.seed = j["seed"].get<std::uint64_t>();
+        }
+    }
+    noiseEnabled(r, j, "/noise", n.enabled);
+}
+
+void readLabels(Reader& r, const Json& j, std::vector<std::pair<std::string, std::string>>& out) {
+    if (!j.is_object()) {
+        r.error("/labels", "应为对象（实体全名、实例名或带 * 的前缀 → 类别名）");
+        return;
+    }
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const std::string key = it.key();
+        const std::size_t star = key.find('*');
+        if (key.empty() || (star != std::string::npos && star + 1 != key.size())) {
+            r.error("/labels/" + key, "写法应为实体全名、实例名，或以 * 结尾的前缀（如 “go2/*”）");
+            continue;
+        }
+        if (const auto v = r.string(it.value(), "/labels/" + key)) {
+            if (v->empty()) r.error("/labels/" + key, "类别名为空");
+            else out.emplace_back(key, *v);
+        }
+    }
+}
+
 // 一个 IMU（M4-02）
 void readImu(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
-    if (!r.object(item, where, {"type", "name", "site", "entity", "position", "rotation", "rateHz"})) return;
+    if (!r.object(item, where, {"type", "name", "site", "entity", "position", "rotation", "rateHz", "noise"})) return;
     const bool hasSite = item.contains("site");
     const bool hasEntity = item.contains("entity");
     if (hasSite == hasEntity) {
@@ -303,7 +430,7 @@ void readImu(Reader& r, const Json& item, const std::string& where, SensorSpec& 
 // 一个相机（M4-03）
 void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
     if (!r.object(item, where, {"type", "name", "camera", "entity", "position", "rotation", "width", "height", "fovyDeg", "near",
-                                "far", "rateHz", "rgb", "depth", "displayRotationDeg"})) {
+                                "far", "rateHz", "rgb", "depth", "displayRotationDeg", "segmentation", "noise"})) {
         return;
     }
     const bool hasCamera = item.contains("camera");
@@ -354,6 +481,9 @@ void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpe
         if (const auto b = r.boolean(item["depth"], where + "/depth")) s.depth = *b;
     }
     if (!s.rgb && !s.depth) r.error(where, "rgb 与 depth 不能都关闭");
+    if (item.contains("segmentation")) {  // M4-09
+        if (const auto b = r.boolean(item["segmentation"], where + "/segmentation")) s.segmentation = *b;
+    }
     if (item.contains("displayRotationDeg")) {
         if (const auto n = r.integer(item["displayRotationDeg"], where + "/displayRotationDeg")) {
             if (*n == 0 || *n == 90 || *n == 180 || *n == 270) s.displayRotationDegrees = static_cast<int>(*n);
@@ -365,7 +495,7 @@ void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpe
 // 一个 2D 激光雷达（M4-03b）
 void readLidar(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
     if (!r.object(item, where, {"type", "name", "entity", "position", "rotation", "angleMinDeg", "angleMaxDeg", "samples", "rangeMin",
-                                "rangeMax", "rateHz", "hits"})) {
+                                "rangeMax", "rateHz", "hits", "noise"})) {
         return;
     }
     if (!item.contains("entity")) {
@@ -440,6 +570,11 @@ void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
                 if (*d > 0) s.rateHz = *d;
                 else r.error(where + "/rateHz", "频率必须大于 0");
             }
+        }
+        if (item.contains("noise")) {  // M4-09
+            if (s.type == "imu") readImuNoise(r, item["noise"], where + "/noise", s.imuNoise);
+            else if (s.type == "camera") readCameraNoise(r, item["noise"], where + "/noise", s.cameraNoise);
+            else readLidarNoise(r, item["noise"], where + "/noise", s.lidarNoise);
         }
         if (!s.name.empty() && !names.insert(s.name).second) r.error(where + "/name", "传感器名“" + s.name + "”重复");
         out.push_back(std::move(s));
@@ -526,7 +661,7 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     doc.path = path.string();
     doc.directory = path.parent_path().string();
     if (r.object(root, "", {"format", "version", "name", "title", "physics", "models", "visuals", "view", "initialKeyframe",
-                            "controllers", "sensors"})) {
+                            "controllers", "sensors", "noise", "labels"})) {
         if (!root.contains("format")) {
             r.error("", "缺少 format（应为 “terra.scene”）");
         } else if (const auto s = r.string(root["format"], "/format"); s && *s != "terra.scene") {
@@ -555,6 +690,8 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
         if (root.contains("view")) readView(r, root["view"], doc.view);
         if (root.contains("controllers")) readControllers(r, root["controllers"], doc.controllers);
         if (root.contains("sensors")) readSensors(r, root["sensors"], doc.sensors);
+        if (root.contains("noise")) readNoiseSettings(r, root["noise"], doc.noise);  // M4-09
+        if (root.contains("labels")) readLabels(r, root["labels"], doc.labels);    // M4-09
         if (root.contains("initialKeyframe")) {
             if (const auto k = r.string(root["initialKeyframe"], "/initialKeyframe")) {
                 if (k->empty()) r.error("/initialKeyframe", "关键帧名为空（从模型初值开始时省略此字段）");

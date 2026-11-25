@@ -12,3 +12,5 @@ add_library(terra::scene ALIAS terra_scene)
 target_include_directories(terra_scene PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(terra_scene PUBLIC terra::physics terra::data PRIVATE terra::json)
 terra_configure_target(terra_scene)
+# M4-09：雷达噪声预设（环境变量 TERRA_SENSOR_PRESETS 可另指定）
+target_compile_definitions(terra_scene PRIVATE TERRA_SENSOR_PRESETS="${PROJECT_SOURCE_DIR}/assets/sensors/lidar_presets.json")

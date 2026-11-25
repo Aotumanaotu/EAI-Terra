@@ -422,6 +422,12 @@ void testSimulationSettings() {
         check(back.settings.ui.libraryLocation == "/data/terra-library" && back.warnings.empty() && back.settings == custom, "资源库位置往返");
         const auto bad = st::fromJson(R"({"version": 3, "interface": {"libraryLocation": 5}})");
         check(bad.settings.ui.libraryLocation.empty() && contains(bad.warnings, "interface.libraryLocation"), "资源库位置不是字符串：警告");
+        // M4-08d：每个场景上次使用的显示配置
+        st::Settings withDisplays;
+        withDisplays.ui.sceneDisplays["/s/a.terra-scene.json"] = "/lib/displays/a/默认.terviz";
+        const auto displaysBack = st::fromJson(st::toJson(withDisplays));
+        check(displaysBack.settings == withDisplays && displaysBack.settings.ui.sceneDisplays.size() == 1 && displaysBack.warnings.empty(),
+              "场景的显示配置往返");
     }
 
     // 最近打开的场景

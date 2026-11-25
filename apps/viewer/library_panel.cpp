@@ -37,6 +37,7 @@ ImU32 kindColor(lib::AssetKind kind) {
         case lib::AssetKind::Motion: return rgba(156, 110, 220);
         case lib::AssetKind::Robot: return rgba(70, 140, 230);
         case lib::AssetKind::Environment: return rgba(220, 110, 170);
+        case lib::AssetKind::Display: return rgba(60, 150, 200);
     }
     return rgba(130, 130, 140);
 }
@@ -96,6 +97,11 @@ void drawAssetIcon(ImDrawList* dl, ImVec2 a, float s, lib::AssetKind kind, bool 
         case lib::AssetKind::Environment: {  // 太阳与地平线
             dl->AddCircleFilled(at(8.0f, 8.0f), 3.0f * u, w);
             dl->AddRectFilled(at(2.0f, 10.5f), at(14.0f, 12.0f), w, 0.5f * u);
+            break;
+        }
+        case lib::AssetKind::Display: {  // 两个窗口
+            dl->AddRectFilled(at(2.5f, 3.5f), at(9.5f, 9.5f), w, 0.8f * u);
+            dl->AddRectFilled(at(6.5f, 7.0f), at(13.5f, 13.0f), rgba(255, 255, 255, 170), 0.8f * u);
             break;
         }
     }
@@ -185,6 +191,9 @@ CardInfo describe(const lib::AssetEntry& a, const std::map<std::string, int>& mo
     if (a.kind == lib::AssetKind::Scene) {
         if (const auto it = motionCounts.find(a.path); it != motionCounts.end()) {
             info.chips.emplace_back(std::to_string(it->second) + tr(TextId::LibraryTagMotions), rgba(120, 84, 176));
+        }
+        if (const auto it = motionCounts.find("display:" + a.path); it != motionCounts.end()) {  // M4-08d：显示配置的份数
+            info.chips.emplace_back(std::to_string(it->second) + tr(TextId::LibraryTagDisplays), rgba(50, 120, 160));
         }
     }
     if (a.kind == lib::AssetKind::Robot) info.chips.emplace_back(std::to_string(a.related.size()) + tr(TextId::LibraryTagScenes), rgba(70, 104, 150));
@@ -288,6 +297,16 @@ std::optional<LibraryAction> card(LibraryPanelState& st, const LibraryContext& c
         if (ImGui::MenuItem(tr(a.favorite ? TextId::LibraryUnfavorite : TextId::LibraryFavorite))) {
             action = LibraryAction{LibraryAction::Type::ToggleFavorite, a.kind, a.path, a.importDirectory, !a.favorite};
         }
+        if (a.kind == lib::AssetKind::Scene) {  // M4-08d：直接以某一份显示配置打开
+            bool first = true;
+            for (const auto& d : *ctx.assets) {
+                if (d.kind != lib::AssetKind::Display || d.hidden || d.related.empty() || d.related[0] != a.path) continue;
+                if (first) ImGui::Separator();
+                first = false;
+                const std::string text = std::string{tr(TextId::LibraryOpenDisplay)} + d.title;
+                if (ImGui::MenuItem(text.c_str())) action = LibraryAction{LibraryAction::Type::OpenDisplay, lib::AssetKind::Display, d.path, {}, false};
+            }
+        }
         if (a.kind == lib::AssetKind::Robot) {
             ImGui::Separator();
             for (const auto& scene : a.related) {
@@ -319,6 +338,7 @@ std::map<std::string, int> motionCountsOf(const LibraryContext& ctx) {
     std::map<std::string, int> counts;
     for (const auto& a : *ctx.assets) {
         if (a.kind == lib::AssetKind::Motion && !a.hidden && !a.related.empty()) ++counts[a.related[0]];
+        if (a.kind == lib::AssetKind::Display && !a.hidden && !a.related.empty()) ++counts["display:" + a.related[0]];
     }
     return counts;
 }

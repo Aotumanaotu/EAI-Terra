@@ -95,17 +95,20 @@
   "format": "terra.viz",
   "version": 1,
   "name": "导航调试",
-  "scene": "../../scenes/robots/turtlebot4.terra-scene.json",
+  "scene": "../../../scenes/robots/turtlebot4.terra-scene.json",
   "windows": [
     {"type": "topics"},
-    {"type": "message", "topic": "/odom"},
-    {"type": "plot", "title": "角速度", "timeBase": "receive", "seconds": 10,
-     "series": [{"source": "ros2", "topic": "/imu", "field": "angular_velocity.z"},
-                {"source": "sim", "sensor": "turtlebot4/imu", "field": "gyro.z"}]},
-    {"type": "image", "topic": "/oakd/stereo/image_raw", "depthRange": [0.2, 5.0]},
+    {"type": "message", "topic": "/odom", "params": {"pageSize": 100}},
+    {"type": "plot", "title": "角速度",
+     "params": {"seconds": 10, "timeBase": "receive", "yRange": "auto",
+                "series": [{"source": "ros2", "topic": "/imu", "field": "angular_velocity.z"},
+                           {"source": "sim", "sensor": "turtlebot4/imu", "field": "gyro.z"}]},
+     "placement": {"position": [0.62, 0.08], "size": [0.3, 0.25], "docked": false}},
+    {"type": "image", "topic": "/oakd/stereo/image_raw", "params": {"depthRange": [0.2, 5.0], "colormap": "turbo", "fit": "fit"}},
     {"type": "tf"}
   ],
-  "placement": {"<窗口 ID>": {"position": [0.62, 0.08], "size": [0.3, 0.25], "docked": false}}
+  "overlays": [],
+  "extensions": {}
 }
 ```
 
@@ -182,7 +185,7 @@
 | 监视器 | `engine/ros2/{include/terra/ros2/monitor.hpp,src/monitor.cpp,src/introspection.cpp}` | 节点、执行器线程、图信息、通用订阅、运行时展开、频率与带宽统计、字段取值（路径如 `position[3]`） |
 | 显示配置 | `engine/viz/`（新，**不依赖 ROS2**） | `.terviz` 的读写与校验（保留不认识的内容）；导出器接口与注册表；`.terviz`、`.rviz` 两个导出器。没有 ROS2 的构建也能测试 |
 | 资源库 | `engine/library` | 资产新类型“显示配置”（`kind = display`）；扫描 `displays/` |
-| 图像解码 | `engine/render`（stb 只允许在这里） | 新增 JPEG / PNG 解码函数，供 `CompressedImage` 使用 |
+| 图像解码 | `engine/render`（stb 只允许在这里） | 沿用已有的 `decodeImage`（glTF 贴图用的 JPEG / PNG 解码），由查看器交给监视器 |
 | 共用控件 | `apps/viewer/plot_view.*`、`image_view.*` | 传感器面板改用它们 |
 | 查看器 | `apps/viewer/ros2_panel.*` | 面板、各窗口、显示配置的保存 / 恢复、导出弹窗；`--ros2-panel-self-test` |
 
@@ -192,7 +195,6 @@
 | --- | --- | --- |
 | `viz.config` | 都有 | `.terviz` 往返与严格校验；不认识的参数与窗口原样保留；导出器的参数清单与默认值；`.rviz` 生成（固定输入 → 与期望文本一致；Python 的 yaml 能读入，结构与 RViz2 的格式一致）；“未导出的部分”清单 |
 | `library.assets`（扩充） | 都有 | 显示配置登记、关联场景 |
-| `render.image_decode` | 渲染 | JPEG / PNG 解码（小图案逐像素） |
 | `ros2.monitor` | ROS2 | 用 Python 节点发布已知内容：<br>· 话题列表与类型；<br>· 频率（100 Hz ± 5%）；<br>· `Imu`、`JointState`、`LaserScan` 逐字段一致；<br>· 宇树 `LowState` 展开 35 个电机；<br>· `Image` 与 `CompressedImage` 像素；<br>· `/tf` 与 `/tf_static` 建树；<br>· 类型库缺失时报“无法解析” |
 | `graphics.viewer_ros2_panel_selftest` | ROS2 | 查看器打开传感器夹具场景并开启桥接：<br>· 面板列出桥接发布的话题；<br>· 打开 `/…/imu` 的消息窗口，加入曲线；<br>· 打开相机图像；<br>· TF 树有世界与传感器坐标系；<br>· 保存显示配置后重开场景，窗口恢复；<br>· 导出 `.terviz` 与 `.rviz` |
 | 变异（约 8 个） | — | 例如：<br>· 频率按条数而不是时间计算；<br>· 数组越界取值；<br>· 16UC1 未换算毫米；<br>· 恢复时漏掉曲线；<br>· `.rviz` 漏掉固定坐标系 |

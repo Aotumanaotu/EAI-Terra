@@ -13,6 +13,9 @@
 //     与 glTF 中的摆放重合。渲染侧再乘 glTF 的 Y→Z 换算与节点变换（node：节点子树相对节点；assembly：节点世界变换）。
 // 静态部件（属于世界）的 T_世界_实体 为单位变换。
 
+#include <array>
+#include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -78,6 +81,47 @@ struct PdAssignment {
 //   逆时针为正（与 sensor_msgs/LaserScan 一致）。angleMinDeg、angleMaxDeg（默认 −180、180）、samples（默认 360，
 //   第一束在 angleMin，最后一束在 angleMax）、rangeMin、rangeMax（默认 0.15、12 m）、rateHz（默认 10）、
 //   hits（"collision" 默认，只打参与碰撞的几何体；"visual" 只打默认显示的几何体）。
+// ---- 传感器噪声（M4-09，设计稿第 2 节）----
+// 不写即为 0（不加该项噪声）；enabled = false 时保留参数但不加（用户评审时的要求：噪声可以关闭）。
+struct ImuNoiseAxis {
+    double noiseDensity = 0.0;  // 白噪声密度（陀螺 rad/s/√Hz，加速度计 m/s²/√Hz）；单个样本 σ = 密度 × √频率
+    double randomWalk = 0.0;    // 零偏随机游走（陀螺 rad/s²/√Hz，加速度计 m/s³/√Hz）；每个样本零偏走 σ × √Δt
+    std::array<double, 3> bias{0.0, 0.0, 0.0};  // 固定的初始零偏
+    double biasStd = 0.0;                       // 初始零偏另按此标准差随机取（与种子有关）
+};
+
+struct ImuNoise {
+    bool configured = false;
+    bool enabled = true;
+    ImuNoiseAxis gyro;
+    ImuNoiseAxis accel;
+};
+
+struct LidarNoise {
+    bool configured = false;
+    bool enabled = true;
+    std::string preset;              // 来自 assets/sensors/lidar_presets.json（显式字段覆盖预设）
+    double rangeStd = 0.0;           // 米
+    double rangeStdRelative = 0.0;   // 与距离成正比的部分：σ = rangeStd + rangeStdRelative × 距离
+    double dropout = 0.0;            // 每束丢失的概率（丢失为 inf）
+    double resolution = 0.0;         // 距离量化（米）；0 为不量化
+};
+
+struct CameraNoise {
+    bool configured = false;
+    bool enabled = true;
+    double depthStd = 0.0;           // 米
+    double depthStdQuadratic = 0.0;  // σ = depthStd + depthStdQuadratic × z²（1/米）
+    double dropout = 0.0;            // 深度像素丢失的概率（丢失为 inf）
+    double pixelStd = 0.0;           // RGB 每个通道的高斯噪声（0–255）
+};
+
+// 场景级的噪声设置
+struct NoiseSettings {
+    std::uint64_t seed = 0;
+    bool enabled = true;
+};
+
 struct SensorSpec {
     std::string type;
     std::string name;
@@ -96,6 +140,7 @@ struct SensorSpec {
     bool rgb = true;
     bool depth = true;
     int displayRotationDegrees = 0;  // M4-04：只影响显示
+    bool segmentation = false;       // M4-09：输出分割图（每个像素的实体 ID）
     // 2D 激光雷达（M4-03b）
     double angleMinDegrees = -180.0;
     double angleMaxDegrees = 180.0;
@@ -103,6 +148,10 @@ struct SensorSpec {
     double rangeMin = 0.15;
     double rangeMax = 12.0;
     bool hitVisual = false;
+    // M4-09：噪声（按类型取其一）
+    ImuNoise imuNoise;
+    LidarNoise lidarNoise;
+    CameraNoise cameraNoise;
 };
 
 // 启用的 2D 激光雷达（M4-03b）。读数由物理侧的射线检测给出（不需要图形，Headless 也可用）。
@@ -117,6 +166,7 @@ struct LidarSensor {
     double rangeMax = 12.0;        // m
     double rateHz = 10.0;          // 不高于物理频率
     bool hitVisual = false;
+    LidarNoise noise;  // M4-09
     std::string where;
 };
 
@@ -134,6 +184,8 @@ struct CameraSensor {
     bool rgb = true;
     bool depth = true;
     int displayRotation = 0;  // M4-04：显示时逆时针旋转的角度（0、90、180、270），数据不变
+    bool segmentation = false;  // M4-09：输出分割图
+    CameraNoise noise;          // M4-09
     std::string where;
 };
 
@@ -141,6 +193,7 @@ struct CameraSensor {
 struct SensorConfig {
     terra::data::SensorId sensor;
     double rateHz = 0.0;  // 实际采用的频率（Hz），不高于物理频率
+    ImuNoise noise;       // M4-09：场景文件中同名的 IMU 给出的噪声
 };
 
 struct SceneDocument {
@@ -156,6 +209,9 @@ struct SceneDocument {
     std::string initialKeyframe;
     std::vector<PdControllerSpec> controllers;  // M3-04
     std::vector<SensorSpec> sensors;            // M4-02
+    NoiseSettings noise;                        // M4-09：场景级的噪声设置（种子、总开关）
+    // M4-09：分割图的语义类别：实体全名或模型实例名的通配（“go2/*”、“floor”）→ 类别名
+    std::vector<std::pair<std::string, std::string>> labels;
 };
 
 struct ParseResult {

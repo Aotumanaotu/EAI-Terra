@@ -227,6 +227,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
     for (const td::SensorDescription& s : d.sensors) {
         SensorConfig config{s.id, physicsRate};
         for (const SensorSpec& spec : document.sensors) {
+            if (spec.name == s.name && spec.type == "imu") config.noise = spec.imuNoise;  // M4-09
             if (spec.name != s.name || !spec.rateHz) continue;
             config.rateHz = *spec.rateHz;
             if (config.rateHz > physicsRate) {
@@ -294,6 +295,8 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         camera.rgb = spec.rgb;
         camera.depth = spec.depth;
         camera.displayRotation = spec.displayRotationDegrees;
+        camera.segmentation = spec.segmentation;  // M4-09
+        camera.noise = spec.cameraNoise;
         camera.rateHz = spec.rateHz.value_or(30.0);
         if (camera.rateHz > physicsRate) {
             out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",
@@ -335,6 +338,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         lidar.rangeMin = spec.rangeMin;
         lidar.rangeMax = spec.rangeMax;
         lidar.hitVisual = spec.hitVisual;
+        lidar.noise = spec.lidarNoise;  // M4-09
         lidar.rateHz = spec.rateHz.value_or(10.0);
         if (lidar.rateHz > physicsRate) {
             out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",

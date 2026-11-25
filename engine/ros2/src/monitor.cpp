@@ -27,7 +27,6 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
 
-#include "runtime.hpp"
 
 namespace terra::ros2 {
 
@@ -295,7 +294,8 @@ std::string qosText(const rclcpp::QoS& q) {
     std::string s = q.reliability() == rclcpp::ReliabilityPolicy::BestEffort ? "best effort" : "reliable";
     s += q.durability() == rclcpp::DurabilityPolicy::TransientLocal ? " · transient local" : " · volatile";
     if (q.history() == rclcpp::HistoryPolicy::KeepAll) s += " · keep all";
-    else s += " · keep last " + std::to_string(q.depth());
+    else if (q.depth() > 0) s += " · keep last " + std::to_string(q.depth());
+    else s += " · keep last";  // 从图中查到的发布者 QoS 不含深度（DDS 发现不传递），不显示 0
     return s;
 }
 
@@ -434,6 +434,9 @@ struct Monitor::Impl {
 
     Clock::time_point start = Clock::now();
     ImageDecoder decoder = nullptr;
+    // 自己的 rclcpp 上下文（M4-08d 第一次基线运行：与桥接共用默认上下文时，同一进程内桥接发布的消息通用订阅收不到；
+    // 独立的上下文即独立的 DDS 参与者，与跨进程相同）
+    rclcpp::Context::SharedPtr context;
     rclcpp::Node::SharedPtr node;
     std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor;
     std::thread spinner;
@@ -640,24 +643,30 @@ Monitor::~Monitor() {
     impl_->graphTimer.reset();
     impl_->executor.reset();
     impl_->node.reset();
-    releaseRclcpp();
+    if (impl_->context && impl_->context->is_valid()) impl_->context->shutdown("terra monitor closed");
 }
 
 std::unique_ptr<Monitor> Monitor::create(std::string& error, ImageDecoder decoder) {
     auto impl = std::make_unique<Impl>();
     impl->decoder = decoder;
-    acquireRclcpp();
     try {
-        impl->node = std::make_shared<rclcpp::Node>("terra_monitor_" + std::to_string(::getpid()));
+        impl->context = std::make_shared<rclcpp::Context>();
+        impl->context->init(0, nullptr, rclcpp::InitOptions());
+        rclcpp::NodeOptions nodeOptions;
+        nodeOptions.context(impl->context);
+        impl->node = std::make_shared<rclcpp::Node>("terra_monitor_" + std::to_string(::getpid()), nodeOptions);
         Impl* self = impl.get();
         impl->graphTimer = impl->node->create_wall_timer(std::chrono::seconds(1), [self] { self->refreshGraph(); });
-        impl->executor = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+        rclcpp::ExecutorOptions executorOptions;
+        executorOptions.context = impl->context;
+        impl->executor = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(executorOptions);
         impl->executor->add_node(impl->node);
         rclcpp::executors::SingleThreadedExecutor* executor = impl->executor.get();
         std::atomic<bool>* stopping = &impl->stopping;
-        impl->spinner = std::thread([executor, stopping, self] {
+        rclcpp::Context* context = impl->context.get();
+        impl->spinner = std::thread([executor, stopping, self, context] {
             self->refreshGraph();  // 启动时先刷新一次
-            while (!*stopping && rclcpp::ok()) executor->spin_once(std::chrono::milliseconds(20));
+            while (!*stopping && context->is_valid()) executor->spin_once(std::chrono::milliseconds(20));
         });
     } catch (const std::exception& e) {
         error = std::string{"ROS2 监视器创建失败："} + e.what();
@@ -666,7 +675,7 @@ std::unique_ptr<Monitor> Monitor::create(std::string& error, ImageDecoder decode
         impl->graphTimer.reset();
         impl->executor.reset();
         impl->node.reset();
-        releaseRclcpp();
+        if (impl->context && impl->context->is_valid()) impl->context->shutdown("terra monitor failed");
         return nullptr;
     }
     return std::unique_ptr<Monitor>(new Monitor(std::move(impl)));

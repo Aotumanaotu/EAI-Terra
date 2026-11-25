@@ -24,7 +24,7 @@ enum class LibraryTab { Scenes, Motions, Robots };
 enum class LibraryFilter { All, Favorites, Recent, Builtin, Imported };
 
 struct LibraryAction {
-    enum class Type { Open, ToggleFavorite, Hide, UnhideAll, CopyPath, Reveal, Reimport, ExportPack, Rescan };
+    enum class Type { Open, ToggleFavorite, Hide, UnhideAll, CopyPath, Reveal, Reimport, ExportPack, Rescan, OpenDisplay };  // OpenDisplay：M4-08d
     Type type = Type::Open;
     terra::library::AssetKind kind = terra::library::AssetKind::Scene;
     std::string path;             // Open：要打开的场景或动作（机器人为选中的场景）；其他：条目的路径

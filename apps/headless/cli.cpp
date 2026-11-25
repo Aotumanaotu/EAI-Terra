@@ -184,8 +184,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
                 result.error = "重复的参数 --kind";
                 return result;
             }
-            if (*value != "scene" && *value != "motion" && *value != "robot" && *value != "environment") {
-                result.error = "--kind 应为 scene、motion、robot 或 environment，实际为 " + quoted(*value);
+            if (*value != "scene" && *value != "motion" && *value != "robot" && *value != "environment" && *value != "display") {
+                result.error = "--kind 应为 scene、motion、robot、environment 或 display，实际为 " + quoted(*value);
                 return result;
             }
             options.assetKind = std::string{*value};
@@ -359,7 +359,7 @@ std::string usageText() {
            "  terra_headless ... [--record <记录文件>]          （与 --scene 或 --motion 组合：写出实验记录）\n"
            "  terra_headless --rerun <记录文件> [--tolerance 位置,姿态]\n"
            "  terra_headless --list-records [--scene <场景文件>] [--library <库文件>]\n"
-           "  terra_headless --list-assets [--kind scene|motion|robot|environment] [--library <库文件>]\n"
+           "  terra_headless --list-assets [--kind scene|motion|robot|environment|display] [--library <库文件>]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
@@ -379,7 +379,7 @@ std::string usageText() {
            "  --list-assets        扫描内置资产目录与资源库目录下的 assets/（M4-08c，增量），先输出一行 {\"type\":\"asset_scan\",...}，\n"
            "                       再每行一个 {\"type\":\"asset\",...}（不含文件缺失的）。没有给 --library 且默认位置还没有库文件时\n"
            "                       只在内存中扫描，不新建库文件\n"
-           "  --kind <类型>        与 --list-assets 同用：只列出 scene、motion、robot 或 environment\n"
+           "  --kind <类型>        与 --list-assets 同用：只列出 scene、motion、robot、environment 或 display（显示配置）\n"
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"

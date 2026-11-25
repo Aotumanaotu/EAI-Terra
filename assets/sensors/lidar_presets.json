@@ -1,0 +1,47 @@
+{
+  "format": "terra.lidar-presets",
+  "version": 1,
+  "note": "M4-09：2D 激光雷达的噪声预设。datasheet 为数据手册原文的数值与出处（2026-11-25 查阅）；noise 为换算出的噪声参数，assumption 写明换算假设。数据手册的数值在白色目标、标准条件下测得，实际环境误差更大。场景文件中显式写的噪声字段覆盖预设。",
+  "presets": {
+    "rplidar_a1m8": {
+      "name": "SLAMTEC RPLIDAR A1M8（TurtleBot 4 所用，三角测距）",
+      "datasheet": {
+        "source": "SLAMTEC RPLIDAR A1M8 数据手册 v2.1（2018-02-05），https://cdn-shop.adafruit.com/product-files/4010/4010_datasheet.pdf ；官方地址 http://bucket.download.slamtec.com/b90ae0a89feba3756bc5aaa0654c296dc76ba3ff/LD108_SLAMTEC_rplidar_datasheet_A1M8_v2.2_en.pdf",
+        "distanceRange": "0.15-12 m（A1M8-R5 起，白色物体；A1M8-R4 及以前 0.15-6 m）",
+        "distanceResolution": "<0.5 mm（1.5 m 以内）；全量程 <1% of the distance",
+        "angularRange": "0-360°",
+        "sampleFrequency": "8010 Hz（采样时长 0.125 ms）",
+        "scanRate": "1-10 Hz，典型 5.5 Hz（每圈 360 个采样时）"
+      },
+      "noise": {"resolution": 0.0005, "rangeStdRelative": 0.003333},
+      "assumption": "手册只给距离分辨率，没有给标准差：resolution 取 0.5 mm；把“全量程 <1% of the distance”视为 ±3σ 的上界，rangeStdRelative = 0.01 / 3"
+    },
+    "hokuyo_ust10lx": {
+      "name": "Hokuyo UST-10LX（飞行时间）",
+      "datasheet": {
+        "source": "北阳电机产品页 https://www.hokuyo-aut.jp/search/single.php?serial=167 ；规格书 https://www.hokuyo-aut.jp/dl/UST-10LX_Specification.pdf",
+        "detectionRange": "0.06-10 m（白色肯特纸）；0.06-4 m（漫反射率 10%）；最大检测距离 30 m",
+        "accuracy": "±40 mm（工厂标准测试条件，白色肯特纸）",
+        "repeatedAccuracy": "σ < 30 mm（同上条件）",
+        "angularResolution": "0.25°（检测角 270°）",
+        "scanSpeed": "25 ms（电机 2400 rpm，即 40 Hz）"
+      },
+      "noise": {"rangeStd": 0.03},
+      "assumption": "rangeStd 取手册直接给出的重复精度 σ 的上界 30 mm；±40 mm 的系统误差不建模"
+    },
+    "rplidar_s2": {
+      "name": "SLAMTEC RPLIDAR S2（直接飞行时间）",
+      "datasheet": {
+        "source": "SLAMTEC 参数页 https://www.slamtec.com/en/s2/spec",
+        "distanceRange": "0.05-30 m（90% 反射率）；0.05-10 m（10% 反射率）",
+        "accuracy": "±30 mm",
+        "distanceResolution": "13 mm",
+        "angularResolution": "0.1125°",
+        "sampleRate": "32000 次/秒",
+        "scanRate": "10 Hz"
+      },
+      "noise": {"rangeStd": 0.01, "resolution": 0.013},
+      "assumption": "手册只给精度范围，没有给标准差：把 ±30 mm 视为 ±3σ，rangeStd = 0.03 / 3；resolution 取距离分辨率 13 mm"
+    }
+  }
+}

@@ -16,6 +16,7 @@
 // 不依赖 ROS：xacro 用随 Terra 提供的官方实现（third_party/xacro，经 engine/import/tools/xacro_expand.py 调用，需要 python3）；
 // 网格转换调用 assimp 命令行工具（找不到时给出安装命令）。本模块不包含 MuJoCo 与图形头文件，检查时用调用方给的 WorldFactory。
 
+#include <array>
 #include <cstddef>
 #include <map>
 #include <optional>
@@ -62,6 +63,14 @@ struct ProposedSensor {
     bool optical = false;  // camera：连杆是光学坐标系（z 向前、y 向下）；否则按 ROS 机体约定（x 向前、z 向上）
     bool enabled = true;
     std::string reason;
+    std::string parameters;  // M4-08b：导入配方给出的其余字段（JSON 对象文本，覆盖默认参数）；空表示用默认值
+};
+
+// M4-08b：随机器人一起放进场景的其他模型（如房间），mjcf 为绝对路径
+struct ExtraModel {
+    std::string name;
+    std::string mjcf;
+    std::array<double, 3> position{0.0, 0.0, 0.0};
 };
 
 struct ImportOptions {
@@ -77,6 +86,12 @@ struct ImportOptions {
     double meshScale = 1.0;   // 对没有写 scale 的网格额外缩放（如毫米 → 米为 0.001）
     std::optional<bool> fixedBase;  // 空：自动（URDF 的根连杆为 world 时固定，否则为浮动基座）
     bool overwrite = false;   // 导入目录已存在时覆盖
+    // M4-08b：导入配方中的选择
+    std::map<std::string, std::string> jointTypes;   // 关节名 → 新类型（目前只支持 "fixed"）
+    std::vector<std::string> placeholderPackages;    // 只在 xacro 的文本中出现（如 Gazebo 插件参数）的包：给一个占位路径
+    std::vector<ExtraModel> extraModels;
+    std::optional<std::array<double, 3>> viewPosition;
+    std::optional<std::array<double, 3>> viewTarget;
 };
 
 struct ImportPlan {
@@ -92,7 +107,8 @@ struct ImportPlan {
     std::vector<ProposedSensor> sensors;
     bool fixedBase = false;
     std::size_t links = 0;
-    std::size_t joints = 0;  // 不含 fixed
+    std::size_t joints = 0;  // 不含 fixed（含配方改为 fixed 的关节）
+    std::map<std::string, std::string> jointTypes;  // M4-08b：生效的关节类型覆盖
     bool ok() const noexcept;  // 没有错误级别的问题
 };
 
@@ -110,6 +126,31 @@ struct ImportResult {
     std::vector<ImportIssue> issues;  // 分析与执行两个阶段的全部问题
     double settledHeight = 0.0;       // 检查：推进 1 s 后根连杆的高度（m）
 };
+
+// ---- 导入配方（M4-08b，*.terra-import.json：format "terra.import-recipe"、version 1，严格校验）----
+// 把导入时的选择写成文件，命令行（--recipe）与导入向导都能读；导入时把实际使用的选择写入导入目录的 import.terra-import.json。
+//   input（相对配方文件）、name、xacroArgs、packages（包名 → 目录，相对配方文件）、placeholderPackages、meshScale、fixedBase、
+//   joints（关节名 → "fixed"）、actuators（给出时替换提议：joint、type、gain、forceLimit、limited、rangeMin、rangeMax）、
+//   sensors（给出时替换提议：type、name、link、optical 与场景文件中该类传感器的其余字段）、
+//   extraModels（name、mjcf（相对配方文件）、position）、view（position、target）
+struct ImportRecipe {
+    std::string path;
+    ImportOptions options;
+    std::optional<std::vector<ProposedActuator>> actuators;
+    std::optional<std::vector<ProposedSensor>> sensors;
+};
+
+struct RecipeResult {
+    std::optional<ImportRecipe> recipe;
+    std::vector<std::string> errors;  // “JSON 指针：原因”
+};
+
+// base 提供配方中没有的选项（输出目录、xacro 与 assimp 的位置等）
+RecipeResult readRecipe(const std::string& path, const ImportOptions& base);
+// 按配方分析：analyze() 之后用配方中的执行器与传感器替换提议，并检查它们引用的关节与连杆
+ImportPlan analyzeRecipe(const ImportRecipe& recipe);
+// 把计划与选项写成配方（路径写成绝对路径）
+bool writeRecipe(const std::string& path, const ImportPlan& plan, const ImportOptions& options);
 
 // 按计划写出导入目录并检查（factory 用于加载生成的场景并推进 1 s；为空时不检查）
 ImportResult execute(const ImportPlan& plan, const ImportOptions& options, const terra::scene::WorldFactory& factory);

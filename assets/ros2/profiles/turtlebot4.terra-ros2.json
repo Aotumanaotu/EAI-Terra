@@ -1,0 +1,37 @@
+{
+  "format": "terra.ros2",
+  "version": 1,
+  "name": "TurtleBot 4 标准版（Humble）：与真机相同的话题名、坐标系与差速底盘",
+  "kind": "generic",
+  "clock": true,
+  "jointStatesHz": 50,
+  "tfHz": 50,
+  "sensors": true,
+  "commands": false,
+  "services": true,
+  "frames": {"stripPrefix": "turtlebot4/", "sensorsUseLinkFrames": true},
+  "topics": {
+    "/turtlebot4/rplidar/scan": "/scan",
+    "/turtlebot4/imu/imu": "/imu",
+    "/turtlebot4/oakd_rgb/image_raw": "/oakd/rgb/preview/image_raw",
+    "/turtlebot4/oakd_rgb/camera_info": "/oakd/rgb/preview/camera_info",
+    "/turtlebot4/oakd_stereo/depth/image_raw": "/oakd/stereo/image_raw",
+    "/turtlebot4/oakd_stereo/camera_info": "/oakd/stereo/camera_info"
+  },
+  "depthEncoding": "16UC1",
+  "diffDrive": {
+    "leftJoint": "turtlebot4/left_wheel_joint",
+    "rightJoint": "turtlebot4/right_wheel_joint",
+    "leftActuator": "turtlebot4/left_wheel_joint",
+    "rightActuator": "turtlebot4/right_wheel_joint",
+    "baseEntity": "turtlebot4/base_link",
+    "wheelRadius": 0.03575,
+    "wheelSeparation": 0.233,
+    "maxWheelSpeed": 8.6,
+    "cmdVel": "/cmd_vel",
+    "odom": "/odom",
+    "odomFrame": "odom",
+    "odomHz": 20,
+    "timeout": 0.5
+  }
+}

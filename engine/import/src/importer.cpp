@@ -215,7 +215,7 @@ void proposeSensors(const dt::UrdfModel& m, ImportPlan& plan) {
     const auto none = [](const std::string&) { return 0; };
     const std::string lidar = pick({"lidar", "laser", "scan", "lds"}, none);
     if (!lidar.empty()) {
-        plan.sensors.push_back({"lidar2d", lidar, "scan", false, true, "连杆名“" + lidar + "”像激光雷达：提议 2D 激光雷达（360 束、0.12～12 m、10 Hz）"});
+        plan.sensors.push_back({"lidar2d", lidar, "scan", false, true, "连杆名“" + lidar + "”像激光雷达：提议 2D 激光雷达（360 束、0.12～12 m、10 Hz）", {}});
     }
     const std::string camera = pick({"camera", "oakd", "realsense", "d435", "rgb"}, [](const std::string& n) {
         return (n.find("optical") != std::string::npos ? 2 : 0) + (n.find("rgb") != std::string::npos || n.find("color") != std::string::npos ? 1 : 0);
@@ -224,10 +224,11 @@ void proposeSensors(const dt::UrdfModel& m, ImportPlan& plan) {
         const bool optical = lower(camera).find("optical") != std::string::npos;
         plan.sensors.push_back({"camera", camera, "camera", optical, true,
                                 "连杆名“" + camera + "”像相机：提议 RGB 与深度相机（640 × 480、60°、15 Hz）" +
-                                    (optical ? "，按光学坐标系（z 向前）安装" : "，按 ROS 机体约定（x 向前）安装")});
+                                    (optical ? "，按光学坐标系（z 向前）安装" : "，按 ROS 机体约定（x 向前）安装"),
+                                {}});
     }
     const std::string imu = pick({"imu"}, none);
-    if (!imu.empty()) plan.sensors.push_back({"imu", imu, "imu", false, true, "连杆名“" + imu + "”像 IMU：提议 IMU"});
+    if (!imu.empty()) plan.sensors.push_back({"imu", imu, "imu", false, true, "连杆名“" + imu + "”像 IMU：提议 IMU", {}});
 }
 
 }  // namespace
@@ -299,6 +300,12 @@ ImportPlan analyze(const ImportOptions& options) {
 
     // 2. 包目录与 xacro
     plan.packages = findPackages(baseDir, options.packages);
+    // M4-08b：只出现在 xacro 文本中的包（如 Create 3 的 Gazebo 插件参数引用 irobot_create_control）：给占位路径
+    for (const auto& p : options.placeholderPackages) {
+        if (plan.packages.count(p) != 0) continue;
+        plan.packages[p] = "/nonexistent/terra-placeholder/" + p;
+        issue(plan.issues, Severity::Info, "placeholder_package", "包“" + p + "”按导入配方给占位路径（只在文本中引用，不读取其中的文件）");
+    }
     std::string urdf = text;
     plan.kind = SourceKind::Urdf;
     if (ext == ".xacro" || dt::looksLikeXacro(text)) {
@@ -337,10 +344,25 @@ ImportPlan analyze(const ImportOptions& options) {
 
     // 3. 解析
     std::string error;
-    const auto model = dt::parseUrdf(urdf, error);
+    auto model = dt::parseUrdf(urdf, error);
     if (!model) {
         issue(plan.issues, Severity::Error, "urdf_invalid", "URDF 无法解析：" + error, "检查文件是否完整（xacro 展开后的结果也可能有错）");
         return plan;
+    }
+    // M4-08b：导入配方的关节类型覆盖（如 Create 3 的轮跌落关节改为固定）
+    for (const auto& [joint, type] : options.jointTypes) {
+        bool found = false;
+        for (auto& j : model->joints) {
+            if (j.name != joint) continue;
+            found = true;
+            if (type == "fixed") {
+                j.type = "fixed";
+                plan.jointTypes[joint] = type;
+                issue(plan.issues, Severity::Info, "joint_fixed", "关节 " + joint + " 按导入配方改为固定");
+            }
+        }
+        if (!found) issue(plan.issues, Severity::Warning, "recipe_unknown_joint", "导入配方中的关节 " + joint + " 在模型中不存在", "检查配方的 joints");
+        else if (type != "fixed") issue(plan.issues, Severity::Error, "recipe_joint_type", "关节类型只能改为 fixed（实际为 " + type + "）", "修改配方的 joints");
     }
     plan.robotName = model->name;
     plan.name = sanitizeName(options.name.empty() ? (model->name.empty() ? input.stem().string() : model->name) : options.name);
@@ -543,10 +565,13 @@ ImportResult execute(const ImportPlan& plan, const ImportOptions& options, const
         hasFloor = text.find("type=\"plane\"") == std::string::npos;  // Menagerie 的 scene.xml 自带地面
     } else {
         std::string error;
-        const auto model = dt::parseUrdf(plan.urdfText, error);
+        auto model = dt::parseUrdf(plan.urdfText, error);
         if (!model) {
             issue(result.issues, Severity::Error, "urdf_invalid", error);
             return result;
+        }
+        for (auto& j : model->joints) {
+            if (plan.jointTypes.count(j.name) != 0) j.type = plan.jointTypes.at(j.name);
         }
         // 网格：复制或转换
         std::map<std::string, MeshFiles> files;
@@ -859,17 +884,28 @@ ImportResult execute(const ImportPlan& plan, const ImportOptions& options, const
             if (!s.enabled) continue;
             const std::string entity = plan.name + "/" + s.link;
             const std::string name = plan.name + "/" + s.name;
+            Json sensor;
             if (s.type == "lidar2d") {
-                sensorsJson.push_back({{"type", "lidar2d"}, {"name", name}, {"entity", entity}, {"angleMinDeg", -180}, {"angleMaxDeg", 179},
-                                       {"samples", 360}, {"rangeMin", 0.12}, {"rangeMax", 12}, {"rateHz", 10}});
+                sensor = {{"type", "lidar2d"}, {"name", name}, {"entity", entity}, {"angleMinDeg", -180}, {"angleMaxDeg", 179},
+                          {"samples", 360}, {"rangeMin", 0.12}, {"rangeMax", 12}, {"rateHz", 10}};
             } else if (s.type == "camera") {
                 // Terra 相机看向 −Z、+Y 向上：光学坐标系（z 前、y 下）绕 X 转 180°；ROS 机体约定（x 前、z 上）见四元数
                 const Json q = s.optical ? Json::array({0, 1, 0, 0}) : Json::array({0.5, 0.5, -0.5, -0.5});
-                sensorsJson.push_back({{"type", "camera"}, {"name", name}, {"entity", entity}, {"rotation", {{"quat", q}}}, {"width", 640},
-                                       {"height", 480}, {"fovyDeg", 60}, {"near", 0.05}, {"far", 10}, {"rateHz", 15}});
+                sensor = {{"type", "camera"}, {"name", name}, {"entity", entity}, {"rotation", {{"quat", q}}}, {"width", 640},
+                          {"height", 480}, {"fovyDeg", 60}, {"near", 0.05}, {"far", 10}, {"rateHz", 15}};
             } else if (s.type == "imu") {
-                sensorsJson.push_back({{"type", "imu"}, {"name", name}, {"entity", entity}});
+                sensor = {{"type", "imu"}, {"name", name}, {"entity", entity}};
+            } else {
+                continue;
             }
+            // M4-08b：导入配方给出的参数覆盖默认值
+            if (!s.parameters.empty()) {
+                const Json extra = Json::parse(s.parameters, nullptr, false);
+                if (extra.is_object()) {
+                    for (auto it = extra.begin(); it != extra.end(); ++it) sensor[it.key()] = it.value();
+                }
+            }
+            sensorsJson.push_back(std::move(sensor));
         }
     }
 
@@ -884,10 +920,18 @@ ImportResult execute(const ImportPlan& plan, const ImportOptions& options, const
     Json models = Json::array();
     models.push_back({{"name", plan.name}, {"mjcf", plan.kind == SourceKind::Mjcf ? plan.input : base + ".xml"}});
     if (hasFloor) models.push_back({{"name", "floor"}, {"mjcf", "floor.xml"}});
+    for (const auto& m : options.extraModels) {  // M4-08b：配方中的其他模型（如房间），路径相对导入目录
+        const fs::path rel = fs::path{m.mjcf}.lexically_relative(dir);
+        Json item = {{"name", m.name}, {"mjcf", rel.empty() ? m.mjcf : rel.string()}};
+        if (m.position != std::array<double, 3>{0, 0, 0}) item["position"] = Json::array({m.position[0], m.position[1], m.position[2]});
+        models.push_back(std::move(item));
+    }
     scene["models"] = std::move(models);
     if (!sensorsJson.empty()) scene["sensors"] = std::move(sensorsJson);
     if (plan.kind != SourceKind::Mjcf) scene["physics"] = {{"integrator", "implicitfast"}};  // 与生成的 MJCF 相同，地面不另设
     scene["view"] = {{"camera", {{"position", Json::array({1.6, -1.3, 1.0 + placeZ})}, {"target", Json::array({0, 0, placeZ})}}}};
+    if (options.viewPosition) scene["view"]["camera"]["position"] = Json::array({(*options.viewPosition)[0], (*options.viewPosition)[1], (*options.viewPosition)[2]});
+    if (options.viewTarget) scene["view"]["camera"]["target"] = Json::array({(*options.viewTarget)[0], (*options.viewTarget)[1], (*options.viewTarget)[2]});
     std::ofstream(result.scene) << scene.dump(2) << '\n';
 
     // 检查：加载并推进 1 s
@@ -957,7 +1001,291 @@ ImportResult execute(const ImportPlan& plan, const ImportOptions& options, const
     report["issues"] = issuesJson(result.issues);
     report["license_note"] = "导入的网格与模型沿用源文件的许可；请保留源仓库的 LICENSE";
     std::ofstream(result.report) << report.dump(2) << '\n';
+    writeRecipe((dir / "import.terra-import.json").string(), plan, options);  // M4-08b：这次导入实际使用的选择
     return result;
+}
+
+// ---- 导入配方（M4-08b）----
+
+RecipeResult readRecipe(const std::string& path, const ImportOptions& base) {
+    RecipeResult out;
+    const auto err = [&](const std::string& where, const std::string& message) { out.errors.push_back(where + "：" + message); };
+    std::error_code ec;
+    const fs::path file = fs::absolute(path, ec).lexically_normal();
+    std::ifstream in(file);
+    if (!in) {
+        err("", "无法读取导入配方：" + file.string());
+        return out;
+    }
+    Json j = Json::parse(in, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
+        err("", "不是有效的 JSON 对象：" + file.string());
+        return out;
+    }
+    const std::set<std::string> allowed{"format", "version", "input", "name", "xacroArgs", "packages", "placeholderPackages", "meshScale",
+                                        "fixedBase", "joints", "actuators", "sensors", "extraModels", "view"};
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        if (allowed.count(it.key()) == 0) err("/" + it.key(), "未知字段“" + it.key() + "”");
+    }
+    if (!j.contains("format") || !j["format"].is_string() || j["format"].get<std::string>() != "terra.import-recipe") err("/format", "应为 “terra.import-recipe”");
+    if (!j.contains("version") || !j["version"].is_number_integer() || j["version"].get<long long>() != 1) err("/version", "应为 1");
+    const fs::path dir = file.parent_path();
+    const auto rel = [&](const std::string& p) { return (fs::path{p}.is_absolute() ? fs::path{p} : dir / p).lexically_normal().string(); };
+    ImportRecipe r;
+    r.path = file.string();
+    r.options = base;
+    const auto str = [&](const char* key, std::string& target) {
+        if (!j.contains(key)) return;
+        if (!j[key].is_string()) err(std::string{"/"} + key, "应为字符串");
+        else target = j[key].get<std::string>();
+    };
+    const auto strings = [&](const char* key, std::vector<std::string>& target) {
+        if (!j.contains(key)) return;
+        if (!j[key].is_array()) {
+            err(std::string{"/"} + key, "应为字符串数组");
+            return;
+        }
+        for (std::size_t i = 0; i < j[key].size(); ++i) {
+            if (!j[key][i].is_string()) err(std::string{"/"} + key + "/" + std::to_string(i), "应为字符串");
+            else target.push_back(j[key][i].get<std::string>());
+        }
+    };
+    const auto vec3 = [&](const Json& v, const std::string& where) -> std::optional<std::array<double, 3>> {
+        if (!v.is_array() || v.size() != 3 || !v[0].is_number() || !v[1].is_number() || !v[2].is_number()) {
+            err(where, "应为 3 个数值");
+            return std::nullopt;
+        }
+        return std::array<double, 3>{v[0].get<double>(), v[1].get<double>(), v[2].get<double>()};
+    };
+    std::string input;
+    str("input", input);
+    if (input.empty()) err("/input", "缺少要导入的文件（相对配方文件）");
+    else r.options.input = rel(input);
+    str("name", r.options.name);
+    r.options.xacroArgs.clear();
+    strings("xacroArgs", r.options.xacroArgs);
+    strings("placeholderPackages", r.options.placeholderPackages);
+    if (j.contains("packages")) {
+        if (!j["packages"].is_object()) err("/packages", "应为对象（包名 → 目录）");
+        else {
+            for (auto it = j["packages"].begin(); it != j["packages"].end(); ++it) {
+                if (!it.value().is_string()) err("/packages/" + it.key(), "应为目录（字符串）");
+                else r.options.packages[it.key()] = rel(it.value().get<std::string>());
+            }
+        }
+    }
+    if (j.contains("meshScale")) {
+        if (!j["meshScale"].is_number() || !(j["meshScale"].get<double>() > 0)) err("/meshScale", "应为正数");
+        else r.options.meshScale = j["meshScale"].get<double>();
+    }
+    if (j.contains("fixedBase")) {
+        if (!j["fixedBase"].is_boolean()) err("/fixedBase", "应为 true 或 false");
+        else r.options.fixedBase = j["fixedBase"].get<bool>();
+    }
+    if (j.contains("joints")) {
+        if (!j["joints"].is_object()) err("/joints", "应为对象（关节名 → \"fixed\"）");
+        else {
+            for (auto it = j["joints"].begin(); it != j["joints"].end(); ++it) {
+                if (!it.value().is_string() || it.value().get<std::string>() != "fixed") err("/joints/" + it.key(), "目前只能改为 \"fixed\"");
+                else r.options.jointTypes[it.key()] = "fixed";
+            }
+        }
+    }
+    if (j.contains("actuators")) {
+        std::vector<ProposedActuator> list;
+        if (!j["actuators"].is_array()) err("/actuators", "应为数组");
+        for (std::size_t i = 0; j["actuators"].is_array() && i < j["actuators"].size(); ++i) {
+            const Json& a = j["actuators"][i];
+            const std::string where = "/actuators/" + std::to_string(i);
+            if (!a.is_object() || !a.contains("joint") || !a["joint"].is_string() || !a.contains("type") || !a["type"].is_string()) {
+                err(where, "应为含 joint 与 type 的对象");
+                continue;
+            }
+            ProposedActuator p;
+            p.joint = a["joint"].get<std::string>();
+            p.type = a["type"].get<std::string>();
+            if (p.type != "velocity" && p.type != "position") err(where + "/type", "应为 velocity 或 position");
+            for (auto it = a.begin(); it != a.end(); ++it) {
+                const std::string k = it.key();
+                if (k == "joint" || k == "type") continue;
+                if (k == "limited") {
+                    if (!it.value().is_boolean()) err(where + "/limited", "应为 true 或 false");
+                    else p.limited = it.value().get<bool>();
+                    continue;
+                }
+                if (k != "gain" && k != "forceLimit" && k != "rangeMin" && k != "rangeMax") {
+                    err(where + "/" + k, "未知字段“" + k + "”");
+                    continue;
+                }
+                if (!it.value().is_number()) {
+                    err(where + "/" + k, "应为数值");
+                    continue;
+                }
+                const double v = it.value().get<double>();
+                if (k == "gain") p.gain = v;
+                else if (k == "forceLimit") p.forceLimit = v;
+                else if (k == "rangeMin") p.rangeMin = v;
+                else p.rangeMax = v;
+            }
+            if (!(p.gain > 0)) err(where + "/gain", "应为正数");
+            p.reason = "导入配方";
+            list.push_back(p);
+        }
+        r.actuators = std::move(list);
+    }
+    if (j.contains("sensors")) {
+        std::vector<ProposedSensor> list;
+        if (!j["sensors"].is_array()) err("/sensors", "应为数组");
+        for (std::size_t i = 0; j["sensors"].is_array() && i < j["sensors"].size(); ++i) {
+            const Json& v = j["sensors"][i];
+            const std::string where = "/sensors/" + std::to_string(i);
+            if (!v.is_object() || !v.contains("type") || !v["type"].is_string() || !v.contains("name") || !v["name"].is_string() ||
+                !v.contains("link") || !v["link"].is_string()) {
+                err(where, "应为含 type、name、link 的对象");
+                continue;
+            }
+            ProposedSensor p;
+            p.type = v["type"].get<std::string>();
+            p.name = v["name"].get<std::string>();
+            p.link = v["link"].get<std::string>();
+            if (p.type != "lidar2d" && p.type != "camera" && p.type != "imu") err(where + "/type", "应为 lidar2d、camera 或 imu");
+            if (v.contains("optical")) {
+                if (!v["optical"].is_boolean()) err(where + "/optical", "应为 true 或 false");
+                else p.optical = v["optical"].get<bool>();
+            }
+            Json extra = Json::object();
+            for (auto it = v.begin(); it != v.end(); ++it) {
+                if (it.key() != "type" && it.key() != "name" && it.key() != "link" && it.key() != "optical") extra[it.key()] = it.value();
+            }
+            p.parameters = extra.empty() ? std::string{} : extra.dump();
+            p.reason = "导入配方";
+            list.push_back(p);
+        }
+        r.sensors = std::move(list);
+    }
+    if (j.contains("extraModels")) {
+        if (!j["extraModels"].is_array()) err("/extraModels", "应为数组");
+        for (std::size_t i = 0; j["extraModels"].is_array() && i < j["extraModels"].size(); ++i) {
+            const Json& m = j["extraModels"][i];
+            const std::string where = "/extraModels/" + std::to_string(i);
+            if (!m.is_object() || !m.contains("name") || !m["name"].is_string() || !m.contains("mjcf") || !m["mjcf"].is_string()) {
+                err(where, "应为含 name 与 mjcf 的对象");
+                continue;
+            }
+            ExtraModel e;
+            e.name = m["name"].get<std::string>();
+            e.mjcf = rel(m["mjcf"].get<std::string>());
+            if (m.contains("position")) {
+                if (const auto p = vec3(m["position"], where + "/position")) e.position = *p;
+            }
+            if (!fs::exists(e.mjcf, ec)) err(where + "/mjcf", "文件不存在：" + e.mjcf);
+            r.options.extraModels.push_back(e);
+        }
+    }
+    if (j.contains("view")) {
+        const Json& v = j["view"];
+        if (!v.is_object()) err("/view", "应为对象");
+        else {
+            if (v.contains("position")) r.options.viewPosition = vec3(v["position"], "/view/position");
+            if (v.contains("target")) r.options.viewTarget = vec3(v["target"], "/view/target");
+        }
+    }
+    if (out.errors.empty()) out.recipe = std::move(r);
+    return out;
+}
+
+ImportPlan analyzeRecipe(const ImportRecipe& recipe) {
+    ImportPlan plan = analyze(recipe.options);
+    if (!plan.ok() || plan.kind == SourceKind::Mjcf) return plan;
+    std::string error;
+    auto model = dt::parseUrdf(plan.urdfText, error);
+    if (!model) return plan;
+    for (auto& j : model->joints) {
+        if (plan.jointTypes.count(j.name) != 0) j.type = plan.jointTypes.at(j.name);
+    }
+    if (recipe.actuators) {
+        plan.actuators = *recipe.actuators;
+        for (const auto& a : plan.actuators) {
+            bool movable = false;
+            for (const auto& j : model->joints) movable = movable || (j.name == a.joint && j.type != "fixed");
+            if (!movable) {
+                issue(plan.issues, Severity::Error, "recipe_actuator_joint", "导入配方中的执行器关节 " + a.joint + " 不存在或是固定关节", "检查配方的 actuators");
+            }
+        }
+        plan.issues.erase(std::remove_if(plan.issues.begin(), plan.issues.end(), [](const ImportIssue& i) { return i.code == "default_actuators"; }),
+                          plan.issues.end());
+    }
+    if (recipe.sensors) {
+        plan.sensors = *recipe.sensors;
+        plan.issues.erase(std::remove_if(plan.issues.begin(), plan.issues.end(), [](const ImportIssue& i) { return i.code == "sensor_proposed"; }),
+                          plan.issues.end());
+        for (const auto& s : plan.sensors) {
+            if (model->findLink(s.link) == nullptr) {
+                issue(plan.issues, Severity::Error, "recipe_sensor_link", "导入配方中的传感器 " + s.name + " 的连杆 " + s.link + " 不存在", "检查配方的 sensors");
+            }
+        }
+    }
+    issue(plan.issues, Severity::Info, "recipe_applied", "按导入配方：" + recipe.path);
+    return plan;
+}
+
+bool writeRecipe(const std::string& path, const ImportPlan& plan, const ImportOptions& options) {
+    Json j;
+    j["format"] = "terra.import-recipe";
+    j["version"] = 1;
+    j["input"] = plan.input;
+    j["name"] = plan.name;
+    j["xacroArgs"] = options.xacroArgs;
+    if (!options.placeholderPackages.empty()) j["placeholderPackages"] = options.placeholderPackages;
+    if (!options.packages.empty()) {
+        Json p = Json::object();
+        for (const auto& [n, d] : options.packages) p[n] = d;
+        j["packages"] = std::move(p);
+    }
+    j["meshScale"] = options.meshScale;
+    j["fixedBase"] = plan.fixedBase;
+    if (!plan.jointTypes.empty()) {
+        Json jt = Json::object();
+        for (const auto& [n, t] : plan.jointTypes) jt[n] = t;
+        j["joints"] = std::move(jt);
+    }
+    Json actuators = Json::array();
+    for (const auto& a : plan.actuators) {
+        if (!a.enabled) continue;
+        Json e = {{"joint", a.joint}, {"type", a.type}, {"gain", a.gain}};
+        if (a.forceLimit > 0) e["forceLimit"] = a.forceLimit;
+        if (a.limited) {
+            e["limited"] = true;
+            e["rangeMin"] = a.rangeMin;
+            e["rangeMax"] = a.rangeMax;
+        }
+        actuators.push_back(std::move(e));
+    }
+    j["actuators"] = std::move(actuators);
+    Json sensors = Json::array();
+    for (const auto& s : plan.sensors) {
+        if (!s.enabled) continue;
+        Json e = {{"type", s.type}, {"name", s.name}, {"link", s.link}};
+        if (s.optical) e["optical"] = true;
+        if (!s.parameters.empty()) {
+            const Json extra = Json::parse(s.parameters, nullptr, false);
+            if (extra.is_object()) {
+                for (auto it = extra.begin(); it != extra.end(); ++it) e[it.key()] = it.value();
+            }
+        }
+        sensors.push_back(std::move(e));
+    }
+    j["sensors"] = std::move(sensors);
+    if (!options.extraModels.empty()) {
+        Json models = Json::array();
+        for (const auto& m : options.extraModels) {
+            models.push_back({{"name", m.name}, {"mjcf", m.mjcf}, {"position", Json::array({m.position[0], m.position[1], m.position[2]})}});
+        }
+        j["extraModels"] = std::move(models);
+    }
+    std::ofstream out(path);
+    out << j.dump(2) << '\n';
+    return static_cast<bool>(out);
 }
 
 }  // namespace terra::importer

@@ -141,6 +141,31 @@ void testUnitree() {
     expectError(R"({"format": "terra.ros2", "version": 1, "unitree": {}})", "只有 kind 为 unitree");
 }
 
+// M4-08b：话题名映射、坐标系、深度格式、差速底盘
+void testTurtlebot4() {
+    const auto r = ros::readProfile(std::string{TERRA_ASSETS_DIR} + "/ros2/profiles/turtlebot4.terra-ros2.json");
+    for (const auto& e : r.errors) std::fprintf(stderr, "INFO turtlebot4：%s\n", e.c_str());
+    check(r.profile.has_value(), "turtlebot4 配置可以读取");
+    if (r.profile) {
+        const auto& p = *r.profile;
+        check(p.topics.size() == 6 && p.topics.at("/turtlebot4/rplidar/scan") == "/scan" && p.topics.at("/turtlebot4/imu/imu") == "/imu",
+              "话题名映射：/scan、/imu 等");
+        check(p.stripFramePrefix == "turtlebot4/" && p.sensorsUseLinkFrames && p.depthEncoding == "16UC1", "坐标系去前缀、传感器用连杆坐标系、深度 16UC1");
+        check(p.diffDrive && p.diffDrive->wheelRadius == 0.03575 && p.diffDrive->wheelSeparation == 0.233 && p.diffDrive->cmdVel == "/cmd_vel" &&
+                  p.diffDrive->timeout == 0.5 && p.diffDrive->odomHz == 20.0,
+              "差速底盘：轮半径、轮距、/cmd_vel、超时、里程计频率");
+    }
+    const std::string head = R"({"format": "terra.ros2", "version": 1, )";
+    expectError(head + R"("topics": {"scan": "/scan"}})", "/topics/scan");
+    expectError(head + R"("topics": {"/a/scan": "scan"}})", "新的话题名应以");
+    expectError(head + R"("frames": {"strip": "x/"}})", "/frames/strip");
+    expectError(head + R"("depthEncoding": "16UC2"})", "/depthEncoding");
+    expectError(head + R"("diffDrive": {"leftJoint": "l"}})", "/diffDrive/rightJoint");
+    expectError(head + R"("diffDrive": {"leftJoint": "l", "rightJoint": "r", "leftActuator": "l", "rightActuator": "r", "baseEntity": "b",
+                         "wheelRadius": 0, "wheelSeparation": 0.2}})",
+                "/diffDrive/wheelRadius");
+}
+
 void testTopicName() {
     check(ros::topicName("room/scan") == "room/scan", "“/” 保留");
     check(ros::topicName("my-robot/imu") == "my_robot/imu", "“-” 换成 “_”");
@@ -170,6 +195,7 @@ int main() {
     testGeneric();
     testStrict();
     testUnitree();
+    testTurtlebot4();
     testTopicName();
     testMerge();
     if (failures == 0) std::printf("all passed\n");

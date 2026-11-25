@@ -1,0 +1,31 @@
+{
+  "format": "terra.import-recipe",
+  "version": 1,
+  "input": "turtlebot4_description/urdf/standard/turtlebot4.urdf.xacro",
+  "name": "turtlebot4",
+  "xacroArgs": ["gazebo:=ignition", "namespace:="],
+  "placeholderPackages": ["irobot_create_control"],
+  "meshScale": 1,
+  "fixedBase": false,
+  "joints": {
+    "wheel_drop_left_joint": "fixed",
+    "wheel_drop_right_joint": "fixed"
+  },
+  "actuators": [
+    {"joint": "left_wheel_joint", "type": "velocity", "gain": 1.0, "forceLimit": 1.5},
+    {"joint": "right_wheel_joint", "type": "velocity", "gain": 1.0, "forceLimit": 1.5}
+  ],
+  "sensors": [
+    {"type": "lidar2d", "name": "rplidar", "link": "rplidar_link", "angleMinDeg": -180, "angleMaxDeg": 179.6666667, "samples": 1080,
+     "rangeMin": 0.164, "rangeMax": 12, "rateHz": 8},
+    {"type": "camera", "name": "oakd_rgb", "link": "oakd_rgb_camera_optical_frame", "optical": true, "width": 250, "height": 250,
+     "fovyDeg": 55, "near": 0.05, "far": 10, "rateHz": 15, "rgb": true, "depth": false},
+    {"type": "camera", "name": "oakd_stereo", "link": "oakd_rgb_camera_optical_frame", "optical": true, "width": 640, "height": 400,
+     "fovyDeg": 55, "near": 0.2, "far": 10, "rateHz": 15, "rgb": false, "depth": true},
+    {"type": "imu", "name": "imu", "link": "imu_link", "rateHz": 100}
+  ],
+  "extraModels": [
+    {"name": "room", "mjcf": "../scenes/common/room.xml"}
+  ],
+  "view": {"position": [1.2, -1.0, 0.8], "target": [0, 0, 0.15]}
+}

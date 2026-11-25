@@ -294,24 +294,39 @@ std::optional<std::string> FileBrowser::draw(const char* title) {
     if (ImGui::BeginPopupModal(title, &keepOpen)) {
         const float font = ImGui::GetFontSize();
         std::optional<std::string> enterDir;
-        // 工具栏：上一级、路径（逐级可点；点“编辑”改为可输入）、视图切换
+        // 工具栏：上一级、地址栏（M4-08b，与 Windows 文件管理器相同：逐级可点，点空白处直接编辑）、视图切换
         if (glyphButton("##up", false, drawUpGlyph, tr(TextId::FileBrowserUp))) {
             const fs::path parent = fs::path{directory_}.parent_path();
             if (!parent.empty() && parent.string() != directory_) enterDir = parent.string();
         }
         ImGui::SameLine();
         const float viewButtons = ImGui::GetFrameHeight() * 2.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+        bool pathEscape = false;  // 地址栏中的 Esc 只退出编辑，不关闭窗口
         if (editPath_) {
             char pathBuf[1024];
             copyTo(pathBuf, sizeof pathBuf, pathEdit_);
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - viewButtons);
-            if (ImGui::InputText("##path", pathBuf, sizeof pathBuf, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            if (focusPath_) {
+                ImGui::SetKeyboardFocusHere();
+                focusPath_ = false;
+            }
+            const bool entered = ImGui::InputText("##path", pathBuf, sizeof pathBuf, ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+            pathEdit_ = pathBuf;
+            if (entered) {
                 enterDir = normalizeDirectory(pathBuf);
                 editPath_ = false;
-            } else {
-                pathEdit_ = pathBuf;
+            } else if (ImGui::IsItemDeactivated()) {
+                // Esc 或点到别处：恢复为逐级按钮
+                pathEscape = ImGui::IsKeyPressed(ImGuiKey_Escape);
+                editPath_ = false;
             }
         } else {
+            // 地址栏的底色：先在下层通道画框，最后合并
+            ImDrawList* bar = ImGui::GetWindowDrawList();
+            bar->ChannelsSplit(2);
+            bar->ChannelsSetCurrent(1);
+            const ImVec2 barStart = ImGui::GetCursorScreenPos();
+            const float barWidth = ImGui::GetContentRegionAvail().x - viewButtons;
             // 面包屑：根目录与每一级目录各是一个按钮；放不下时只显示后面几级
             std::vector<std::pair<std::string, std::string>> crumbs;  // 显示名、路径
             fs::path acc;
@@ -343,10 +358,24 @@ std::optional<std::string> FileBrowser::draw(const char* title) {
                     ImGui::SameLine(0.0f, 2.0f);
                 }
             }
-            if (ImGui::SmallButton(tr(TextId::FileBrowserEditPath))) {
-                editPath_ = true;
-                pathEdit_ = directory_;
+            // 按钮之后的空白处：点击即进入编辑（选中全部路径）
+            const float rest = barStart.x + barWidth - ImGui::GetCursorScreenPos().x;
+            if (rest > 1.0f) {
+                ImGui::InvisibleButton("##pathblank", ImVec2(rest, ImGui::GetFrameHeight()));
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+                    ImGui::SetTooltip("%s", tr(TextId::FileBrowserEditPath));
+                }
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+                    editPath_ = true;
+                    focusPath_ = true;
+                    pathEdit_ = directory_;
+                }
             }
+            bar->ChannelsSetCurrent(0);
+            bar->AddRectFilled(barStart, ImVec2(barStart.x + barWidth, barStart.y + ImGui::GetFrameHeight()), ImGui::GetColorU32(ImGuiCol_FrameBg),
+                               ImGui::GetStyle().FrameRounding);
+            bar->ChannelsMerge();
         }
         // 视图切换靠右（ImGui 1.93 没有 GetWindowContentRegionMax：用当前位置加剩余宽度）
         ImGui::SameLine();
@@ -416,11 +445,17 @@ std::optional<std::string> FileBrowser::draw(const char* title) {
                     ImGui::TableSetColumnIndex(0);
                     const ImVec2 a = ImGui::GetCursorScreenPos();
                     const bool selected = !e.directory && e.name == fileName_;
-                    const std::string text = "      " + e.name;  // 留出图标的位置
-                    if (ImGui::Selectable(text.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns)) {
+                    // M4-08b（用户要求）：图标与文件名之间留出间隔
+                    const float iconSize = font * 1.2f;
+                    const float rowHeight = std::max(iconSize, ImGui::GetTextLineHeight());
+                    if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_SpanAllColumns,
+                                          ImVec2(0.0f, rowHeight))) {
                         activate(e, ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left));
                     }
-                    drawIcon(dl, ImVec2(a.x, a.y - font * 0.1f), font * 1.2f, kindOf(e));
+                    drawIcon(dl, ImVec2(a.x, a.y + (rowHeight - iconSize) * 0.5f), iconSize, kindOf(e));
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::SetCursorScreenPos(ImVec2(a.x + iconSize + font * 0.6f, a.y + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f));
+                    ImGui::TextUnformatted(e.name.c_str());
                     ImGui::TableSetColumnIndex(1);
                     const Badge badge = badgeOf(kindOf(e));
                     ImGui::TextDisabled("%s", e.directory ? tr(TextId::FileBrowserFolder) : badge.text);
@@ -458,7 +493,7 @@ std::optional<std::string> FileBrowser::draw(const char* title) {
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button(tr(TextId::FileBrowserCancel)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) keepOpen = false;
+        if (ImGui::Button(tr(TextId::FileBrowserCancel)) || (ImGui::IsKeyPressed(ImGuiKey_Escape) && !pathEscape && !editPath_)) keepOpen = false;
         if (chosen || !keepOpen) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     } else {

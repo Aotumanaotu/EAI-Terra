@@ -38,6 +38,6 @@ std::optional<std::string> runImport(ImportWizardState& state, const terra::scen
 std::optional<std::string> drawImportWizard(ImportWizardState& state, const terra::scene::WorldFactory& factory);
 
 // 导入用的文件过滤（文件浏览窗口）
-inline constexpr const char* kImportFilter = ".urdf|.xacro|.xml";
+inline constexpr const char* kImportFilter = ".urdf|.xacro|.xml|.terra-import.json";  // M4-08b：也可以选导入配方
 
 }  // namespace terra::viewer

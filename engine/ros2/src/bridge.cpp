@@ -8,12 +8,15 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <thread>
 #include <utility>
 
 #include <builtin_interfaces/msg/time.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rosgraph_msgs/msg/clock.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -128,6 +131,51 @@ struct Bridge::Impl {
 
     std::string topic(const std::string& name) const { return profile.topicPrefix + "/" + topicName(name); }
 
+    // ---- M4-08b：话题名映射、坐标系名、差速底盘 ----
+    std::set<std::string> defaultTopics;  // 本场景的全部默认话题名（检查 topics 映射中的拼写）
+    std::string mapped(const std::string& defaultName) {
+        defaultTopics.insert(defaultName);
+        const auto it = profile.topics.find(defaultName);
+        return it == profile.topics.end() ? defaultName : it->second;
+    }
+    std::string frame(const std::string& name) const {
+        const auto& p = profile.stripFramePrefix;
+        return !p.empty() && name.size() > p.size() && name.compare(0, p.size(), p) == 0 ? name.substr(p.size()) : name;
+    }
+    std::string entityFrame(td::EntityId e) const {
+        const auto* entity = scene.world->description().entity(e);
+        return entity != nullptr && !entity->name.empty() ? frame(entity->name) : std::string{"world"};
+    }
+    static bool identity(const td::Pose& p) {
+        const auto& q = p.orientation;
+        return std::fabs(p.position.x) < 1e-9 && std::fabs(p.position.y) < 1e-9 && std::fabs(p.position.z) < 1e-9 && std::fabs(std::fabs(q.w) - 1.0) < 1e-9;
+    }
+    // 传感器消息的 frame_id：安装位姿与连杆重合且配置要求时用连杆，否则用传感器自己的坐标系
+    std::string sensorFrame(const std::string& name, td::EntityId entity, const td::Pose& mount) const {
+        return profile.sensorsUseLinkFrames && identity(mount) ? entityFrame(entity) : frame(name);
+    }
+    std::string cameraFrame(const terra::scene::CameraSensor& c) const {
+        const td::Pose optical = terra::scene::multiply(c.mount, td::Pose{{0, 0, 0}, terra::scene::opticalRotation()});
+        return profile.sensorsUseLinkFrames && identity(optical) ? entityFrame(c.entity) : frame(c.name + "_optical");
+    }
+
+    struct Drive {
+        std::size_t leftJoint = 0, rightJoint = 0;
+        td::ActuatorId left, right;
+        std::size_t base = 0;  // 机身实体下标
+        std::string baseFrame;
+        double x = 0.0, y = 0.0, theta = 0.0;
+        std::uint64_t epoch = 0;
+        std::uint64_t lastStep = 0;
+        bool started = false;
+        double v = 0.0, w = 0.0;  // 最近一条 cmd_vel
+        std::chrono::steady_clock::time_point lastCommand;
+        bool haveCommand = false;
+        rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom;
+        rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd;
+    };
+    std::optional<Drive> drive;
+
     void reject(const std::string& reason) {
         ++stats.commandsRejected;
         stats.lastRejection = reason;
@@ -179,8 +227,8 @@ struct Bridge::Impl {
         const auto add = [&](const std::string& parent, const std::string& child, const td::Pose& pose) {
             geometry_msgs::msg::TransformStamped t;
             t.header.stamp = stampOf(0.0);
-            t.header.frame_id = parent;
-            t.child_frame_id = child;
+            t.header.frame_id = frame(parent);  // M4-08b：按配置去掉前缀
+            t.child_frame_id = frame(child);
             t.transform = transformOf(pose);
             msg.transforms.push_back(t);
         };
@@ -188,9 +236,14 @@ struct Bridge::Impl {
             const auto* entity = d.entity(e);
             return entity != nullptr && !entity->name.empty() ? entity->name : std::string{"world"};
         };
-        for (const auto& s : d.sensors) add(frameOf(s.entity), s.name, s.mount);
-        for (const auto& l : scene.lidars) add(frameOf(l.entity), l.name, l.mount);
+        for (const auto& s : d.sensors) {
+            if (!(profile.sensorsUseLinkFrames && identity(s.mount))) add(frameOf(s.entity), s.name, s.mount);
+        }
+        for (const auto& l : scene.lidars) {
+            if (!(profile.sensorsUseLinkFrames && identity(l.mount))) add(frameOf(l.entity), l.name, l.mount);
+        }
         for (const auto& c : scene.cameras) {
+            if (cameraFrame(c) == entityFrame(c.entity)) continue;  // M4-08b：光学坐标系就是连杆（如 oakd_rgb_camera_optical_frame）
             add(frameOf(c.entity), c.name, c.mount);
             add(c.name, c.name + "_optical", td::Pose{{0, 0, 0}, terra::scene::opticalRotation()});
         }
@@ -236,12 +289,12 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
         // QoS（设计稿第 3 节）：/clock 为 ClockQoS；关节与 TF 为可靠、深度 10 / 100；传感器为 sensor data（best effort、深度 5）；
         // /tf_static 为 transient local（后连上的订阅者也能收到）
         if (profile.clock) b.clock = b.node->create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
-        b.jointStates = b.node->create_publisher<sensor_msgs::msg::JointState>(profile.topicPrefix + "/joint_states", rclcpp::QoS(10).reliable());
+        b.jointStates = b.node->create_publisher<sensor_msgs::msg::JointState>(b.mapped(profile.topicPrefix + "/joint_states"), rclcpp::QoS(10).reliable());
         b.tf = b.node->create_publisher<tf2_msgs::msg::TFMessage>("/tf", rclcpp::QoS(100).reliable());
         b.tfStatic = b.node->create_publisher<tf2_msgs::msg::TFMessage>("/tf_static", rclcpp::QoS(1).reliable().transient_local());
         if (profile.sensors) {
             for (std::size_t k = 0; k < d.sensors.size(); ++k) {
-                b.imus.push_back(b.node->create_publisher<sensor_msgs::msg::Imu>(b.topic(d.sensors[k].name) + "/imu", rclcpp::SensorDataQoS()));
+                b.imus.push_back(b.node->create_publisher<sensor_msgs::msg::Imu>(b.mapped(b.topic(d.sensors[k].name) + "/imu"), rclcpp::SensorDataQoS()));
                 double rate = 1.0 / d.timestep;
                 for (const auto& c : scene.sensors) {
                     if (c.sensor == d.sensors[k].id) rate = c.rateHz;
@@ -249,13 +302,13 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
                 b.imuRates.push_back(rate);
             }
             for (const auto& l : scene.lidars) {
-                b.scans.push_back(b.node->create_publisher<sensor_msgs::msg::LaserScan>(b.topic(l.name) + "/scan", rclcpp::SensorDataQoS()));
+                b.scans.push_back(b.node->create_publisher<sensor_msgs::msg::LaserScan>(b.mapped(b.topic(l.name) + "/scan"), rclcpp::SensorDataQoS()));
             }
             for (const auto& c : scene.cameras) {
                 Impl::CameraTopics t;
-                if (c.rgb) t.color = b.node->create_publisher<sensor_msgs::msg::Image>(b.topic(c.name) + "/image_raw", rclcpp::SensorDataQoS());
-                if (c.depth) t.depth = b.node->create_publisher<sensor_msgs::msg::Image>(b.topic(c.name) + "/depth/image_raw", rclcpp::SensorDataQoS());
-                t.info = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.topic(c.name) + "/camera_info", rclcpp::SensorDataQoS());
+                if (c.rgb) t.color = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/image_raw"), rclcpp::SensorDataQoS());
+                if (c.depth) t.depth = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/depth/image_raw"), rclcpp::SensorDataQoS());
+                t.info = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.mapped(b.topic(c.name) + "/camera_info"), rclcpp::SensorDataQoS());
                 b.cameras.push_back(t);
             }
         }
@@ -310,6 +363,52 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
                     res->message = "已接受：单步（暂停时有效）";
                 });
         }
+        // M4-08b：差速底盘
+        if (profile.diffDrive) {
+            const auto& dd = *profile.diffDrive;
+            Impl::Drive drive;
+            const auto jointIndex = [&](const std::string& n) -> std::optional<std::size_t> {
+                const auto* j = d.findJoint(n);
+                if (j == nullptr || j->type != td::JointType::Hinge) return std::nullopt;
+                return static_cast<std::size_t>(j - d.joints.data());
+            };
+            const auto lj = jointIndex(dd.leftJoint);
+            const auto rj = jointIndex(dd.rightJoint);
+            const auto* la = d.findActuator(dd.leftActuator);
+            const auto* ra = d.findActuator(dd.rightActuator);
+            const auto* base = d.findEntity(dd.baseEntity);
+            if (!lj || !rj) throw std::runtime_error("差速底盘：找不到轮子关节（转动关节）" + dd.leftJoint + " / " + dd.rightJoint);
+            if (la == nullptr || ra == nullptr || la->kind != td::ActuatorKind::Velocity || ra->kind != td::ActuatorKind::Velocity) {
+                throw std::runtime_error("差速底盘：找不到轮子的速度执行器 " + dd.leftActuator + " / " + dd.rightActuator);
+            }
+            if (base == nullptr) throw std::runtime_error("差速底盘：找不到机身实体 " + dd.baseEntity);
+            drive.leftJoint = *lj;
+            drive.rightJoint = *rj;
+            drive.left = la->id;
+            drive.right = ra->id;
+            drive.base = base->id.value - 1;
+            drive.baseFrame = b.frame(base->name);
+            drive.odom = b.node->create_publisher<nav_msgs::msg::Odometry>(profile.topicPrefix + dd.odom, rclcpp::QoS(10).reliable());
+            drive.cmd = b.node->create_subscription<geometry_msgs::msg::Twist>(
+                profile.topicPrefix + dd.cmdVel, rclcpp::QoS(10), [self](const geometry_msgs::msg::Twist::SharedPtr msg) {
+                    std::lock_guard<std::mutex> lock(self->mutex);
+                    if (!self->drive) return;
+                    self->drive->v = msg->linear.x;
+                    self->drive->w = msg->angular.z;
+                    self->drive->lastCommand = std::chrono::steady_clock::now();
+                    self->drive->haveCommand = true;
+                    ++self->stats.commandsAccepted;
+                });
+            b.drive = std::move(drive);
+        }
+        // 话题名映射中的每一项都应是本场景的默认话题（防止拼写错误使映射不生效）
+        for (const auto& [from, to] : profile.topics) {
+            if (b.defaultTopics.count(from) == 0) {
+                std::string available;
+                for (const auto& t : b.defaultTopics) available += (available.empty() ? "" : "、") + t;
+                throw std::runtime_error("通信配置 topics 中的“" + from + "”不是本场景的话题（可映射的：" + available + "）");
+            }
+        }
         b.publishStatic();
         b.executor = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
         b.executor->add_node(b.node);
@@ -340,8 +439,38 @@ std::vector<terra::physics::ActuatorCommand> Bridge::takeCommands() {
         pending.swap(impl_->pendingCommands);
     }
     std::vector<terra::physics::ActuatorCommand> out;
-    out.reserve(pending.size());
+    out.reserve(pending.size() + 2);
     for (const auto& [id, value] : pending) out.push_back({td::ActuatorId{id}, {value}});
+    // M4-08b：差速底盘——最近一条 cmd_vel 换算为两轮角速度；超时（墙钟）停车，与 Create 3 相同
+    if (impl_->profile.diffDrive) {
+        const auto& dd = *impl_->profile.diffDrive;
+        double v = 0.0, w = 0.0;
+        td::ActuatorId left, right;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            if (!impl_->drive) return out;
+            const auto& drive = *impl_->drive;
+            const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - drive.lastCommand).count();
+            if (drive.haveCommand && age <= dd.timeout) {
+                v = drive.v;
+                w = drive.w;
+            }
+            left = drive.left;
+            right = drive.right;
+        }
+        double wl = (v - w * dd.wheelSeparation / 2.0) / dd.wheelRadius;
+        double wr = (v + w * dd.wheelSeparation / 2.0) / dd.wheelRadius;
+        if (dd.maxWheelSpeed > 0.0) {
+            // 超过最大轮速时按比例缩小两轮（保持转弯半径）
+            const double peak = std::max(std::fabs(wl), std::fabs(wr));
+            if (peak > dd.maxWheelSpeed) {
+                wl *= dd.maxWheelSpeed / peak;
+                wr *= dd.maxWheelSpeed / peak;
+            }
+        }
+        out.push_back({left, {wl}});
+        out.push_back({right, {wr}});
+    }
     return out;
 }
 
@@ -368,7 +497,7 @@ void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
         msg.header.stamp = stamp;
         for (std::size_t k = 0; k < b.publishedJoints.size(); ++k) {
             const std::size_t j = b.publishedJoints[k];
-            msg.name.push_back(d.joints[j].name);
+            msg.name.push_back(b.frame(d.joints[j].name));  // M4-08b：按配置去掉前缀（与真机的关节名相同）
             msg.position.push_back(j < snapshot.joints.size() ? snapshot.joints[j].position[0] : 0.0);
             msg.velocity.push_back(j < snapshot.joints.size() ? snapshot.joints[j].velocity[0] : 0.0);
             const int a = b.jointActuator[k];
@@ -377,16 +506,78 @@ void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
         b.jointStates->publish(msg);
         ++b.published;
     }
+    // M4-08b：差速底盘的轮式里程计（每步积分两轮转角；重置后从 0 开始）
+    if (b.drive) {
+        auto& drive = *b.drive;
+        const auto& dd = *b.profile.diffDrive;
+        if (!drive.started || snapshot.runEpoch != drive.epoch || snapshot.stepIndex <= drive.lastStep) {
+            drive.x = drive.y = drive.theta = 0.0;
+            drive.started = true;
+            drive.epoch = snapshot.runEpoch;
+        } else if (drive.leftJoint < snapshot.joints.size() && drive.rightJoint < snapshot.joints.size()) {
+            const double h = dt * static_cast<double>(snapshot.stepIndex - drive.lastStep);
+            const double wl = snapshot.joints[drive.leftJoint].velocity[0];
+            const double wr = snapshot.joints[drive.rightJoint].velocity[0];
+            const double v = dd.wheelRadius * (wl + wr) / 2.0;
+            const double w = dd.wheelRadius * (wr - wl) / dd.wheelSeparation;
+            const double mid = drive.theta + w * h / 2.0;
+            drive.x += v * std::cos(mid) * h;
+            drive.y += v * std::sin(mid) * h;
+            drive.theta += w * h;
+        }
+        drive.lastStep = snapshot.stepIndex;
+        if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, dd.odomHz) && drive.leftJoint < snapshot.joints.size() &&
+            drive.rightJoint < snapshot.joints.size()) {
+            const double wl = snapshot.joints[drive.leftJoint].velocity[0];
+            const double wr = snapshot.joints[drive.rightJoint].velocity[0];
+            nav_msgs::msg::Odometry odom;
+            odom.header.stamp = stamp;
+            odom.header.frame_id = dd.odomFrame;
+            odom.child_frame_id = drive.baseFrame;
+            odom.pose.pose.position.x = drive.x;
+            odom.pose.pose.position.y = drive.y;
+            odom.pose.pose.orientation.w = std::cos(drive.theta / 2.0);
+            odom.pose.pose.orientation.z = std::sin(drive.theta / 2.0);
+            odom.twist.twist.linear.x = dd.wheelRadius * (wl + wr) / 2.0;
+            odom.twist.twist.angular.z = dd.wheelRadius * (wr - wl) / dd.wheelSeparation;
+            drive.odom->publish(odom);
+            ++b.published;
+        }
+    }
     if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.tfHz)) {
         tf2_msgs::msg::TFMessage msg;
-        for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
-            if (d.entities[e].name.empty()) continue;
-            geometry_msgs::msg::TransformStamped t;
-            t.header.stamp = stamp;
-            t.header.frame_id = "world";
-            t.child_frame_id = d.entities[e].name;
-            t.transform = transformOf(snapshot.entities[e].pose);
-            msg.transforms.push_back(t);
+        if (b.drive) {
+            // M4-08b：与真机相同的 TF 树：odom → 机身（轮式里程计），连杆之间为相对位姿（真机由 robot_state_publisher 发布）
+            const auto& drive = *b.drive;
+            geometry_msgs::msg::TransformStamped root;
+            root.header.stamp = stamp;
+            root.header.frame_id = b.profile.diffDrive->odomFrame;
+            root.child_frame_id = drive.baseFrame;
+            root.transform.translation.x = drive.x;
+            root.transform.translation.y = drive.y;
+            root.transform.rotation.w = std::cos(drive.theta / 2.0);
+            root.transform.rotation.z = std::sin(drive.theta / 2.0);
+            msg.transforms.push_back(root);
+            for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
+                const auto& entity = d.entities[e];
+                if (entity.name.empty() || !entity.parent.valid() || entity.parent.value - 1 >= snapshot.entities.size()) continue;
+                geometry_msgs::msg::TransformStamped t;
+                t.header.stamp = stamp;
+                t.header.frame_id = b.entityFrame(entity.parent);
+                t.child_frame_id = b.frame(entity.name);
+                t.transform = transformOf(terra::scene::multiply(terra::scene::inverse(snapshot.entities[entity.parent.value - 1].pose), snapshot.entities[e].pose));
+                msg.transforms.push_back(t);
+            }
+        } else {
+            for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
+                if (d.entities[e].name.empty()) continue;
+                geometry_msgs::msg::TransformStamped t;
+                t.header.stamp = stamp;
+                t.header.frame_id = "world";
+                t.child_frame_id = b.frame(d.entities[e].name);
+                t.transform = transformOf(snapshot.entities[e].pose);
+                msg.transforms.push_back(t);
+            }
         }
         b.tf->publish(msg);
         ++b.published;
@@ -397,7 +588,7 @@ void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
         if (v.size() < 10) continue;
         sensor_msgs::msg::Imu msg;
         msg.header.stamp = stamp;
-        msg.header.frame_id = d.sensors[k].name;
+        msg.header.frame_id = b.sensorFrame(d.sensors[k].name, d.sensors[k].entity, d.sensors[k].mount);
         msg.linear_acceleration.x = v[0];
         msg.linear_acceleration.y = v[1];
         msg.linear_acceleration.z = v[2];
@@ -417,7 +608,7 @@ void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
         const auto scan = terra::simulation::scanLidar(*b.scene.world, lidar);
         sensor_msgs::msg::LaserScan msg;
         msg.header.stamp = stamp;
-        msg.header.frame_id = lidar.name;
+        msg.header.frame_id = b.sensorFrame(lidar.name, lidar.entity, lidar.mount);
         msg.angle_min = static_cast<float>(scan.angleMin);
         msg.angle_max = static_cast<float>(scan.angleMin + scan.angleIncrement * static_cast<double>(lidar.samples > 0 ? lidar.samples - 1 : 0));
         msg.angle_increment = static_cast<float>(scan.angleIncrement);
@@ -438,7 +629,7 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
     Impl& b = *impl_;
     if (camera >= b.cameras.size() || camera >= b.scene.cameras.size()) return;
     const auto& topics = b.cameras[camera];
-    const std::string frame = b.scene.cameras[camera].name + "_optical";
+    const std::string frame = b.cameraFrame(b.scene.cameras[camera]);
     const auto stamp = stampOf(image.time);
     const auto w = static_cast<std::uint32_t>(image.width);
     const auto h = static_cast<std::uint32_t>(image.height);
@@ -460,11 +651,23 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
         msg.header.frame_id = frame;
         msg.width = w;
         msg.height = h;
-        msg.encoding = "32FC1";
         msg.is_bigendian = 0;
-        msg.step = w * 4;
-        msg.data.resize(image.depth.size() * sizeof(float));
-        std::memcpy(msg.data.data(), image.depth.data(), msg.data.size());
+        if (b.profile.depthEncoding == "16UC1") {
+            // M4-08b：与 OAK-D 等真机相同，毫米、无符号 16 位，没有命中为 0
+            msg.encoding = "16UC1";
+            msg.step = w * 2;
+            msg.data.resize(image.depth.size() * 2);
+            for (std::size_t i = 0; i < image.depth.size(); ++i) {
+                const float m = image.depth[i];
+                const auto mm = std::isfinite(m) && m > 0.0f ? static_cast<std::uint16_t>(std::min(65535.0, std::round(static_cast<double>(m) * 1000.0))) : std::uint16_t{0};
+                std::memcpy(msg.data.data() + i * 2, &mm, 2);
+            }
+        } else {
+            msg.encoding = "32FC1";
+            msg.step = w * 4;
+            msg.data.resize(image.depth.size() * sizeof(float));
+            std::memcpy(msg.data.data(), image.depth.data(), msg.data.size());
+        }
         topics.depth->publish(msg);
         ++b.published;
     }

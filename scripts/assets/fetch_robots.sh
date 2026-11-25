@@ -52,5 +52,5 @@ while IFS='|' read -r robot rel url sha src; do
         status=1
     fi
 done <"$dir/robots.lock"
-echo "就绪：$ok/$total 个文件（从 ROBOTS/ 复制 $copied 个，下载 $downloaded 个；Menagerie 与 unitree_mujoco，BSD-3-Clause / Apache-2.0）"
+echo "就绪：$ok/$total 个文件（从 ROBOTS/ 复制 $copied 个，下载 $downloaded 个；Menagerie、unitree_mujoco、TurtleBot 4 与 Create 3，BSD-3-Clause / Apache-2.0）"
 exit $status

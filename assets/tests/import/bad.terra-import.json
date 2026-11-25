@@ -1,0 +1,7 @@
+{
+  "format": "terra.import-recipe",
+  "version": 1,
+  "nmae": "typo",
+  "joints": {"arm_joint": "slide"},
+  "actuators": [{"joint": "left_wheel_joint", "type": "velocity", "gain": -1}]
+}

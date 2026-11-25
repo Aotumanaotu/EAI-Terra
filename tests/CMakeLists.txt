@@ -28,6 +28,7 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-08b：导入配方（import.analyze 与 import.execute 扩充）；TurtleBot 4（robots.turtlebot4_import；ROS2 构建：ros2.turtlebot4）。
 # M4-08a：模型导入（import.analyze、import.execute、import.demos、import.cli_dry_run、import.cli_broken；
 #   graphics.viewer_import_selftest：查看器的导入向导）。
 # M4-07：传感器记录（record.sensors；record.file 扩充：版本 2 与读取版本 1；headless.record_sensors、headless.rerun_sensors；
@@ -364,6 +365,14 @@ add_test(NAME import.cli_broken
             "-DSTDERR_REGEX=missing_mesh：[^\n]*no_such_mesh[^\n]*  → .*unknown_package：[^\n]*nonexistent_pkg[^\n]*  → "
             -P "${_terra_check_exit}" "${PROJECT_SOURCE_DIR}/assets/tests/import/broken.urdf"
             --output "${CMAKE_CURRENT_BINARY_DIR}/import_cli_broken")
+
+# TurtleBot 4 标准版（M4-08b）：按导入配方导入（两次逐字节相同）、传感器、差速运动学；描述文件缺失时跳过；需要 assimp
+add_executable(test_turtlebot4 robots/test_turtlebot4.cpp)
+target_link_libraries(test_turtlebot4 PRIVATE terra::import terra::scene terra::simulation terra::physics_mujoco)
+target_compile_definitions(test_turtlebot4 PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_turtlebot4)
+add_test(NAME robots.turtlebot4_import COMMAND test_turtlebot4 "${CMAKE_CURRENT_BINARY_DIR}/turtlebot4_import")
+set_tests_properties(robots.turtlebot4_import PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900)
 
 # 宇树低层控制场景（M4-06b）：G1 的位置执行器改为力矩执行器（torqueActuators）；Go2 加机身 IMU、没有 PD 层
 add_executable(test_unitree_lowlevel robots/test_unitree_lowlevel.cpp)
@@ -806,6 +815,12 @@ else()
                     --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_bridge_viewer")
         set_tests_properties(graphics.ros2_bridge_viewer PROPERTIES LABELS "graphics;ros2" RUN_SERIAL TRUE TIMEOUT 240)
     endif()
+
+    # TurtleBot 4（M4-08b）：话题名映射、坐标系、差速底盘与里程计；需要先运行 scripts/assets/import_turtlebot4.sh（没有时跳过）
+    add_test(NAME ros2.turtlebot4
+        COMMAND "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_turtlebot4.py" --headless $<TARGET_FILE:terra_headless>
+                --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_turtlebot4")
+    set_tests_properties(ros2.turtlebot4 PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 180 SKIP_RETURN_CODE 77)
 
     # ---- 宇树配置（M4-06b）：需要宇树消息包 ----
     if(TERRA_ROS2_UNITREE)

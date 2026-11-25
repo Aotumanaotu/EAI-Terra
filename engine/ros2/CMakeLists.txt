@@ -8,7 +8,7 @@ target_include_directories(terra_ros2 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/includ
 target_link_libraries(terra_ros2
     PUBLIC terra::scene terra::simulation terra::data terra::physics
     PRIVATE terra::json rclcpp::rclcpp ${builtin_interfaces_TARGETS} ${rosgraph_msgs_TARGETS} ${std_msgs_TARGETS}
-            ${geometry_msgs_TARGETS} ${sensor_msgs_TARGETS} ${tf2_msgs_TARGETS} ${std_srvs_TARGETS})
+            ${geometry_msgs_TARGETS} ${sensor_msgs_TARGETS} ${tf2_msgs_TARGETS} ${std_srvs_TARGETS} ${nav_msgs_TARGETS})
 terra_configure_target(terra_ros2)
 # M4-06b：宇树配置（找到 unitree_go、unitree_hg 时，cmake/TerraRos2.cmake 设 TERRA_ROS2_UNITREE）
 if(TERRA_ROS2_UNITREE)

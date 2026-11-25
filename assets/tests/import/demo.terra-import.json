@@ -1,0 +1,17 @@
+{
+  "format": "terra.import-recipe",
+  "version": 1,
+  "input": "demo_robot/urdf/demo.urdf",
+  "name": "demo_recipe",
+  "placeholderPackages": ["not_needed_pkg"],
+  "joints": {"arm_joint": "fixed"},
+  "actuators": [
+    {"joint": "left_wheel_joint", "type": "velocity", "gain": 0.8, "forceLimit": 4},
+    {"joint": "right_wheel_joint", "type": "velocity", "gain": 0.8, "forceLimit": 4}
+  ],
+  "sensors": [
+    {"type": "lidar2d", "name": "front_scan", "link": "laser_link", "samples": 180, "rateHz": 5}
+  ],
+  "extraModels": [{"name": "room", "mjcf": "../../scenes/common/room.xml"}],
+  "view": {"position": [1, 1, 1], "target": [0, 0, 0]}
+}

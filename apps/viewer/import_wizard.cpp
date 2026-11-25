@@ -70,7 +70,22 @@ void beginImport(ImportWizardState& s, const std::string& input, const std::stri
     s.options.outputRoot = outputRoot;
     s.meshScale = 1.0f;
     s.name[0] = '\0';
-    s.plan = im::analyze(s.options);
+    const std::string recipeSuffix = ".terra-import.json";
+    if (input.size() > recipeSuffix.size() && input.compare(input.size() - recipeSuffix.size(), recipeSuffix.size(), recipeSuffix) == 0) {
+        // M4-08b：导入配方
+        auto base = im::defaultOptions();
+        base.outputRoot = outputRoot;
+        const auto read = im::readRecipe(input, base);
+        if (!read.recipe) {
+            for (const auto& e : read.errors) s.log.push_back(std::string{tr(TextId::LogImportFailed)} + e);
+            return;
+        }
+        s.options = read.recipe->options;
+        s.meshScale = static_cast<float>(s.options.meshScale);
+        s.plan = im::analyzeRecipe(*read.recipe);
+    } else {
+        s.plan = im::analyze(s.options);
+    }
     s.result.reset();
     std::snprintf(s.name, sizeof s.name, "%s", s.plan->name.c_str());
     s.open = true;

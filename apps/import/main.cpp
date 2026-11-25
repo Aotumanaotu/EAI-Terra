@@ -5,6 +5,7 @@
 //                    [--assimp 程序] [--python 程序] [名字:=值]...（xacro 参数）
 //   --output   导入目录的上级；默认为资源库目录下的 assets/（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
 //   --dry-run  只分析，不写文件
+//   --recipe   （M4-08b）按导入配方（*.terra-import.json）导入；配方中的选择优先，命令行可另给 --output、--overwrite、--dry-run
 // 标准错误：每个问题一行（级别、代码、说明、处理办法）；标准输出：最后一行 {"type":"import",...}
 // 退出码：0 成功；2 参数错误；4 有错误（分析或检查）
 
@@ -25,7 +26,8 @@ int usage() {
     std::fprintf(stderr,
                  "用法：terra_import <URDF / xacro / MJCF> [--name 名字] [--output 目录] [--package 包名=目录]... [--mesh-scale 比例]\n"
                  "                   [--fixed-base | --floating-base] [--no-actuators] [--no-sensors] [--overwrite] [--dry-run]\n"
-                 "                   [--assimp 程序] [--python 程序] [名字:=值]...\n");
+                 "                   [--assimp 程序] [--python 程序] [名字:=值]...\n"
+                 "       terra_import --recipe <导入配方.terra-import.json> [--output 目录] [--overwrite] [--dry-run]\n");
     return 2;
 }
 
@@ -50,6 +52,7 @@ void printIssues(const std::vector<im::ImportIssue>& issues) {
 int main(int argc, char** argv) {
     im::ImportOptions options = im::defaultOptions();
     bool dryRun = false, noActuators = false, noSensors = false;
+    std::string recipePath;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const bool has = i + 1 < argc;
@@ -71,15 +74,25 @@ int main(int argc, char** argv) {
         else if (a == "--dry-run") dryRun = true;
         else if (a == "--assimp" && has) options.assimp = argv[++i];
         else if (a == "--python" && has) options.python = argv[++i];
+        else if (a == "--recipe" && has) recipePath = argv[++i];
         else if (a.find(":=") != std::string::npos) options.xacroArgs.push_back(a);
         else if (!a.empty() && a[0] != '-' && options.input.empty()) options.input = a;
         else return usage();
     }
-    if (options.input.empty()) return usage();
+    if (options.input.empty() && recipePath.empty()) return usage();
     if (options.outputRoot.empty()) {
         options.outputRoot = (std::filesystem::path{terra::library::defaultLibraryPath()}.parent_path() / "assets").string();
     }
-    auto plan = im::analyze(options);
+    im::ImportPlan plan;
+    if (!recipePath.empty()) {
+        const auto read = im::readRecipe(recipePath, options);
+        for (const auto& e : read.errors) std::fprintf(stderr, "terra_import: [error] recipe_invalid：%s\n", e.c_str());
+        if (!read.recipe) return 2;
+        options = read.recipe->options;
+        plan = im::analyzeRecipe(*read.recipe);
+    } else {
+        plan = im::analyze(options);
+    }
     if (noActuators) {
         for (auto& act : plan.actuators) act.enabled = false;
     }

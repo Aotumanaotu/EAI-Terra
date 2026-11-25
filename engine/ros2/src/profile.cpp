@@ -136,7 +136,7 @@ ProfileResult parseProfile(const std::string& text, const std::string& path) {
         return result;
     }
     const std::set<std::string> allowed{"format", "version", "name", "kind", "topicPrefix", "clock", "jointStatesHz", "tfHz",
-                                        "sensors", "commands", "services", "unitree"};
+                                        "sensors", "commands", "services", "unitree", "topics", "frames", "depthEncoding", "diffDrive"};
     for (auto it = root.begin(); it != root.end(); ++it) {
         if (allowed.count(it.key()) == 0) error("/" + it.key(), "未知字段“" + it.key() + "”");
     }
@@ -184,6 +184,86 @@ ProfileResult parseProfile(const std::string& text, const std::string& path) {
     if (p.kind == "unitree" && !root.contains("unitree")) error("/unitree", "宇树配置（kind 为 unitree）需要 unitree 字段");
     if (p.kind != "unitree" && root.contains("unitree")) error("/unitree", "只有 kind 为 unitree 时才能有 unitree 字段");
     if (p.kind == "unitree" && root.contains("unitree")) p.unitree = readUnitree(root["unitree"], error);
+    // M4-08b：话题名映射、坐标系、深度格式、差速底盘
+    if (root.contains("topics")) {
+        const Json& t = root["topics"];
+        if (!t.is_object()) error("/topics", "应为对象（默认话题名 → 新的话题名）");
+        else {
+            for (auto it = t.begin(); it != t.end(); ++it) {
+                const bool valid = it.value().is_string() && !it.value().get<std::string>().empty() && it.value().get<std::string>()[0] == '/' &&
+                                   topicName(it.value().get<std::string>()) == it.value().get<std::string>();
+                if (it.key().empty() || it.key()[0] != '/') error("/topics/" + it.key(), "默认话题名应以 “/” 开头");
+                else if (!valid) error("/topics/" + it.key(), "新的话题名应以 “/” 开头，只含字母、数字、下划线与 “/”");
+                else p.topics[it.key()] = it.value().get<std::string>();
+            }
+        }
+    }
+    if (root.contains("frames")) {
+        const Json& f = root["frames"];
+        if (!f.is_object()) error("/frames", "应为对象");
+        else {
+            for (auto it = f.begin(); it != f.end(); ++it) {
+                if (it.key() == "stripPrefix") {
+                    if (!it.value().is_string()) error("/frames/stripPrefix", "应为字符串");
+                    else p.stripFramePrefix = it.value().get<std::string>();
+                } else if (it.key() == "sensorsUseLinkFrames") {
+                    if (!it.value().is_boolean()) error("/frames/sensorsUseLinkFrames", "应为 true 或 false");
+                    else p.sensorsUseLinkFrames = it.value().get<bool>();
+                } else {
+                    error("/frames/" + it.key(), "未知字段“" + it.key() + "”");
+                }
+            }
+        }
+    }
+    readString("depthEncoding", p.depthEncoding);
+    if (p.depthEncoding != "32FC1" && p.depthEncoding != "16UC1") error("/depthEncoding", "应为 32FC1（米）或 16UC1（毫米）");
+    if (root.contains("diffDrive")) {
+        const Json& d = root["diffDrive"];
+        if (!d.is_object()) {
+            error("/diffDrive", "应为对象");
+        } else {
+            DiffDriveProfile dd;
+            const std::set<std::string> keys{"leftJoint", "rightJoint", "leftActuator", "rightActuator", "baseEntity", "wheelRadius", "wheelSeparation",
+                                             "maxWheelSpeed", "cmdVel", "odom", "odomFrame", "odomHz", "timeout"};
+            for (auto it = d.begin(); it != d.end(); ++it) {
+                if (keys.count(it.key()) == 0) error("/diffDrive/" + it.key(), "未知字段“" + it.key() + "”");
+            }
+            const auto textField = [&](const char* key, std::string& out, bool required) {
+                if (!d.contains(key)) {
+                    if (required) error(std::string{"/diffDrive/"} + key, "缺少字段");
+                    return;
+                }
+                if (!d[key].is_string() || d[key].get<std::string>().empty()) error(std::string{"/diffDrive/"} + key, "应为非空字符串");
+                else out = d[key].get<std::string>();
+            };
+            const auto positive = [&](const char* key, double& out, bool required, bool allowZero) {
+                if (!d.contains(key)) {
+                    if (required) error(std::string{"/diffDrive/"} + key, "缺少字段");
+                    return;
+                }
+                const Json& v = d[key];
+                if (!v.is_number() || !std::isfinite(v.get<double>()) || v.get<double>() < 0 || (!allowZero && v.get<double>() == 0)) {
+                    error(std::string{"/diffDrive/"} + key, allowZero ? "应为非负数" : "应为正数");
+                } else {
+                    out = v.get<double>();
+                }
+            };
+            textField("leftJoint", dd.leftJoint, true);
+            textField("rightJoint", dd.rightJoint, true);
+            textField("leftActuator", dd.leftActuator, true);
+            textField("rightActuator", dd.rightActuator, true);
+            textField("baseEntity", dd.baseEntity, true);
+            textField("cmdVel", dd.cmdVel, false);
+            textField("odom", dd.odom, false);
+            textField("odomFrame", dd.odomFrame, false);
+            positive("wheelRadius", dd.wheelRadius, true, false);
+            positive("wheelSeparation", dd.wheelSeparation, true, false);
+            positive("maxWheelSpeed", dd.maxWheelSpeed, false, true);
+            positive("odomHz", dd.odomHz, false, false);
+            positive("timeout", dd.timeout, false, false);
+            p.diffDrive = dd;
+        }
+    }
     if (result.errors.empty()) result.profile = p;
     return result;
 }

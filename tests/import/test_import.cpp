@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <map>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -161,7 +163,107 @@ void testAnalyze() {
           "名字清理（实例名以字母或下划线开头）");
 }
 
+// M4-08b：导入配方
+void testRecipe() {
+    const std::string dir = std::string{TERRA_TEST_ASSETS_DIR} + "/import/";
+    const auto read = im::readRecipe(dir + "demo.terra-import.json", im::defaultOptions());
+    for (const auto& e : read.errors) std::printf("INFO %s\n", e.c_str());
+    check(read.recipe.has_value(), "导入配方可以读取");
+    if (read.recipe) {
+        const auto& r = *read.recipe;
+        check(r.options.input == fs::path{dir + "demo_robot/urdf/demo.urdf"}.lexically_normal().string() && r.options.name == "demo_recipe",
+              "配方：input 相对配方文件解析");
+        check(r.options.extraModels.size() == 1 && fs::exists(r.options.extraModels[0].mjcf) && r.options.viewPosition.has_value(), "配方：额外模型与视角");
+        const auto plan = im::analyzeRecipe(r);
+        std::printf("INFO 按配方分析：%zu 个活动关节、%zu 个执行器、%zu 个传感器%s\n", plan.joints, plan.actuators.size(), plan.sensors.size(),
+                    listIssues(plan.issues).c_str());
+        check(plan.ok() && hasIssue(plan.issues, "recipe_applied", im::ImportIssue::Severity::Info) &&
+                  hasIssue(plan.issues, "placeholder_package", im::ImportIssue::Severity::Info) &&
+                  hasIssue(plan.issues, "joint_fixed", im::ImportIssue::Severity::Info),
+              "配方生效：占位包、关节改为固定");
+        check(plan.joints == 2 && plan.jointTypes.count("arm_joint") == 1, "arm_joint 改为固定后只有两个活动关节");
+        check(plan.actuators.size() == 2 && plan.actuators[0].gain == 0.8 && plan.actuators[0].forceLimit == 4.0 && actuator(plan, "arm_joint") == nullptr,
+              "执行器取配方中的两个（替换自动提议）");
+        check(plan.sensors.size() == 1 && plan.sensors[0].name == "front_scan" && plan.sensors[0].parameters.find("\"samples\":180") != std::string::npos,
+              "传感器取配方中的一个，其余字段作为参数");
+        check(!hasIssue(plan.issues, "default_actuators", im::ImportIssue::Severity::Info) &&
+                  !hasIssue(plan.issues, "sensor_proposed", im::ImportIssue::Severity::Info),
+              "不再显示自动提议的说明");
+    }
+    const auto bad = im::readRecipe(dir + "bad.terra-import.json", im::defaultOptions());
+    std::string all;
+    for (const auto& e : bad.errors) all += "\n  " + e;
+    std::printf("INFO bad.terra-import.json：%s\n", all.c_str());
+    check(!bad.recipe && all.find("/nmae") != std::string::npos && all.find("/input") != std::string::npos &&
+              all.find("/joints/arm_joint") != std::string::npos && all.find("/actuators/0/gain") != std::string::npos,
+          "出错的配方：未知字段、缺 input、关节类型、增益逐项报告");
+    const auto wrong = im::readRecipe(dir + "wrong_joint.terra-import.json", im::defaultOptions());
+    check(wrong.recipe.has_value(), "引用不存在的关节与连杆的配方格式正确");
+    if (wrong.recipe) {
+        const auto plan = im::analyzeRecipe(*wrong.recipe);
+        check(!plan.ok() && hasIssue(plan.issues, "recipe_actuator_joint", im::ImportIssue::Severity::Error) &&
+                  hasIssue(plan.issues, "recipe_sensor_link", im::ImportIssue::Severity::Error),
+              "配方引用不存在的关节与连杆：报错");
+    }
+}
+
 #ifdef TERRA_IMPORT_EXECUTE
+// 目录中全部文件（相对路径 → 内容）
+std::map<std::string, std::string> snapshotDirectory(const fs::path& root) {
+    std::map<std::string, std::string> out;
+    for (const auto& e : fs::recursive_directory_iterator(root)) {
+        if (!e.is_regular_file()) continue;
+        std::ifstream in(e.path(), std::ios::binary);
+        out[fs::relative(e.path(), root).string()] = std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+    return out;
+}
+
+// M4-08b：按配方导入两次（并列的两个目录），逐字节相同；场景按配方；导入目录中写下实际使用的配方，再按它导入结果相同
+void testRecipeExecute(const std::string& dir) {
+    const std::string recipe = std::string{TERRA_TEST_ASSETS_DIR} + "/import/demo.terra-import.json";
+    std::map<std::string, std::string> first;
+    for (const char* sub : {"recipe_a", "recipe_b"}) {
+        auto base = im::defaultOptions();
+        base.outputRoot = (fs::path{dir} / sub).string();
+        base.overwrite = true;
+        const auto read = im::readRecipe(recipe, base);
+        if (!read.recipe) {
+            check(false, "读取配方");
+            return;
+        }
+        const auto result = im::execute(im::analyzeRecipe(*read.recipe), read.recipe->options, terra::physics::mujoco::composeWorld);
+        check(result.ok, std::string{"按配方导入（"} + sub + "）" + listIssues(result.issues));
+        if (!result.ok) return;
+        const auto files = snapshotDirectory(result.directory);
+        if (first.empty()) {
+            first = files;
+            check(files.count("import.terra-import.json") == 1, "导入目录中写下实际使用的配方");
+        } else {
+            std::string differ;
+            for (const auto& [name, content] : files) {
+                if (first.count(name) == 0 || first.at(name) != content) differ += " " + name;
+            }
+            check(files.size() == first.size() && differ.empty(), "两次导入逐字节相同（" + std::to_string(files.size()) + " 个文件）" + differ);
+            std::printf("INFO 两次按配方导入：%zu 个文件%s\n", files.size(), differ.empty() ? "，逐字节相同" : "，有不同");
+        }
+        if (std::string{sub} == "recipe_a") {
+            auto loaded = terra::scene::loadScene(result.scene, terra::physics::mujoco::composeWorld);
+            check(loaded.ok(), "按配方生成的场景可以加载");
+            if (loaded.ok()) {
+                const auto& d = loaded.scene->world->description();
+                std::size_t hinges = 0;
+                for (const auto& j : d.joints) hinges += j.type == terra::data::JointType::Hinge ? 1u : 0u;
+                check(hinges == 2 && d.findJoint("demo_recipe/arm_joint") == nullptr && d.actuators.size() == 2, "arm_joint 固定；两个执行器");
+                check(loaded.scene->lidars.size() == 1 && loaded.scene->lidars[0].samples == 180 && loaded.scene->lidars[0].rateHz == 5.0 &&
+                          loaded.scene->cameras.empty(),
+                      "雷达按配方的参数（180 束、5 Hz）；没有配方之外的传感器");
+                check(d.modelInstances.size() == 3, "场景中有机器人、地面与配方中的房间");
+            }
+        }
+    }
+}
+
 // OBJ 的顶点包围盒（测试自己读，不经过被测代码）
 bool objBounds(const fs::path& path, double lo[3], double hi[3]) {
     std::ifstream in(path);
@@ -339,9 +441,11 @@ int main(int argc, char** argv) {
     const std::string mode = argc > 1 ? argv[1] : "";
     if (mode == "analyze") {
         testAnalyze();
+        testRecipe();
 #ifdef TERRA_IMPORT_EXECUTE
     } else if (mode == "execute" && argc > 2) {
         testExecute(argv[2]);
+        testRecipeExecute(argv[2]);
     } else if (mode == "demos" && argc > 3) {
         if (testDemos(argv[2], argv[3]) == 77 && failures == 0) {
             std::printf("没有下载公开示例（ROBOTS/import_demos/），跳过\n");

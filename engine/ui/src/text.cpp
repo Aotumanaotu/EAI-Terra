@@ -410,7 +410,7 @@ constexpr Entry kEntries[] = {
     {TextId::LogImportAnalyzed, "分析导入：", "Analysed for import: "},
     {TextId::LogImported, "导入完成：", "Imported: "},
     {TextId::LogImportFailed, "导入失败：", "Import failed: "},
-    {TextId::FileBrowserEditPath, "编辑路径", "Edit path"},
+    {TextId::FileBrowserEditPath, "点击此处直接输入路径", "Click to type a path"},
     {TextId::FileBrowserGrid, "网格视图", "Grid view"},
     {TextId::FileBrowserList, "列表视图", "List view"},
     {TextId::FileBrowserType, "类型", "Type"},

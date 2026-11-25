@@ -18,6 +18,7 @@
 // 话题名中不允许的字符（如实例名中的 “-”）换成 “_”；坐标系名用全名。时间戳为仿真时间。
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -51,6 +52,22 @@ struct UnitreeProfile {
     int modeMachine = 0;              // hg：LowState 的 mode_machine（机型代码，待真机核对）
 };
 
+// 差速底盘（M4-08b，可复用：TurtleBot 4、TurtleBot 3 等）：订阅 cmdVel（geometry_msgs/Twist）换算为两轮角速度，
+// timeout 秒（墙钟）没有新命令时停车；由两轮转角积分出轮式里程计，发布 odom（nav_msgs/Odometry）与 TF odomFrame → 机身。
+struct DiffDriveProfile {
+    std::string leftJoint, rightJoint;          // 轮子关节全名（里程计）
+    std::string leftActuator, rightActuator;    // 轮子速度执行器全名（命令）
+    std::string baseEntity;                     // 机身实体全名（TF 的子坐标系）
+    double wheelRadius = 0.0;                   // m
+    double wheelSeparation = 0.0;               // m
+    double maxWheelSpeed = 0.0;                 // rad/s；0 表示不限
+    std::string cmdVel = "/cmd_vel";
+    std::string odom = "/odom";
+    std::string odomFrame = "odom";
+    double odomHz = 20.0;
+    double timeout = 0.5;                       // s
+};
+
 // 通信配置文件（*.terra-ros2.json，format "terra.ros2"、version 1；严格校验，未知字段报错）
 struct Profile {
     std::string path;
@@ -64,6 +81,12 @@ struct Profile {
     bool commands = true;          // 订阅 /terra/joint_commands
     bool services = true;          // /terra/reset、/terra/pause、/terra/step
     std::optional<UnitreeProfile> unitree;
+    // M4-08b：与真机一致的话题名与坐标系（可复用）
+    std::map<std::string, std::string> topics;  // 默认话题名（如 /turtlebot4/rplidar/scan）→ 真机的话题名（如 /scan）
+    std::string stripFramePrefix;                // 坐标系名与关节名去掉的前缀（如 "turtlebot4/"，真机的坐标系没有实例名）
+    bool sensorsUseLinkFrames = false;           // 传感器安装位姿与连杆重合时，消息的 frame_id 直接用连杆（与真机相同），不另发静态 TF
+    std::string depthEncoding = "32FC1";         // 深度图：32FC1（米）或 16UC1（毫米，没有命中为 0；与 OAK-D 等真机相同）
+    std::optional<DiffDriveProfile> diffDrive;
 };
 
 struct ProfileResult {

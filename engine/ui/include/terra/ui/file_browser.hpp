@@ -53,7 +53,8 @@ private:
     bool requestOpen_ = false;
     bool onlyFilter_ = true;
     bool grid_ = true;       // M4-08a：网格视图（矢量图标）；false 为列表
-    bool editPath_ = false;  // 路径栏为输入框（否则为逐级可点的按钮）
+    bool editPath_ = false;   // 地址栏为输入框（否则为逐级可点的按钮）
+    bool focusPath_ = false;  // 下一帧把键盘焦点给地址栏（点击空白处进入编辑时）
     std::string filter_;
     std::string fallback_ = ".json";
     std::string directory_;

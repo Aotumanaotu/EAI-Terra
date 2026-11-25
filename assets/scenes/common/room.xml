@@ -1,0 +1,20 @@
+<!--
+  房间（M4-08b）：6 × 6 m 的四面墙（高 0.5 m）与几个障碍物，供移动机器人（TurtleBot 4 等）的激光雷达与相机看到东西。
+  只有几何，没有地面（地面另用 floor.xml）；房间中心在原点。由 Terra 编写，与机器人模型的许可无关。
+-->
+<mujoco model="terra room">
+  <asset>
+    <material name="wall" rgba="0.82 0.80 0.76 1"/>
+    <material name="box" rgba="0.85 0.45 0.25 1"/>
+    <material name="pillar" rgba="0.25 0.55 0.75 1"/>
+  </asset>
+  <worldbody>
+    <geom name="wall_north" type="box" size="3 0.05 0.25" pos="0 3.05 0.25" material="wall"/>
+    <geom name="wall_south" type="box" size="3 0.05 0.25" pos="0 -3.05 0.25" material="wall"/>
+    <geom name="wall_east" type="box" size="0.05 3.1 0.25" pos="3.05 0 0.25" material="wall"/>
+    <geom name="wall_west" type="box" size="0.05 3.1 0.25" pos="-3.05 0 0.25" material="wall"/>
+    <geom name="box_a" type="box" size="0.3 0.3 0.3" pos="1.6 1.2 0.3" material="box"/>
+    <geom name="box_b" type="box" size="0.5 0.2 0.2" pos="-1.5 -1.4 0.2" euler="0 0 30" material="box"/>
+    <geom name="pillar" type="cylinder" size="0.15 0.6" pos="1.8 -1.6 0.6" material="pillar"/>
+  </worldbody>
+</mujoco>

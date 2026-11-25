@@ -1,0 +1,7 @@
+{
+  "format": "terra.import-recipe",
+  "version": 1,
+  "input": "demo_robot/urdf/demo.urdf",
+  "actuators": [{"joint": "no_such_joint", "type": "position", "gain": 5}],
+  "sensors": [{"type": "imu", "name": "imu", "link": "no_such_link"}]
+}

@@ -3,6 +3,8 @@
 # （不提交），逐个校验 sha256。来源优先用用户下载的原件 ROBOTS/mujoco_menagerie/（开发计划 10.4 节的命令）；
 # 没有原件或原件中的文件不一致时，从锁定提交的 raw.githubusercontent.com 地址下载（显式联网步骤；CMake 构建不联网）。
 # 已存在且校验一致的文件跳过。
+# M4-05 起：锁定记录可以有第 5 个字段，为原件相对 ROBOTS/ 的路径（宇树 unitree_mujoco 的模型在 ROBOTS/unitree_mujoco/ 中）；
+# 没有第 5 个字段时，原件在 ROBOTS/mujoco_menagerie/<目录>/<相对路径>。
 # 用法：bash scripts/assets/fetch_robots.sh [--offline]   （--offline：只用 ROBOTS/ 中的原件，不联网）
 set -uo pipefail
 
@@ -18,7 +20,7 @@ copied=0
 downloaded=0
 status=0
 check() { echo "$1  $2" | sha256sum -c --quiet - 2>/dev/null; }
-while IFS='|' read -r robot rel url sha; do
+while IFS='|' read -r robot rel url sha src; do
     case "$robot" in ''|'#'*) continue ;; esac
     total=$((total + 1))
     dest="$dir/$robot/$rel"
@@ -27,14 +29,16 @@ while IFS='|' read -r robot rel url sha; do
         ok=$((ok + 1))
         continue
     fi
-    if [ -f "$source_dir/$robot/$rel" ] && check "$sha" "$source_dir/$robot/$rel"; then
-        cp "$source_dir/$robot/$rel" "$dest"
+    original="$source_dir/$robot/$rel"
+    [ -n "${src:-}" ] && original="$root/ROBOTS/$src"
+    if [ -f "$original" ] && check "$sha" "$original"; then
+        cp "$original" "$dest"
         ok=$((ok + 1))
         copied=$((copied + 1))
         continue
     fi
     if [ $offline = 1 ]; then
-        echo "错误：$robot/$rel 不在 ROBOTS/mujoco_menagerie/ 中或 sha256 不一致（--offline 不联网）" >&2
+        echo "错误：$robot/$rel 的原件（$original）不存在或 sha256 不一致（--offline 不联网）" >&2
         status=1
         continue
     fi
@@ -48,5 +52,5 @@ while IFS='|' read -r robot rel url sha; do
         status=1
     fi
 done <"$dir/robots.lock"
-echo "就绪：$ok/$total 个文件（从 ROBOTS/ 复制 $copied 个，下载 $downloaded 个；Menagerie，BSD-3-Clause / Apache-2.0）"
+echo "就绪：$ok/$total 个文件（从 ROBOTS/ 复制 $copied 个，下载 $downloaded 个；Menagerie 与 unitree_mujoco，BSD-3-Clause / Apache-2.0）"
 exit $status

@@ -17,6 +17,7 @@
 //   --library    （M3-07c）资源库文件（实验记录的索引）；默认 $TERRA_LIBRARY 或 ~/.local/share/eai-terra/library.sqlite3
 //   --record-self-test （M3-07c）自检时测试记录与回放（与 --self-test、--motion 同用）
 //   --sensor-self-test （M4-04）自检时检查传感器采样与预览（与 --self-test、--scene 同用；场景需含 IMU、雷达与相机）
+//   --ros2       （M4-06a）打开场景后开启 ROS2 桥接，使用给出的通信配置（*.terra-ros2.json）；构建时没有 ROS2 时提示安装并返回 3
 //   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
 //                自检时在第 3 帧打开（代替按播放），并与“动作 → PD 层 → setControl → step”的纯物理对照逐位比较
 
@@ -82,6 +83,9 @@
 #include "camera_sensor.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
+#ifdef TERRA_WITH_ROS2
+#include "terra/ros2/bridge.hpp"
+#endif
 
 #ifndef TERRA_ASSETS_DIR
 #error "需要 TERRA_ASSETS_DIR"
@@ -110,6 +114,7 @@ struct Options {
     std::string libraryPath;  // M3-07c：资源库文件；空表示默认位置（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
     bool recordSelfTest = false;  // M3-07c：自检时测试记录与回放（第 5 帧开始记录，中间停止并回放）
     bool sensorSelfTest = false;  // M4-04：自检时检查传感器采样与预览
+    std::string ros2Profile;      // M4-06a：开启 ROS2 桥接的通信配置
     bool demoDrive = false;
 };
 
@@ -140,6 +145,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.recordSelfTest = true;
         } else if (a == "--sensor-self-test") {
             o.sensorSelfTest = true;
+        } else if (a == "--ros2" && hasValue) {
+            o.ros2Profile = argv[++i];
         } else if (a == "--demo-drive") {
             o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -322,6 +329,7 @@ struct AppState {
     bool selfTestPressRecord = false;     // 自检：本帧在工具栏上按一下录制按钮
     std::vector<terra::library::RecordEntry> recordList;
     std::optional<std::string> replayRequest;            // 请求回放的记录（帧末处理：可能需要切换场景）
+    std::string ros2Profile;  // M4-06a：非空表示开启 ROS2 桥接（打开其他场景时以同一配置重新开启）
     std::string lastRecordPath;                          // 最近一次保存的记录（自检用）
     bool closeRequest = false;
     bool demoAssetsLoaded = false;
@@ -455,6 +463,9 @@ struct SimulatedScene {
             if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.cameras[k].rateHz)) continue;
             cameraPreviews[k].pending = std::make_shared<terra::data::PhysicsSnapshot>(snapshot);
         }
+#ifdef TERRA_WITH_ROS2
+        if (ros2) ros2->publish(snapshot);  // M4-06a：与 Headless 相同，每步之后与初始状态
+#endif
     }
     // 重置、打开之后：从初始状态重新开始
     void restartSensors() {
@@ -524,6 +535,10 @@ struct SimulatedScene {
     // M3-03：显示哪些 MJCF 几何体分组（默认 0–2，Menagerie 的可见几何在 2、碰撞几何在 3），是否叠加碰撞几何体
     std::array<bool, 6> groups{true, true, true, false, false, false};
     bool collision = false;
+#ifdef TERRA_WITH_ROS2
+    // M4-06a：ROS2 桥接（开启时非空）。引用 instance 与 pd，放在最后，最先析构
+    std::unique_ptr<terra::ros2::Bridge> ros2;
+#endif
 
     static constexpr double kSimSpeeds[] = {0.25, 0.5, 1.0, 2.0, 4.0};
 
@@ -558,6 +573,9 @@ struct SimulatedScene {
     std::vector<terra::physics::ActuatorCommand> control(std::uint64_t step) {
         std::vector<terra::physics::ActuatorCommand> commands;
         if (motion && motion->playing()) commands = motion->commands(step, instance.world->description().timestep);
+#ifdef TERRA_WITH_ROS2
+        if (ros2) commands = terra::ros2::mergeCommands(std::move(commands), ros2->takeCommands());  // M4-06a：桥接的命令在后
+#endif
         if (pd.empty()) return commands;
         return pd.process(std::move(commands), *instance.world->snapshot());
     }
@@ -632,6 +650,8 @@ void closeScene(Frame& f) {
 }
 
 // 打开场景：成功时替换当前场景（打开后暂停，按播放开始）；失败时保留当前场景，弹窗列出诊断。
+void startRos2(Frame& f);
+
 bool openScene(Frame& f, const std::string& requested) {
     std::error_code ec;
     const std::string path = std::filesystem::absolute(requested, ec).lexically_normal().string();
@@ -699,6 +719,7 @@ bool openScene(Frame& f, const std::string& requested) {
     std::printf("INFO 场景 %s：%zu 个模型实例，%zu 个实体，%zu 个几何体，%zu 个 glTF 绑定（可用 %zu），步长 %.4g 秒\n",
                 sim.instance.document.name.c_str(), d.modelInstances.size(), d.entities.size(), d.geoms.size(),
                 sim.instance.bindings.size(), sim.view->liveBindings(), d.timestep);
+    startRos2(f);  // M4-06a：桥接开着时，新场景以同一配置重新开启
     return true;
 }
 
@@ -779,6 +800,89 @@ void simResetToKeyframe(Frame& f, std::size_t index) {
     if (f.simulated->motion) f.simulated->motion->stop();
     f.simulated->realtimeFactor = 0.0;
     f.state.log.push_back(std::string{tr(TextId::LogKeyframeReset)} + f.simulated->instance.world->description().keyframes[index].name);
+}
+
+// ---- ROS2 桥接（M4-06a）----
+
+constexpr const char* kDefaultRos2Profile = TERRA_ASSETS_DIR "/ros2/profiles/generic.terra-ros2.json";
+
+bool ros2Available() {
+#ifdef TERRA_WITH_ROS2
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool ros2Running(const Frame& f) {
+#ifdef TERRA_WITH_ROS2
+    return f.simulated && f.simulated->ros2 != nullptr;
+#else
+    (void)f;
+    return false;
+#endif
+}
+
+// 按 f.state.ros2Profile 为当前场景开启桥接（打开场景后、菜单开启时）；失败时关闭开关并记入日志
+void startRos2(Frame& f) {
+#ifdef TERRA_WITH_ROS2
+    if (!f.simulated || f.state.ros2Profile.empty()) return;
+    SimulatedScene& sim = *f.simulated;
+    sim.ros2.reset();
+    const auto profile = terra::ros2::readProfile(f.state.ros2Profile);
+    std::string error;
+    for (const auto& e : profile.errors) error += (error.empty() ? "" : "；") + e;
+    if (profile.profile) sim.ros2 = terra::ros2::Bridge::create(sim.instance, sim.pd, *profile.profile, error);
+    if (!sim.ros2) {
+        std::printf("INFO ROS2 桥接无法开启：%s\n", error.c_str());
+        f.state.log.push_back(std::string{tr(TextId::LogRos2Failed)} + error);
+        f.state.ros2Profile.clear();
+        return;
+    }
+    std::printf("INFO ROS2 桥接已开启：%s（%s）\n", profile.profile->name.c_str(), f.state.ros2Profile.c_str());
+    f.state.log.push_back(std::string{tr(TextId::LogRos2Started)} + profile.profile->name + "（" + f.state.ros2Profile + "）");
+    sim.ros2->publish(*sim.instance.world->snapshot());  // 当前状态（含 /tf 与传感器的初始值）
+#else
+    (void)f;
+#endif
+}
+
+void stopRos2(Frame& f) {
+#ifdef TERRA_WITH_ROS2
+    if (f.simulated && f.simulated->ros2) {
+        const auto stats = f.simulated->ros2->stats();
+        std::printf("INFO ROS2 桥接：发布 %llu 条消息；命令接受 %llu 条、拒绝 %llu 条\n", static_cast<unsigned long long>(stats.published),
+                    static_cast<unsigned long long>(stats.commandsAccepted), static_cast<unsigned long long>(stats.commandsRejected));
+        f.simulated->ros2.reset();
+        f.state.log.push_back(tr(TextId::LogRos2Stopped));
+    }
+#endif
+    f.state.ros2Profile.clear();
+}
+
+// 主线程每帧推进之前：执行服务请求（重置与菜单的“重置”相同；暂停 / 继续 / 单步与工具栏相同）。回放期间忽略
+void handleRos2Requests(Frame& f) {
+#ifdef TERRA_WITH_ROS2
+    if (!f.simulated || !f.simulated->ros2) return;
+    for (const auto r : f.simulated->ros2->takeRequests()) {
+        const char* name = r == terra::ros2::Request::Reset   ? "reset"
+                           : r == terra::ros2::Request::Pause ? "pause"
+                           : r == terra::ros2::Request::Resume ? "resume"
+                                                               : "step";
+        if (f.simulated->replay) {
+            f.state.log.push_back(std::string{tr(TextId::LogRos2RequestIgnored)} + name);
+            continue;
+        }
+        f.state.log.push_back(std::string{tr(TextId::LogRos2Request)} + name);
+        SimulatedScene& sim = *f.simulated;
+        if (r == terra::ros2::Request::Reset) simReset(f);
+        else if (r == terra::ros2::Request::Pause) sim.runner->pause();
+        else if (r == terra::ros2::Request::Resume) sim.runner->resume();
+        else if (sim.runner->paused()) sim.runner->stepOnce();
+    }
+#else
+    (void)f;
+#endif
 }
 
 // ---- 动作（M3-04c）----
@@ -1307,6 +1411,17 @@ void menuBar(Frame& f) {
         }
         if (ImGui::MenuItem(tr(TextId::SimStep), key(st::Command::SimStep), false, sim.runner->paused())) sim.runner->stepOnce();
         if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
+        // M4-06a：ROS2 桥接（默认通用配置）；构建时没有 ROS2 时禁用，悬停提示安装
+        ImGui::Separator();
+        if (ImGui::MenuItem(tr(TextId::SimRos2), nullptr, ros2Running(f), ros2Available())) {
+            if (ros2Running(f)) {
+                stopRos2(f);
+            } else {
+                f.state.ros2Profile = kDefaultRos2Profile;
+                startRos2(f);
+            }
+        }
+        if (!ros2Available() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tr(TextId::SimRos2Unavailable));
         // M3-07c：实验记录与采样率
         ImGui::Separator();
         if (ImGui::MenuItem(sim.recorder ? tr(TextId::SimRecordStop) : tr(TextId::SimRecordStart), "Ctrl+Shift+R", false, !sim.replay)) {
@@ -1460,6 +1575,12 @@ void statusBar(Frame& f) {
                     ImGui::SameLine();
                     ImGui::Text("  |  %s %.2f / %.2f s", tr(TextId::StatusReplay), sim.replay->time, sim.replay->duration);
                 }
+#ifdef TERRA_WITH_ROS2
+                if (sim.ros2) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "  |  %s %zu", tr(TextId::StatusRos2), sim.ros2->stats().subscribers);
+                }
+#endif
                 if (sim.motion) {
                     const auto step = sim.instance.world->stepIndex();
                     const double dt = sim.instance.world->description().timestep;
@@ -2368,6 +2489,23 @@ void updateCameraPreviews(Frame& f) {
         preview.pending.reset();
         ++preview.rendered;
         const vw::CameraFrame& frame = *preview.frame;
+#ifdef TERRA_WITH_ROS2
+        if (sim.ros2) {
+            // M4-06a：同一份画面发给桥接（行 0 为图像顶部；图像不按 displayRotationDeg 旋转，与真机一致）
+            terra::ros2::CameraImage image;
+            image.step = frame.step;
+            image.time = frame.time;
+            image.width = frame.intrinsics.width;
+            image.height = frame.intrinsics.height;
+            image.fx = frame.intrinsics.fx;
+            image.fy = frame.intrinsics.fy;
+            image.cx = frame.intrinsics.cx;
+            image.cy = frame.intrinsics.cy;
+            image.rgb = frame.rgb;
+            image.depth = frame.depth;
+            sim.ros2->publishCamera(k, image);
+        }
+#endif
         if (!frame.rgb.empty()) {
             const auto image = vw::colorImage(frame);
             preview.color = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
@@ -3291,8 +3429,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr,
                      "用法：terra_viewer [--seconds N] [--frames N] [--language zh|en] [--settings 文件] [--self-test] "
                      "[--expect-renderer 子串] [--scene 场景文件] [--motion 动作文件] [--demo-drive] [--library 库文件] "
-                     "[--record-self-test] [--sensor-self-test]\n");
+                     "[--record-self-test] [--sensor-self-test] [--ros2 通信配置]\n");
         return 2;
+    }
+    if (!options.ros2Profile.empty() && !ros2Available()) {
+        std::fprintf(stderr, "%s\n", ui::text(TextId::SimRos2Unavailable, ui::Language::Chinese));
+        return 3;
     }
 
     // ---- 设置：自检从默认值开始；否则读取文件（默认 XDG 路径）----
@@ -3432,6 +3574,7 @@ int main(int argc, char** argv) {
     Frame frame{platform, window, input, uiContext, ctx, camera, controller, scene, renderer, environments, state, settings, simulated};
 
     // 场景文件（M2-07 起；M2-08 起打开后暂停，--demo-drive 时直接运行）。没有场景时才加载演示场景的资产。
+    state.ros2Profile = options.ros2Profile;  // M4-06a：打开场景（或动作的推荐场景）时开启桥接
     if (!options.scenePath.empty()) {
         if (!openScene(frame, options.scenePath)) {
             for (const auto& line : state.sceneErrors) std::fprintf(stderr, "%s\n", line.c_str());
@@ -3440,6 +3583,14 @@ int main(int argc, char** argv) {
         }
         simulated->demoDrive = options.demoDrive;
         if (options.demoDrive) simulated->runner->resume();
+        if (!options.ros2Profile.empty()) {
+            // 命令行开启桥接时直接运行（与 Headless 相同）；/terra/pause 可以暂停
+            if (!ros2Running(frame)) {
+                std::fprintf(stderr, "错误：ROS2 桥接无法开启（见上面的 INFO）：%s\n", options.ros2Profile.c_str());
+                return 3;
+            }
+            simulated->runner->resume();
+        }
     } else if (options.motionPath.empty()) {
         ensureDemoAssets(frame);
     }
@@ -3517,6 +3668,7 @@ int main(int argc, char** argv) {
             if (keyboardFree && input.state(simResetAction).pressed) simReset(frame);
             if (keyboardFree && input.state(simRecordAction).pressed) toggleRecording(frame);
             if (options.selfTest) sceneSelfTestScript(frame, frames, options.frames);
+            handleRos2Requests(frame);  // M4-06a
             if (simulated && simulated->replay) {
                 // 回放：不推进物理，只推进回放时间
                 auto& replay = *simulated->replay;
@@ -3618,6 +3770,7 @@ int main(int argc, char** argv) {
         std::printf("INFO 设置%s：%s\n", settings.saved && *settings.saved == settings.current ? "已保存" : "保存失败",
                     settings.path.c_str());
     }
+    stopRos2(frame);  // M4-06a：打印桥接的统计
     if (simulated) {
         const auto& clock = simulated->runner->clock();
         std::printf("INFO 仿真：%llu 步，仿真时间 %.3f 秒，过载 %llu 次（丢弃 %.3f 秒）%s\n",

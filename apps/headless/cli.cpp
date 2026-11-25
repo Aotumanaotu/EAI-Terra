@@ -104,6 +104,14 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             options.listRecords = true;
             continue;
         }
+        if (arg == "--realtime") {
+            if (options.realtime) {
+                result.error = "重复的参数 --realtime";
+                return result;
+            }
+            options.realtime = true;
+            continue;
+        }
         if (arg == "--sensors") {
             if (options.sensors) {
                 result.error = "重复的参数 --sensors";
@@ -131,7 +139,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 
         const bool takesValue = name == "--model" || name == "--scene" || name == "--motion" || name == "--steps" ||
                                 name == "--duration" || name == "--sample-every" || name == "--record" || name == "--rerun" ||
-                                name == "--tolerance" || name == "--library";
+                                name == "--tolerance" || name == "--library" || name == "--ros2";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
             return result;
@@ -150,6 +158,19 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             ++i;
         }
 
+        if (name == "--ros2") {
+            if (!options.ros2Profile.empty()) {
+                result.error = "重复的参数 --ros2";
+                return result;
+            }
+            if (value->empty()) {
+                result.error = "--ros2 的值不能为空（通信配置文件，如 assets/ros2/profiles/generic.terra-ros2.json）";
+                return result;
+            }
+            options.ros2Profile = std::string{*value};
+            options.realtime = true;
+            continue;
+        }
         if (name == "--library") {
             if (!options.libraryPath.empty()) {
                 result.error = "重复的参数 --library";
@@ -258,7 +279,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (options.listRecords) {
         // 列出库中的记录：只能配合 --library 与（作为筛选条件的）--scene
         if (seenModel || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps || options.durationSeconds ||
-            options.dryRun || seenSampleEvery || options.sensors) {
+            options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime) {
             result.error = "--list-records 只能与 --library、--scene（按场景筛选）同用";
         }
         return result;
@@ -270,9 +291,13 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (seenRerun) {
         // 复现：一切由记录给出，不能再指定运行参数
         if (seenModel || seenScene || seenMotion || seenRecord || options.steps || options.durationSeconds || options.dryRun ||
-            seenSampleEvery || options.sensors) {
+            seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime) {
             result.error = "--rerun 不能与 --model、--scene、--motion、--record、--steps、--duration、--sample-every、--dry-run 同用";
         }
+        return result;
+    }
+    if (!options.ros2Profile.empty() && (seenModel || options.dryRun)) {
+        result.error = "--ros2 需要场景文件（--scene 或 --motion），不能与 --model、--dry-run 同用";
         return result;
     }
     if (seenModel && seenScene) {
@@ -321,6 +346,10 @@ std::string usageText() {
            "  --steps N            运行 N 个固定物理步（正整数）\n"
            "  --duration 秒        运行到指定仿真时长（正数；与 --steps 二选一）\n"
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
+           "  --ros2 <路径>        ROS2 桥接（M4-06a，*.terra-ros2.json）：发布 /clock、/joint_states、/tf 与传感器，订阅\n"
+           "                       /terra/joint_commands，提供 /terra/reset、/terra/pause、/terra/step；隐含 --realtime。\n"
+           "                       只有构建时打开 TERRA_BUILD_ROS2 并找到 ROS2 Humble 才可用\n"
+           "  --realtime           按墙钟节奏推进（1 秒仿真时间 = 1 秒）\n"
            "  --sensors            输出传感器读数（M4-02）：model 之后一行 sensor_list（清单与频率），之后按各传感器的频率\n"
            "                       输出 sensor 行（第 0 步总是输出）；频率来自场景文件的 sensors，默认等于物理频率\n"
            "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"

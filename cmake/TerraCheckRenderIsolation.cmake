@@ -4,7 +4,9 @@
 #   glad/、GL/、KHR/  只允许在 engine/render/、engine/platform/backends/glfw/src/ 与 tests/platform/、tests/render/
 #   X11/、wayland-、SDL、vulkan/  engine/ 与 apps/ 中一律不允许（将来的适配器另行登记）
 #   imgui   只允许在 engine/ui/、apps/viewer/ 与 tests/（M1-13，D-024：ImGui 是应用层界面 API）
-#   nlohmann/  只允许在 engine/settings/src/、engine/scene/src/、engine/simulation/src/ 与 tests/（M1-14、M2-05、M3-04：JSON 库不进入任何公共头文件）
+#   nlohmann/  只允许在 engine/settings/src/、engine/scene/src/、engine/simulation/src/、engine/ros2/src/ 与 tests/（M1-14、M2-05、M3-04、M4-06：JSON 库不进入任何公共头文件）
+#   ROS2（rclcpp/、rosgraph_msgs/、sensor_msgs/、tf2_msgs/、std_srvs/、geometry_msgs/、builtin_interfaces/、unitree_*）只允许在
+#           engine/ros2/src/ 与 tests/（M4-06，D-104：ROS2 是可选模块，公共头与其他模块都不含 ROS 类型）
 #   stb_    只允许在 engine/render/src/ 与 tests/（M1-08b）
 #   cgltf   只允许在 engine/asset/src/ 与 tests/（M1-09）
 #   sqlite3 只允许在 engine/library/src/ 与 tests/（M3-07b，D-112）
@@ -20,7 +22,8 @@ file(GLOB_RECURSE files
 set(glfw_allowed "/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(gl_allowed "/engine/render/|/engine/platform/backends/glfw/src/|/tests/platform/|/tests/render/")
 set(imgui_allowed "/engine/ui/|/apps/viewer/|/tests/")
-set(json_allowed "/engine/settings/src/|/engine/scene/src/|/engine/simulation/src/|/tests/")
+set(json_allowed "/engine/settings/src/|/engine/scene/src/|/engine/simulation/src/|/engine/ros2/src/|/tests/")
+set(ros2_allowed "/engine/ros2/src/|/tests/")
 set(stb_allowed "/engine/render/src/|/tests/")
 set(cgltf_allowed "/engine/asset/src/|/tests/")
 set(mujoco_allowed "/engine/physics/backends/mujoco/src/")
@@ -45,6 +48,9 @@ foreach(f IN LISTS files)
         endif()
         if(line MATCHES "[<\"](imgui|imstb_)" AND NOT rel MATCHES "${imgui_allowed}")
             list(APPEND violations "${rel}: ${line}（ImGui 只能在界面模块与应用中使用）")
+        endif()
+        if(line MATCHES "[<\"](rclcpp|rosgraph_msgs|sensor_msgs|tf2_msgs|std_srvs|geometry_msgs|builtin_interfaces|unitree_go|unitree_hg|unitree_api)/" AND NOT rel MATCHES "${ros2_allowed}")
+            list(APPEND violations "${rel}: ${line}（ROS2 头文件只能出现在 engine/ros2/src/ 中，M4-06）")
         endif()
         if(line MATCHES "[<\"]cgltf" AND NOT rel MATCHES "${cgltf_allowed}")
             list(APPEND violations "${rel}: ${line}（cgltf 只能在资产模块的实现中使用）")

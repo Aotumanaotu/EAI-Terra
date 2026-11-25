@@ -1,0 +1,6 @@
+{
+  "format": "terra.ros2",
+  "version": 1,
+  "name": "错误的配置（M4-06a 测试）：频率为 0",
+  "tfHz": 0
+}

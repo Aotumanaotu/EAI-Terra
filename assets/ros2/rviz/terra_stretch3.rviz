@@ -1,0 +1,95 @@
+# EAI Terra M4-06a 演示用的 RViz2 配置：Stretch 3（通用配置的话题）。用法：
+#   rviz2 -d assets/ros2/rviz/terra_stretch3.rviz --ros-args -p use_sim_time:=true
+# 固定坐标系为 world；TF 为各实体（/tf）与传感器安装坐标系（/tf_static）；雷达与相机为 best effort（与桥接的 QoS 一致）。
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Help Height: 0
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 1
+      Plane Cell Count: 10
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Arrows: false
+      Show Axes: true
+      Show Names: false
+      Marker Scale: 0.25
+      Update Interval: 0
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: 2D 激光雷达（/stretch3/scan/scan）
+      Enabled: true
+      Style: Flat Squares
+      Size (m): 0.04
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+      Decay Time: 0
+      Topic:
+        Value: /stretch3/scan/scan
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: 头部相机彩色
+      Enabled: true
+      Normalize Range: true
+      Topic:
+        Value: /stretch3/d435i_camera_rgb/image_raw
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: 头部相机深度
+      Enabled: true
+      Normalize Range: false
+      Min Value: 0
+      Max Value: 6
+      Topic:
+        Value: /stretch3/d435i_camera_rgb/depth/image_raw
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Interact
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 4.5
+      Focal Point:
+        X: 0
+        Y: -0.3
+        Z: 0.6
+      Pitch: 0.45
+      Yaw: 0.7
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
+  X: 60
+  Y: 60

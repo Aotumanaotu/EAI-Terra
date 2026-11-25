@@ -13,3 +13,8 @@ add_executable(terra_headless
 target_link_libraries(terra_headless PRIVATE
     terra_headless_cli terra::core terra::physics terra::physics_mujoco terra::scene terra::simulation terra::library)
 terra_configure_target(terra_headless)
+# M4-06a：ROS2 桥接（只在 TERRA_BUILD_ROS2=ON 且找到 ROS2 时）。Headless 仍不链接任何图形库
+if(TERRA_ROS2_ENABLED)
+    target_link_libraries(terra_headless PRIVATE terra::ros2)
+    target_compile_definitions(terra_headless PRIVATE TERRA_WITH_ROS2=1)
+endif()

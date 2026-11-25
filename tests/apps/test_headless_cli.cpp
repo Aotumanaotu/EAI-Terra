@@ -195,6 +195,29 @@ void testUsageErrors() {
     }
 }
 
+// M4-06a：--ros2 隐含 --realtime；需要场景文件，不能与 --model、--dry-run、--rerun、--list-records 同用
+void testRos2() {
+    {
+        const ParseResult r = parse({"--scene", "s.json", "--duration", "5", "--ros2", "p.terra-ros2.json"});
+        check(r.ok() && r.options.ros2Profile == "p.terra-ros2.json" && r.options.realtime, "--ros2 隐含 --realtime：" + r.error);
+    }
+    {
+        const ParseResult r = parse({"--motion", "m.json", "--ros2", "p.json"});
+        check(r.ok() && r.options.ros2Profile == "p.json", "--motion + --ros2：" + r.error);
+    }
+    {
+        const ParseResult r = parse({"--model", "a.xml", "--steps", "10", "--realtime"});
+        check(r.ok() && r.options.realtime && r.options.ros2Profile.empty(), "单独的 --realtime：" + r.error);
+    }
+    expectError({"--model", "a.xml", "--steps", "1", "--ros2", "p.json"}, "--ros2 需要场景文件");
+    expectError({"--scene", "s.json", "--steps", "1", "--dry-run", "--ros2", "p.json"}, "--ros2 需要场景文件");
+    expectError({"--scene", "s.json", "--steps", "1", "--ros2", ""}, "--ros2 的值不能为空");
+    expectError({"--scene", "s.json", "--steps", "1", "--ros2", "a.json", "--ros2", "b.json"}, "重复的参数 --ros2");
+    expectError({"--scene", "s.json", "--steps", "1", "--realtime", "--realtime"}, "重复的参数 --realtime");
+    expectError({"--rerun", "r.jsonl", "--ros2", "p.json"}, "--rerun 不能");
+    expectError({"--list-records", "--ros2", "p.json"}, "--list-records 只能");
+}
+
 void testJson() {
     check(jsonEscape("plain") == "plain", "普通字符串");
     check(jsonEscape("a\"b\\c") == "a\\\"b\\\\c", "引号与反斜杠");
@@ -337,6 +360,7 @@ int main() {
     testScene();
     testMotion();
     testRecord();
+    testRos2();
     testJson();
     testStepsForDuration();
     testRecords();

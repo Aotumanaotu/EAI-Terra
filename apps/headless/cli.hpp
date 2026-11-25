@@ -44,6 +44,8 @@ struct RunOptions {
     std::uint64_t sampleEvery = 1;          // 每 N 步输出一次状态
     bool dryRun = false;                    // 只校验参数与模型文件，不运行仿真
     bool sensors = false;                   // M4-02：输出传感器读数（sensor_list 与 sensor 行），按各传感器的频率采样
+    std::string ros2Profile;                // M4-06a：ROS2 通信配置文件（*.terra-ros2.json）；需要场景；隐含 --realtime
+    bool realtime = false;                  // M4-06a：按墙钟节奏推进（1 秒仿真时间 = 1 秒），供外部程序实时交互
 };
 
 struct ParseResult {

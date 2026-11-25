@@ -361,6 +361,18 @@ constexpr Entry kEntries[] = {
     {TextId::SensorsStep, "步", "step"},
     {TextId::SensorsCameraFailed, "相机渲染器创建失败：", "Camera renderer could not be created: "},
     {TextId::SensorsRotated, "显示已逆时针旋转", "Display rotated counter-clockwise by"},
+    {TextId::SimRos2, "ROS2 桥接", "ROS2 Bridge"},
+    {TextId::SimRos2Unavailable,
+     "本程序构建时没有 ROS2。请安装 ROS2 Humble（Ubuntu 22.04：sudo apt install ros-humble-ros-base），"
+     "source /opt/ros/humble/setup.bash 后以 -DTERRA_BUILD_ROS2=ON 重新构建。",
+     "This build has no ROS2. Install ROS2 Humble (Ubuntu 22.04: sudo apt install ros-humble-ros-base), "
+     "source /opt/ros/humble/setup.bash and rebuild with -DTERRA_BUILD_ROS2=ON."},
+    {TextId::StatusRos2, "ROS2 订阅者", "ROS2 subscribers"},
+    {TextId::LogRos2Started, "ROS2 桥接已开启：", "ROS2 bridge started: "},
+    {TextId::LogRos2Stopped, "ROS2 桥接已关闭", "ROS2 bridge stopped"},
+    {TextId::LogRos2Failed, "ROS2 桥接无法开启：", "ROS2 bridge could not start: "},
+    {TextId::LogRos2Request, "ROS2 服务请求：", "ROS2 service request: "},
+    {TextId::LogRos2RequestIgnored, "回放中，忽略 ROS2 服务请求：", "Replaying; ROS2 service request ignored: "},
 };
 
 constexpr bool entriesInOrder() {

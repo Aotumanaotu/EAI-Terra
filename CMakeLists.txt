@@ -21,6 +21,10 @@ option(TERRA_WARNINGS_AS_ERRORS "将编译警告视为错误" OFF)
 # 渲染相关目标（M1 起）。默认关闭：关闭时 Headless 与物理目标的构建、测试完全不受影响（开发计划 8.1 节）。
 option(TERRA_BUILD_RENDER "构建渲染相关目标（需要 scripts/render/fetch.sh 与 build.sh 准备的依赖）" OFF)
 
+# ROS2 桥接（M4-06）。默认关闭：关闭时其他目标的构建与测试完全不受影响，核心库、Headless 都不链接 ROS2。
+# 打开前须先 source /opt/ros/humble/setup.bash（宇树配置另需 source unitree_ros2 的 cyclonedds_ws/install/setup.bash）。
+option(TERRA_BUILD_ROS2 "构建 ROS2 桥接（需要 ROS2 Humble）" OFF)
+
 # 单配置生成器默认 Debug，避免无优化、无调试信息的空构建类型。
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "构建类型" FORCE)
@@ -31,6 +35,10 @@ include(TerraJson)
 include(TerraSqlite)
 if(TERRA_BUILD_RENDER)
     include(TerraRender)
+endif()
+set(TERRA_ROS2_ENABLED OFF)
+if(TERRA_BUILD_ROS2)
+    include(TerraRos2)
 endif()
 
 # 目标边界（M0-01 评审结果，详见 docs/validation/M0-01-environment.md）：
@@ -57,6 +65,9 @@ add_subdirectory(engine/settings)
 add_subdirectory(engine/scene)
 add_subdirectory(engine/simulation)
 add_subdirectory(engine/library)
+if(TERRA_ROS2_ENABLED)
+    add_subdirectory(engine/ros2)
+endif()
 if(TERRA_BUILD_RENDER)
     add_subdirectory(engine/platform)
     add_subdirectory(engine/render)

@@ -565,7 +565,7 @@ M4 不需要新的渲染素材。
 | 配置 | 适用 | 消息 |
 | --- | --- | --- |
 | 通用 | 任意机器人 | 只用 ROS2 标准消息（原 11.3 第 4～6 条的方案） |
-| 宇树（Go2、G1） | 与宇树 `unitree_ros2` 一致 | 低层：`/lowstate`（`unitree_go/msg/LowState` 或 `unitree_hg/msg/LowState`，含 IMU、电机状态、足端力）与 `/lowcmd`（含 CRC）；高层运动服务另行评估 |
+| 宇树（Go2、G1；用户 2026-11-24 要求加入 A2W，模型来源待定，见 M4-05 设计稿第 8 节） | 与宇树 `unitree_ros2` 一致 | 低层：`/lowstate`（`unitree_go/msg/LowState` 或 `unitree_hg/msg/LowState`，含 IMU、电机状态、足端力）与 `/lowcmd`（含 CRC）；高层运动服务另行评估 |
 | Stretch 3 | 与 `stretch_ros2` 驱动一致 | `/joint_states`、`/stretch/cmd_vel`、轨迹动作接口、IMU 与 RealSense 相机话题 |
 | TurtleBot 4 等 | 与其官方驱动一致 | 具体导入时再定（用户 2026-11-24） |
 

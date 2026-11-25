@@ -331,6 +331,15 @@ enum class TextId : int {
     SensorsStep,
     SensorsCameraFailed,
     SensorsRotated,
+    // M4-06a：ROS2 桥接
+    SimRos2,
+    SimRos2Unavailable,
+    StatusRos2,
+    LogRos2Started,
+    LogRos2Stopped,
+    LogRos2Failed,
+    LogRos2Request,
+    LogRos2RequestIgnored,
     Count,
 };
 

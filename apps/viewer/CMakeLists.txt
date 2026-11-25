@@ -17,3 +17,8 @@ target_link_libraries(terra_viewer PRIVATE terra::viewer_scene terra::ui terra::
 # M2-07 起查看器运行物理（开发计划 9.5 节第 7 条）：查看器程序链接 MuJoCo 后端；渲染、界面、资产库仍不链接物理。
 target_compile_definitions(terra_viewer PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
 terra_configure_target(terra_viewer)
+# M4-06a：ROS2 桥接（TERRA_BUILD_ROS2=ON 且找到 ROS2 Humble 时）；没有时菜单项禁用并提示安装
+if(TERRA_ROS2_ENABLED)
+    target_link_libraries(terra_viewer PRIVATE terra::ros2)
+    target_compile_definitions(terra_viewer PRIVATE TERRA_WITH_ROS2=1)
+endif()

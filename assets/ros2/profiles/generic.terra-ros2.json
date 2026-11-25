@@ -1,0 +1,12 @@
+{
+  "format": "terra.ros2",
+  "version": 1,
+  "name": "通用配置（标准消息）",
+  "kind": "generic",
+  "clock": true,
+  "jointStatesHz": 100,
+  "tfHz": 100,
+  "sensors": true,
+  "commands": true,
+  "services": true
+}

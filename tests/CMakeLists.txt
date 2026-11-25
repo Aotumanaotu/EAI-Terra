@@ -28,6 +28,10 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-06a：ROS2 桥接。没有 ROS2 的构建：--ros2 提示安装并返回 3（headless.ros2_unavailable）。ROS2 构建（TERRA_ROS2_ENABLED，
+#   需先 source /opt/ros/humble/setup.bash）：通信配置（ros2.profile）、端到端（ros2.bridge_headless、ros2.bridge_commands、
+#   graphics.ros2_bridge_viewer，标签 ros2）、配置错误（headless.ros2_bad_profile）。
+# M4-05：宇树官方模型 Go2W、AS2 的导入核查（robots.unitree_import）。
 # M4-04：查看器传感器自检（graphics.viewer_sensor_selftest）、terra_capture（graphics.capture_determinism、capture.no_cameras）。
 # M4-03b：2D 激光雷达（simulation.lidar）；Headless --sensors 输出雷达（headless.sensors_lidar）。
 # M4-03a：相机模型（scene.camera_model）、相机传感器的渲染（graphics.camera_capture）。
@@ -309,6 +313,14 @@ target_compile_definitions(test_robot_motions PRIVATE TERRA_ASSETS_DIR="${PROJEC
 terra_configure_target(test_robot_motions)
 add_test(NAME robots.motions COMMAND test_robot_motions)
 set_tests_properties(robots.motions PROPERTIES SKIP_RETURN_CODE 77)
+
+# 宇树官方 MuJoCo 模型的导入核查（M4-05）：Go2W（轮足）与 AS2（unitree_hg 四足）；缺失时跳过
+add_executable(test_unitree_import robots/test_unitree_import.cpp)
+target_link_libraries(test_unitree_import PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_unitree_import PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_unitree_import)
+add_test(NAME robots.unitree_import COMMAND test_unitree_import)
+set_tests_properties(robots.unitree_import PROPERTIES SKIP_RETURN_CODE 77)
 
 # 关节与接触验证（M3-06）：每台参考机器人一组数值判据（冻结，见 M3-06 报告）
 add_executable(test_robot_validation robots/test_robot_validation.cpp)
@@ -694,4 +706,39 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe
                 --settings "${CMAKE_CURRENT_BINARY_DIR}/viewer_selftest/settings.json")
     set_tests_properties(graphics.viewer_selftest PROPERTIES LABELS graphics)
+endif()
+
+# ---- ROS2 桥接（M4-06a）----
+if(NOT TERRA_ROS2_ENABLED)
+    terra_add_cli_test(ros2_unavailable EXPECT 3 NO_DISPLAY STDERR "构建时没有 ROS2 桥接.*TERRA_BUILD_ROS2=ON"
+        ARGS --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --steps 1
+             --ros2 "${PROJECT_SOURCE_DIR}/assets/ros2/profiles/generic.terra-ros2.json")
+else()
+    add_executable(test_ros2_profile ros2/test_ros2_profile.cpp)
+    target_link_libraries(test_ros2_profile PRIVATE terra::ros2)
+    target_compile_definitions(test_ros2_profile PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+    terra_configure_target(test_ros2_profile)
+    add_test(NAME ros2.profile COMMAND test_ros2_profile)
+    set_tests_properties(ros2.profile PROPERTIES LABELS ros2)
+
+    terra_add_cli_test(ros2_bad_profile EXPECT 2 NO_DISPLAY STDERR "通信配置错误 /tfHz"
+        ARGS --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --steps 1
+             --ros2 "${PROJECT_SOURCE_DIR}/assets/tests/ros2/bad_rate.terra-ros2.json")
+
+    # 端到端：Python（rclpy）订阅、调用服务并核对。被测程序按墙钟运行十几秒，串行执行以免相互拖慢
+    find_program(TERRA_PYTHON3 python3 REQUIRED)
+    set(_terra_check_bridge "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_bridge.py")
+    add_test(NAME ros2.bridge_headless
+        COMMAND "${TERRA_PYTHON3}" "${_terra_check_bridge}" headless --headless $<TARGET_FILE:terra_headless>
+                --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_bridge_headless")
+    add_test(NAME ros2.bridge_commands
+        COMMAND "${TERRA_PYTHON3}" "${_terra_check_bridge}" commands --headless $<TARGET_FILE:terra_headless>
+                --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_bridge_commands")
+    set_tests_properties(ros2.bridge_headless ros2.bridge_commands PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 180)
+    if(TERRA_BUILD_RENDER)
+        add_test(NAME graphics.ros2_bridge_viewer
+            COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${TERRA_PYTHON3}" "${_terra_check_bridge}" viewer --viewer $<TARGET_FILE:terra_viewer>
+                    --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_bridge_viewer")
+        set_tests_properties(graphics.ros2_bridge_viewer PROPERTIES LABELS "graphics;ros2" RUN_SERIAL TRUE TIMEOUT 240)
+    endif()
 endif()

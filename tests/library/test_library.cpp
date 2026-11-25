@@ -1,5 +1,5 @@
 // 资源库（M3-07b）：SQLite 中的实验记录索引。
-//   - 新建库：表与版本号（user_version = 1）；
+//   - 新建库：表与版本号（user_version = kSchemaVersion；M4-08c 起为 2）；
 //   - 加入记录：摘要字段正确；同一路径再次加入为更新（不重复）；没有 summary 的记录标为 incomplete；
 //   - 列出：按创建时间从新到旧；按场景筛选；按路径查找；
 //   - 文件删除后 removeMissing 删除条目；rebuild 扫描目录（含子目录），读不出的文件计入错误、不中断；
@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
         const bool row = sqlite3_step(s) == SQLITE_ROW;
         const auto v = row ? sqlite3_column_int(s, 0) : -1;
         sqlite3_finalize(s);
-        check(v == lib::kSchemaVersion, "库的版本号 user_version = 1，实际 " + std::to_string(v));
+        check(v == lib::kSchemaVersion, "库的版本号 user_version = " + std::to_string(lib::kSchemaVersion) + "，实际 " + std::to_string(v));
         sqlite3_exec(db, "PRAGMA user_version = 9", nullptr, nullptr, nullptr);
         sqlite3_close(db);
     }

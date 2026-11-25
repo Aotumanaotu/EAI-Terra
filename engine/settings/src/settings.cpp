@@ -122,7 +122,7 @@ private:
 
 void readInterface(Reader& r, const Json& j, InterfaceSettings& s) {
     const std::string path = "interface";
-    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes", "recordSampleHz"});
+    r.unknownFields(j, path, {"language", "uiScale", "panels", "layout", "recentScenes", "recordSampleHz", "libraryLocation"});
     r.real(j, "recordSampleHz", path, ranges::kRecordSampleHz, s.recordSampleHz);
     if (const auto it = j.find("recentScenes"); it != j.end()) {
         if (!it->is_array()) {
@@ -136,6 +136,10 @@ void readInterface(Reader& r, const Json& j, InterfaceSettings& s) {
                 if (s.recentScenes.size() < InterfaceSettings::kMaxRecentScenes) s.recentScenes.push_back(item.get<std::string>());
             }
         }
+    }
+    if (const auto it = j.find("libraryLocation"); it != j.end()) {  // M4-08c
+        if (it->is_string()) s.libraryLocation = it->get<std::string>();
+        else r.warn("interface.libraryLocation：应为目录（字符串），已使用默认位置");
     }
     if (const auto it = j.find("language"); it != j.end()) {
         const std::string value = it->is_string() ? it->get<std::string>() : std::string{};
@@ -499,7 +503,7 @@ bool operator==(const VideoModeSetting& a, const VideoModeSetting& b) noexcept {
 bool operator==(const InterfaceSettings& a, const InterfaceSettings& b) noexcept {
     return a.language == b.language && a.uiScale == b.uiScale && a.showOutliner == b.showOutliner &&
            a.showDetails == b.showDetails && a.showLog == b.showLog && a.showStats == b.showStats && a.layout == b.layout &&
-           a.recentScenes == b.recentScenes && a.recordSampleHz == b.recordSampleHz;
+           a.recentScenes == b.recentScenes && a.recordSampleHz == b.recordSampleHz && a.libraryLocation == b.libraryLocation;
 }
 
 bool operator==(const DisplaySettings& a, const DisplaySettings& b) noexcept {
@@ -549,6 +553,7 @@ std::string toJson(const Settings& s) {
     ui["recentScenes"] = Json::array();
     for (const auto& path : s.ui.recentScenes) ui["recentScenes"].push_back(path);
     ui["recordSampleHz"] = s.ui.recordSampleHz;
+    ui["libraryLocation"] = s.ui.libraryLocation;
     root["interface"] = ui;
 
     Json display;

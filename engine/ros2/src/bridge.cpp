@@ -1,6 +1,7 @@
 // ROS2 桥接（M4-06a 通用配置；M4-06b 宇树配置在 unitree.cpp）。rclcpp 与 ROS 消息只在 engine/ros2/src 中使用，不进入公共头。
 
 #include "terra/ros2/bridge.hpp"
+#include "runtime.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -42,22 +43,6 @@ namespace terra::ros2 {
 namespace {
 
 namespace td = terra::data;
-
-// 进程内只初始化一次 rclcpp；不接管信号（查看器与 Headless 自己处理 Ctrl+C）
-std::mutex initMutex;
-int liveBridges = 0;
-
-void acquireRclcpp() {
-    std::lock_guard<std::mutex> lock(initMutex);
-    if (liveBridges++ == 0 && !rclcpp::ok()) {
-        rclcpp::init(0, nullptr, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
-    }
-}
-
-void releaseRclcpp() {
-    std::lock_guard<std::mutex> lock(initMutex);
-    if (--liveBridges == 0 && rclcpp::ok()) rclcpp::shutdown();
-}
 
 builtin_interfaces::msg::Time stampOf(double seconds) {
     builtin_interfaces::msg::Time t;

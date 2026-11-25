@@ -148,6 +148,18 @@ void testRecord() {
     expectError({"--list-records", "--steps", "1"}, "--list-records 只能与");
     expectError({"--scene", "s.json", "--steps", "1", "--library", "lib.sqlite3"}, "--library 只用于");
     expectError({"--list-records", "--list-records"}, "重复的参数 --list-records");
+    // M4-08c：--list-assets [--kind]
+    {
+        const ParseResult r = parse({"--list-assets", "--kind", "scene", "--library", "lib.sqlite3"});
+        check(r.ok() && r.options.listAssets && r.options.assetKind == "scene" && r.options.libraryPath == "lib.sqlite3",
+              "--list-assets + --kind + --library：" + r.error);
+        const ParseResult all = parse({"--list-assets"});
+        check(all.ok() && all.options.listAssets && all.options.assetKind.empty(), "--list-assets：" + all.error);
+    }
+    expectError({"--list-assets", "--kind", "mesh"}, "--kind 应为");
+    expectError({"--list-assets", "--scene", "s.json"}, "--list-assets 只能与");
+    expectError({"--list-assets", "--list-records"}, "--list-assets 只能与");
+    expectError({"--scene", "s.json", "--steps", "1", "--kind", "scene"}, "--kind 只用于");
 }
 
 void testUsageErrors() {

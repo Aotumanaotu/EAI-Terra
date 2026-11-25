@@ -208,6 +208,12 @@ terra_add_cli_test(list_records EXPECT 0
     ARGS --list-records --library ${CMAKE_CURRENT_BINARY_DIR}/headless_record/library.sqlite3
          --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/keyframe_arm.terra-scene.json)
 set_tests_properties(headless.list_records PROPERTIES FIXTURES_REQUIRED headless_record)
+# M4-08c：--list-assets 扫描内置资产（资源库在构建目录中）：先输出 asset_scan，再每行一个资产；--kind 筛选
+terra_add_cli_test(list_assets EXPECT 0
+    STDOUT "[{].type.:.asset_scan.,[^\n]*.files.:[0-9]+,[^\n]*[}].*[{].type.:.asset.,.kind.:.scene.,.source.:.builtin.,.title.:.[^\n]*scenes/robots/go2.terra-scene.json"
+    ARGS --list-assets --kind scene --library ${CMAKE_CURRENT_BINARY_DIR}/headless_assets/library.sqlite3)
+terra_add_cli_test(list_assets_bad_kind EXPECT 2 STDERR "--kind 应为"
+    ARGS --list-assets --kind mesh)
 terra_add_cli_test(rerun_missing EXPECT 4 STDERR "记录文件不存在"
     ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/no_such.terra-record.jsonl)
 terra_add_cli_test(rerun_with_scene EXPECT 2 STDERR "--rerun 不能与"
@@ -365,6 +371,11 @@ add_test(NAME import.cli_broken
             "-DSTDERR_REGEX=missing_mesh：[^\n]*no_such_mesh[^\n]*  → .*unknown_package：[^\n]*nonexistent_pkg[^\n]*  → "
             -P "${_terra_check_exit}" "${PROJECT_SOURCE_DIR}/assets/tests/import/broken.urdf"
             --output "${CMAKE_CURRENT_BINARY_DIR}/import_cli_broken")
+# M4-08c：命令行导入后登记到资源库；资产包导出再解包到另一个资源库（逐字节相同）；Headless 列出解包后的机器人
+add_test(NAME import.cli_pack
+    COMMAND "${CMAKE_COMMAND}" -DIMPORT=$<TARGET_FILE:terra_import_cli> -DHEADLESS=$<TARGET_FILE:terra_headless>
+            "-DINPUT=${PROJECT_SOURCE_DIR}/assets/tests/import/demo_robot/urdf/demo.urdf" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/import_cli_pack"
+            -P "${PROJECT_SOURCE_DIR}/cmake/TerraCheckImportPack.cmake")
 
 # TurtleBot 4 标准版（M4-08b）：按导入配方导入（两次逐字节相同）、传感器、差速运动学；描述文件缺失时跳过；需要 assimp
 add_executable(test_turtlebot4 robots/test_turtlebot4.cpp)
@@ -436,6 +447,20 @@ add_executable(test_library library/test_library.cpp)
 target_link_libraries(test_library PRIVATE terra::library terra::sqlite)
 terra_configure_target(test_library)
 add_test(NAME library.store COMMAND test_library "${CMAKE_CURRENT_BINARY_DIR}/library_tmp")
+# M4-08c：资产表（扫描、增量、收藏、缺失、复制到新位置、版本升级）与资产包
+add_executable(test_library_assets library/test_library_assets.cpp)
+target_link_libraries(test_library_assets PRIVATE terra::library terra::sqlite)
+terra_configure_target(test_library_assets)
+add_test(NAME library.assets COMMAND test_library_assets "${CMAKE_CURRENT_BINARY_DIR}/library_assets_tmp")
+add_executable(test_pack library/test_pack.cpp)
+target_link_libraries(test_pack PRIVATE terra::library terra::core terra_miniz)
+terra_configure_target(test_pack)
+add_test(NAME library.pack COMMAND test_pack "${CMAKE_CURRENT_BINARY_DIR}/pack_tmp")
+# M4-08d：显示配置（.terviz 往返、保留不认识的内容、导出器注册表、.rviz 导出）；不需要 ROS2
+add_executable(test_viz viz/test_viz.cpp)
+target_link_libraries(test_viz PRIVATE terra::viz)
+terra_configure_target(test_viz)
+add_test(NAME viz.config COMMAND test_viz "${CMAKE_CURRENT_BINARY_DIR}/viz_tmp")
 
 # PD 控制层与快照的执行器状态（M3-04b）
 add_executable(test_pd_layer simulation/test_pd_layer.cpp)
@@ -702,6 +727,12 @@ if(TERRA_BUILD_RENDER)
                 --import-self-test "${PROJECT_SOURCE_DIR}/assets/tests/import/demo_robot/urdf/demo.urdf"
                 --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_import/library.sqlite3")
     set_tests_properties(graphics.viewer_import_selftest PROPERTIES LABELS graphics)
+    # M4-08c：资源库面板与欢迎页——单击卡片打开场景、当前场景高亮、收藏写入资源库、快速打开、动作卡片播放、隐藏；
+    # 另扫描测试夹具（tests/scene、tests/motion）；资源库在构建目录中（重复运行时沿用，检查与之无关）
+    add_test(NAME graphics.viewer_library_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe
+                --library-self-test --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_library/library.sqlite3")
+    set_tests_properties(graphics.viewer_library_selftest PROPERTIES LABELS graphics)
     # M4-07：第 6 帧开始记录（保存相机图像），中间停止并回放到一帧有图像的时刻；资源库在构建目录中
     add_test(NAME graphics.viewer_sensor_record_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
@@ -821,6 +852,14 @@ else()
         COMMAND "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_turtlebot4.py" --headless $<TARGET_FILE:terra_headless>
                 --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_turtlebot4")
     set_tests_properties(ros2.turtlebot4 PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 180 SKIP_RETURN_CODE 77)
+
+    # ROS2 监视器（M4-08d）：Python 发布内容已知的消息（含宇树 LowState），逐项核对展开、曲线字段、图像、TF 与统计
+    add_executable(test_ros2_monitor ros2/test_ros2_monitor.cpp)
+    target_link_libraries(test_ros2_monitor PRIVATE terra::ros2)
+    target_include_directories(test_ros2_monitor SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/third_party/stb")
+    terra_configure_target(test_ros2_monitor)
+    add_test(NAME ros2.monitor COMMAND test_ros2_monitor "${CMAKE_CURRENT_SOURCE_DIR}/ros2/publish_known.py")
+    set_tests_properties(ros2.monitor PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 120)
 
     # ---- 宇树配置（M4-06b）：需要宇树消息包 ----
     if(TERRA_ROS2_UNITREE)

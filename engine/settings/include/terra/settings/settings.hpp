@@ -39,6 +39,9 @@ struct InterfaceSettings {
     std::vector<std::string> recentScenes;
     // M3-07c：查看器记录实验时的状态采样率（Hz，默认 50，用户 2026-11-24：客户端可设置），范围见 ranges::kRecordSampleHz
     double recordSampleHz = 50.0;
+    // M4-08c：资源库位置（目录，其中有 library.sqlite3、records/、assets/）；空 = 默认（$TERRA_LIBRARY 或 XDG 数据目录）。
+    // 命令行 --library 优先
+    std::string libraryLocation;
 };
 
 // 把 path 放到最近打开列表的最前面（去重，超出上限的丢弃）

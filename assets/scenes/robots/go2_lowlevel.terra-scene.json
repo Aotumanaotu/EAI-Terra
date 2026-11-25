@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "宇树 Go2 低层控制（宇树通信配置，M4-06b）：机身 IMU 装在安装点 imu，没有 PD 层",
+  "title": "宇树 Go2 低层控制",
   "models": [
     {
       "name": "go2",

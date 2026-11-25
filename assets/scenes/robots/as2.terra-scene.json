@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "宇树 AS2 四足机器人（unitree_mujoco）",
+  "title": "宇树 AS2",
   "models": [
     {
       "name": "as2",

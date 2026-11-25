@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "宇树 G1 低层控制（宇树通信配置，M4-06b）：悬挂，位置执行器改为力矩执行器",
+  "title": "宇树 G1 低层控制",
   "models": [
     {
       "name": "g1",

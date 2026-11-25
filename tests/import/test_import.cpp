@@ -337,6 +337,7 @@ void testExecute(const std::string& dir) {
     auto loaded = terra::scene::loadScene(result.scene, terra::physics::mujoco::composeWorld);
     check(loaded.ok(), "生成的场景可以加载");
     if (!loaded.ok()) return;
+    check(loaded.scene->document.title == "demo_robot", "M4-08c：场景的短标题（没有配方 title 时为实例名）");
     auto& world = *loaded.scene->world;
     const auto& d = world.description();
     const auto* left = d.findActuator("demo_robot/left_wheel_joint");

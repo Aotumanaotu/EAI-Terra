@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "宇树 Go2W 轮足四足机器人（unitree_mujoco）",
+  "title": "宇树 Go2W 轮足",
   "models": [
     {
       "name": "go2w",

@@ -64,6 +64,7 @@ add_subdirectory(engine/input)
 add_subdirectory(engine/settings)
 add_subdirectory(engine/scene)
 add_subdirectory(engine/simulation)
+add_subdirectory(engine/viz)  # M4-08d 显示配置（资源库登记显示配置时使用）
 add_subdirectory(engine/library)
 add_subdirectory(engine/import)  # M4-08a 模型导入
 if(TERRA_ROS2_ENABLED)

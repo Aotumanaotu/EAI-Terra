@@ -5,6 +5,7 @@
 // 设置模块（terra_settings）不依赖平台、视图与界面；这里把设置换算成各模块的参数，并提供编辑设置的窗口。
 // 窗口直接修改传入的 Settings；查看器每帧比较前后差异并让改动立即生效（见 main.cpp 的 applySettings）。
 
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -39,6 +40,13 @@ struct SettingsWindow {
     // 拖动界面缩放滑块时的临时值：松开后才写入设置（避免拖动中字号变化导致滑块跳动）。
     bool editingScale = false;
     float scaleEdit = 100.0f;
+    // M4-08c：资源库位置。activeLibrary 与 libraryFromCommandLine 由查看器每帧填写；“复制到新位置”只提出请求（目标目录），
+    // 由查看器复制完成后再写入设置
+    std::array<char, 512> libraryEdit{};
+    bool libraryEditLoaded = false;
+    std::string activeLibrary;
+    bool libraryFromCommandLine = false;
+    std::optional<std::string> copyLibraryRequest;
 
     bool capturingKey() const noexcept { return capture.has_value(); }
 };

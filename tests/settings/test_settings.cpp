@@ -413,6 +413,17 @@ void testSimulationSettings() {
         check(bad.settings.ui.recordSampleHz == 50.0 && contains(bad.warnings, "interface.recordSampleHz"), "采样率 0 → 默认 50，并警告");
     }
 
+    // M4-08c：资源库位置（默认空 = 默认位置）往返
+    {
+        check(st::Settings{}.ui.libraryLocation.empty(), "资源库位置默认为空");
+        st::Settings custom;
+        custom.ui.libraryLocation = "/data/terra-library";
+        const auto back = st::fromJson(st::toJson(custom));
+        check(back.settings.ui.libraryLocation == "/data/terra-library" && back.warnings.empty() && back.settings == custom, "资源库位置往返");
+        const auto bad = st::fromJson(R"({"version": 3, "interface": {"libraryLocation": 5}})");
+        check(bad.settings.ui.libraryLocation.empty() && contains(bad.warnings, "interface.libraryLocation"), "资源库位置不是字符串：警告");
+    }
+
     // 最近打开的场景
     st::InterfaceSettings ui;
     for (int i = 0; i < 10; ++i) st::rememberScene(ui, "/s/" + std::to_string(i) + ".json");

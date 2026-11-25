@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "宇树 G1 人形机器人（Menagerie，29 自由度）",
+  "title": "宇树 G1",
   "models": [
     {
       "name": "g1",

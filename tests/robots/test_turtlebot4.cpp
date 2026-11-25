@@ -152,7 +152,8 @@ int main(int argc, char** argv) {
     stepFor(1.0);  // 落稳
     const double settled = world.snapshot()->entities[base].pose.position.z;
     std::printf("INFO 落稳后 base_link 高度 %.4f m\n", settled);
-    check(settled > 0.0 && settled < 0.1, "落在地面上（base_link 高度在 0～0.1 m）");
+    // Create 3 的 base_link 原点在地面高度（轮子着地时约为 0）；接触有几毫米的穿透（2026-11-25 基线：−0.0046 m）
+    check(settled > -0.02 && settled < 0.1, "落在地面上（base_link 高度在 −0.02～0.1 m）");
 
     // 直行：两轮 5 rad/s 2 s；理论位移 r·ω·t
     auto before = world.snapshot()->entities[base].pose;

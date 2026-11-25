@@ -1,0 +1,7 @@
+# miniz（MIT 许可）：M4-08c 资产包（.terra-pack，zip 格式）的读写。来源为官方发布包 miniz-3.0.2.zip（单文件版）。
+MINIZ_VERSION=3.0.2
+MINIZ_URL=https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+MINIZ_ZIP_SHA256=ada38db0b703a56d3dd6d57bf84a9c5d664921d870d8fea4db153979fb5332c5
+MINIZ_C_SHA256=0fcdc9888cb3a29ca8f176bac087e5fe6c7258a6ab06b1c271c1e109a11d3740
+MINIZ_H_SHA256=295d1a0041aea09609598c0f1f35c1977ca05ad662acbadcfdaac44c140af37b
+MINIZ_LICENSE_SHA256=0115478d567121238cf6cc1c0c361926cf07a49d9e4c9e66da97fac6a01646b3

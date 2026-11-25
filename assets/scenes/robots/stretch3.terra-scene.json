@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "Hello Robot Stretch 3 轮式移动操作机器人（Menagerie）",
+  "title": "Stretch 3",
   "models": [
     {
       "name": "stretch3",

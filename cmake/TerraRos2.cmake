@@ -1,7 +1,8 @@
 # ROS2 桥接的依赖（M4-06，D-014 Humble、D-104 进程内的可选模块）。
 # 在已 source ROS2 setup.bash 的环境中查找所需的包；缺少时给出提示并关闭 ROS2 桥接，不让配置失败（用户要求：提醒安装对应版本）。
 # 结果：TERRA_ROS2_ENABLED（ON / OFF）；TERRA_ROS2_UNITREE（找到宇树消息包 unitree_go、unitree_hg 时为 ON，M4-06b 使用）。
-set(_terra_ros2_packages rclcpp builtin_interfaces rosgraph_msgs std_msgs geometry_msgs sensor_msgs tf2_msgs std_srvs nav_msgs)  # nav_msgs：M4-08b 差速底盘的 /odom
+set(_terra_ros2_packages rclcpp builtin_interfaces rosgraph_msgs std_msgs geometry_msgs sensor_msgs tf2_msgs std_srvs nav_msgs
+    rosidl_typesupport_introspection_cpp)  # nav_msgs：M4-08b 差速底盘的 /odom；introspection：M4-08d 运行时展开任意消息
 set(_terra_ros2_missing "")
 foreach(_pkg IN LISTS _terra_ros2_packages)
     find_package(${_pkg} QUIET)

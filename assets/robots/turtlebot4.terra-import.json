@@ -3,6 +3,7 @@
   "version": 1,
   "input": "turtlebot4_description/urdf/standard/turtlebot4.urdf.xacro",
   "name": "turtlebot4",
+  "title": "TurtleBot 4",
   "xacroArgs": ["gazebo:=ignition", "namespace:="],
   "placeholderPackages": ["irobot_create_control"],
   "meshScale": 1,

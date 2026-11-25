@@ -4,6 +4,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <tuple>
 
 #include "imgui.h"
@@ -106,6 +107,35 @@ void interfacePage(SettingsWindow& w, st::Settings& s, float currentUiScale) {
         s.ui.language = defaults.language;
         s.ui.uiScale = defaults.uiScale;
     }
+
+    // M4-08c：资源库位置
+    ImGui::SeparatorText(tr(TextId::SettingsLibrary));
+    if (!w.libraryEditLoaded) {
+        const std::string location = s.ui.libraryLocation.empty() ? std::filesystem::path{w.activeLibrary}.parent_path().string() : s.ui.libraryLocation;
+        std::snprintf(w.libraryEdit.data(), w.libraryEdit.size(), "%s", location.c_str());
+        w.libraryEditLoaded = true;
+    }
+    ImGui::TextDisabled("%s%s", tr(TextId::SettingsLibraryActive), w.activeLibrary.c_str());
+    rowLabel(TextId::SettingsLibraryLocation);
+    ImGui::InputText("##libraryLocation", w.libraryEdit.data(), w.libraryEdit.size());
+    const std::string edit = w.libraryEdit.data();
+    const std::string activeDir = std::filesystem::path{w.activeLibrary}.parent_path().string();
+    const bool changed = !edit.empty() && std::filesystem::path{edit}.lexically_normal() != std::filesystem::path{activeDir}.lexically_normal();
+    ImGui::BeginDisabled(!changed);
+    if (ImGui::Button(tr(TextId::SettingsLibraryUse))) s.ui.libraryLocation = edit;
+    ImGui::SameLine();
+    if (ImGui::Button(tr(TextId::SettingsLibraryCopy))) w.copyLibraryRequest = edit;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(s.ui.libraryLocation.empty());
+    if (ImGui::Button(tr(TextId::SettingsLibraryDefault))) {
+        s.ui.libraryLocation.clear();
+        w.libraryEditLoaded = false;
+    }
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", tr(w.libraryFromCommandLine ? TextId::SettingsLibraryCommandLine : TextId::SettingsLibraryHint));
+    ImGui::PopTextWrapPos();
 }
 
 void displayPage(st::Settings& s, const std::vector<terra::platform::MonitorInfo>& monitors) {
@@ -343,6 +373,7 @@ void drawSettingsWindow(SettingsWindow& w, st::Settings& s, const std::vector<te
     if (!w.open) {
         w.capture.reset();
         w.editingScale = false;
+        w.libraryEditLoaded = false;  // 下次打开时从设置重新填写
         return;
     }
     const float k = ImGui::GetFontSize() / 16.0f;  // 随界面缩放

@@ -20,6 +20,8 @@
 //   --import-self-test <文件> （M4-08a）自检时经导入向导导入该模型（第 12 帧分析、第 14 帧导入并打开），检查打开的场景
 //                与导入目录（与 --self-test、--library 同用；导入目录在资源库目录下的 assets/ 中）
 //   --sensor-record-self-test （M4-07）自检时检查传感器的记录（含相机图像）、复现与回放（与 --self-test、--scene、--library 同用）
+//   --library-self-test （M4-08c）自检资源库面板与欢迎页：列出内置场景；单击卡片打开场景、当前场景高亮；收藏写入资源库；
+//                快速打开按名字筛选并打开；动作卡片打开推荐场景并播放；隐藏（与 --self-test、--library 同用，不给 --scene）
 //   --ros2       （M4-06a）打开场景后开启 ROS2 桥接，使用给出的通信配置（*.terra-ros2.json）；构建时没有 ROS2 时提示安装并返回 3
 //   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
 //                自检时在第 3 帧打开（代替按播放），并与“动作 → PD 层 → setControl → step”的纯物理对照逐位比较
@@ -28,6 +30,7 @@
 #include <array>
 #include <cctype>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -85,6 +88,8 @@
 #include "terra/view/camera_controller.hpp"
 #include "camera_sensor.hpp"
 #include "import_wizard.hpp"
+#include "library_panel.hpp"
+#include "terra/library/pack.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
 #ifdef TERRA_WITH_ROS2
@@ -120,6 +125,7 @@ struct Options {
     bool sensorSelfTest = false;  // M4-04：自检时检查传感器采样与预览
     std::string importSelfTestPath;     // M4-08a：自检时导入的模型
     bool sensorRecordSelfTest = false;  // M4-07：自检时检查传感器的记录、复现与回放（与 --self-test、--scene、--library 同用）
+    bool librarySelfTest = false;       // M4-08c：自检资源库面板、欢迎页与快速打开
     std::string ros2Profile;      // M4-06a：开启 ROS2 桥接的通信配置
     bool demoDrive = false;
 };
@@ -155,6 +161,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.importSelfTestPath = argv[++i];
         } else if (a == "--sensor-record-self-test") {
             o.sensorRecordSelfTest = true;
+        } else if (a == "--library-self-test") {
+            o.librarySelfTest = true;
         } else if (a == "--ros2" && hasValue) {
             o.ros2Profile = argv[++i];
         } else if (a == "--demo-drive") {
@@ -344,6 +352,23 @@ struct AppState {
     bool importWizardSeen = false;       // M4-08a 自检：向导窗口出现过
     bool recordCameraImages = false;  // M4-07：记录时同时保存相机图像（实际渲染的帧）到记录旁的 .frames 目录
     std::string lastRecordPath;                          // 最近一次保存的记录（自检用）
+    // M4-08c：资源库面板、欢迎页与快速打开。资源库文件还不存在时（或自检没有给 --library 时）资产列在内存中的临时库里
+    vw::LibraryPanelState libraryPanel;
+    bool showLibrary = true;
+    bool showWelcome = true;  // 没有打开场景时视口中显示欢迎页（本次会话可关闭）
+    bool libraryMemoryOnly = false;  // 自检且没有给 --library：只用内存中的库，不读写用户目录
+    std::unique_ptr<terra::library::Library> memoryLibrary;
+    std::vector<terra::library::AssetEntry> assetList;
+    bool assetsStale = true;
+    std::size_t assetScans = 0;
+    std::string activeLibraryFile;  // 当前使用的库文件（位置改变时重新打开）
+    std::vector<terra::library::ScanRoot> extraScanRoots;  // 自检：另扫描测试夹具
+    ui::FileBrowser packBrowser;
+    struct LibraryTest {
+        std::size_t welcomeCards = 0, panelCards = 0, builtinScenes = 0, quickMatches = 0;
+        bool cardOpened = false, highlighted = false, favoriteSaved = false, quickOpened = false, motionPlayed = false;
+        bool hidden = false, welcomeAgain = false;
+    } libraryTest;
     bool closeRequest = false;
     bool demoAssetsLoaded = false;
     std::optional<st::EnvironmentSetting> sceneEnvironment;  // 场景文件 view.environment：只影响本次会话，不写入设置
@@ -366,10 +391,13 @@ void buildDefaultLayout(ImGuiID dockspace) {
     ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspace, ImGui::GetMainViewport()->WorkSize);
     ImGuiID center = dockspace;
-    const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
+    // M4-08c：左侧加宽（原 17%），上方为资源库（场景卡片），下方为大纲
+    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+    const ImGuiID leftTop = ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.58f, nullptr, &left);
     // M4-08a（用户 2026-11-25）：右侧与底部稍宽（原 24%、24%）
     const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.28f, nullptr, &center);
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
+    ImGui::DockBuilderDockWindow("###Library", leftTop);
     ImGui::DockBuilderDockWindow("###Outliner", left);
     ImGui::DockBuilderDockWindow("###Details", right);
     ImGui::DockBuilderDockWindow("###Actuators", right);
@@ -760,8 +788,13 @@ bool openScene(Frame& f, const std::string& requested) {
 
 constexpr const char* kRecordSuffix = ".terra-record.jsonl";
 
+// 库文件：命令行 --library 优先，其次设置中的资源库位置（M4-08c），否则默认位置
 std::string libraryFilePath(const Frame& f) {
-    return f.state.libraryPath.empty() ? terra::library::defaultLibraryPath() : f.state.libraryPath;
+    if (!f.state.libraryPath.empty()) return f.state.libraryPath;
+    if (!f.settings.current.ui.libraryLocation.empty()) {
+        return (std::filesystem::path{f.settings.current.ui.libraryLocation} / "library.sqlite3").string();
+    }
+    return terra::library::defaultLibraryPath();
 }
 
 terra::library::Library* recordLibrary(Frame& f) {
@@ -793,6 +826,188 @@ void refreshRecordList(Frame& f) {
     if (!f.state.library && !std::filesystem::exists(libraryFilePath(f), ec)) return;
     if (auto* lib = recordLibrary(f)) {
         f.state.recordList = lib->records(f.state.recordsOnlyScene && f.simulated ? f.simulated->path : std::string{});
+    }
+}
+
+// ---- 资源库中的资产（M4-08c）----
+
+// 列出资产用的库：资源库文件已存在（或命令行给了 --library）时用它；否则用内存中的临时库，不在用户目录中建库
+terra::library::Library* assetLibrary(Frame& f) {
+    std::error_code ec;
+    if (!f.state.libraryMemoryOnly && (f.state.library || !f.state.libraryPath.empty() || std::filesystem::exists(libraryFilePath(f), ec))) {
+        if (auto* lib = recordLibrary(f)) return lib;
+    }
+    if (!f.state.memoryLibrary) {
+        std::string error;
+        f.state.memoryLibrary = terra::library::Library::open(":memory:", error);
+        if (!f.state.memoryLibrary) f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + error);
+    }
+    return f.state.memoryLibrary.get();
+}
+
+std::vector<terra::library::ScanRoot> assetScanRoots(const Frame& f) {
+    auto roots = terra::library::defaultScanRoots(TERRA_ASSETS_DIR, f.state.libraryMemoryOnly ? std::string{":memory:"} : libraryFilePath(f));
+    roots.insert(roots.end(), f.state.extraScanRoots.begin(), f.state.extraScanRoots.end());
+    return roots;
+}
+
+// 扫描（增量）并刷新卡片列表
+void refreshAssets(Frame& f) {
+    f.state.assetsStale = false;
+    auto* lib = assetLibrary(f);
+    if (lib == nullptr) {
+        f.state.assetList.clear();
+        return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto scan = lib->scanAssets(assetScanRoots(f));
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    f.state.assetList = lib->assets();
+    ++f.state.assetScans;
+    char time[32];
+    std::snprintf(time, sizeof time, "%.1f ms", ms);
+    const std::string text = std::to_string(scan.files) + " 个文件（解析 " + std::to_string(scan.updated) + "、未变 " + std::to_string(scan.unchanged) +
+                             "）、" + std::to_string(scan.robots) + " 个机器人、" + std::to_string(scan.errors.size()) + " 个错误，" + time + "（" +
+                             (lib->inMemory() ? std::string{"内存中的临时库"} : lib->path()) + "）";
+    std::printf("INFO 资源库扫描：%s\n", text.c_str());
+    f.state.log.push_back(std::string{tr(TextId::LogLibraryScanned)} + text);
+    for (const auto& e : scan.errors) std::printf("INFO 资源库扫描：%s\n", e.c_str());
+}
+
+// 需要写入（收藏、隐藏、导入登记）时用的库：需要时建立资源库文件，并把内存中的临时库换成它（自检没有给 --library 时仍在内存中）
+terra::library::Library* writableLibrary(Frame& f) {
+    if (f.state.libraryMemoryOnly) return assetLibrary(f);
+    auto* lib = recordLibrary(f);
+    if (lib && f.state.memoryLibrary) {
+        f.state.memoryLibrary.reset();
+        lib->scanAssets(assetScanRoots(f));
+    }
+    return lib ? lib : assetLibrary(f);
+}
+
+// 资源库位置改变（偏好设置）时重新打开
+void syncLibraryLocation(Frame& f) {
+    std::error_code ec;
+    const std::string wanted = std::filesystem::absolute(libraryFilePath(f), ec).lexically_normal().string();
+    f.state.settingsWindow.activeLibrary = wanted;
+    f.state.settingsWindow.libraryFromCommandLine = !f.state.libraryPath.empty();
+    if (wanted == f.state.activeLibraryFile) return;
+    if (!f.state.activeLibraryFile.empty()) {
+        f.state.library.reset();
+        f.state.memoryLibrary.reset();
+        f.state.recordListStale = true;
+        f.state.log.push_back(std::string{tr(TextId::LogLibraryLocation)} + wanted);
+        std::printf("INFO 资源库位置：%s\n", wanted.c_str());
+    }
+    f.state.activeLibraryFile = wanted;
+    f.state.assetsStale = true;
+}
+
+// 偏好设置中的“复制到新位置”：复制库文件、records/ 与 assets/，成功后改用新位置
+void copyLibraryIfRequested(Frame& f) {
+    auto& request = f.state.settingsWindow.copyLibraryRequest;
+    if (!request) return;
+    const std::string targetDir = *request;
+    request.reset();
+    const std::string target = (std::filesystem::path{targetDir} / "library.sqlite3").string();
+    if (!recordLibrary(f)) return;  // 原位置还没有库文件时先建立
+    f.state.library.reset();        // 关闭后再复制
+    if (const auto error = terra::library::copyLibrary(f.state.activeLibraryFile, target)) {
+        f.state.log.push_back(std::string{tr(TextId::LogLibraryCopyFailed)} + *error);
+        std::printf("INFO 复制资源库失败：%s\n", error->c_str());
+        return;
+    }
+    f.state.log.push_back(std::string{tr(TextId::LogLibraryCopied)} + target);
+    std::printf("INFO 资源库已复制到：%s\n", target.c_str());
+    f.settings.current.ui.libraryLocation = targetDir;
+}
+
+vw::LibraryContext libraryContext(const Frame& f) {
+    vw::LibraryContext c;
+    c.assets = &f.state.assetList;
+    if (f.simulated) c.currentScene = f.simulated->path;
+    c.recent = f.settings.current.ui.recentScenes;
+    return c;
+}
+
+// 目录中的第一个场景文件（按名字）
+std::string firstSceneIn(const std::string& dir) {
+    std::vector<std::string> scenes;
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(dir, ec); !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.size() > std::strlen(kSceneSuffix) && name.compare(name.size() - std::strlen(kSceneSuffix), std::string::npos, kSceneSuffix) == 0) {
+            scenes.push_back(it->path().string());
+        }
+    }
+    std::sort(scenes.begin(), scenes.end());
+    return scenes.empty() ? std::string{} : scenes.front();
+}
+
+// 解包资产包到资源库目录下的 assets/，登记并打开其中的场景
+void importPackFile(Frame& f, const std::string& pack) {
+    const auto r = terra::library::importPack(pack, importDirectory(f));
+    if (!r.ok) {
+        f.state.log.push_back(std::string{tr(TextId::LogPackFailed)} + r.error);
+        f.state.sceneErrors = {r.error};
+        f.state.errorTitle = "pack";
+        f.state.showSceneErrors = true;
+        std::printf("INFO 资产包失败：%s\n", r.error.c_str());
+        return;
+    }
+    f.state.log.push_back(std::string{tr(TextId::LogPackImported)} + r.directory);
+    std::printf("INFO 资产包已导入：%s（%zu 个文件）\n", r.directory.c_str(), r.files);
+    writableLibrary(f);
+    f.state.assetsStale = true;
+    if (const std::string scene = firstSceneIn(r.directory); !scene.empty()) f.state.openRequest = scene;
+}
+
+void handleLibraryAction(Frame& f, const vw::LibraryAction& a) {
+    using T = vw::LibraryAction::Type;
+    namespace lib = terra::library;
+    switch (a.type) {
+        case T::Open:
+            if (a.kind == lib::AssetKind::Motion) f.state.motionRequest = a.path;
+            else f.state.openRequest = a.path;
+            break;
+        case T::ToggleFavorite:
+        case T::Hide:
+        case T::UnhideAll: {
+            auto* store = writableLibrary(f);
+            if (store == nullptr) break;
+            if (a.type == T::ToggleFavorite) store->setFavorite(a.kind, a.path, a.favorite);
+            else if (a.type == T::Hide) store->setHidden(a.kind, a.path, true);
+            else {
+                for (const auto& e : f.state.assetList) {
+                    if (e.kind == a.kind && e.hidden) store->setHidden(e.kind, e.path, false);
+                }
+            }
+            f.state.assetList = store->assets();
+            break;
+        }
+        case T::CopyPath: ImGui::SetClipboardText(a.path.c_str()); break;
+        case T::Reveal: vw::revealInFileManager(a.path); break;
+        case T::Reimport: {
+            // 按导入目录中的配方重新导入到原处（覆盖）
+            const std::string recipe = (std::filesystem::path{a.importDirectory} / "import.terra-import.json").string();
+            vw::beginImport(f.state.importWizard, recipe, std::filesystem::path{a.importDirectory}.parent_path().string());
+            f.state.importWizard.options.overwrite = true;
+            break;
+        }
+        case T::ExportPack: {
+            const std::string name = std::filesystem::path{a.importDirectory}.filename().string();
+            const std::string out = (std::filesystem::path{libraryFilePath(f)}.parent_path() / "packs" / (name + terra::library::kPackSuffix)).string();
+            const auto r = terra::library::exportPack(a.importDirectory, out, true);
+            if (r.ok) {
+                f.state.log.push_back(std::string{tr(TextId::LogPackExported)} + out);
+                std::printf("INFO 资产包已导出：%s（%zu 个文件）\n", out.c_str(), r.files);
+                vw::revealInFileManager(out);
+            } else {
+                f.state.log.push_back(std::string{tr(TextId::LogPackFailed)} + r.error);
+            }
+            break;
+        }
+        case T::Rescan: f.state.assetsStale = true; break;
     }
 }
 
@@ -1280,6 +1495,7 @@ void sceneErrorWindow(Frame& f) {
     // 场景与动作共用一个弹窗；标题按最近一次失败的来源
     const std::string title = f.state.errorTitle == "motion"   ? label(TextId::MotionErrorTitle, "SceneErrors")
                               : f.state.errorTitle == "record" ? label(TextId::RecordErrorTitle, "SceneErrors")
+                              : f.state.errorTitle == "pack"   ? label(TextId::LogPackFailed, "SceneErrors")
                                                                : label(TextId::SceneErrorTitle, "SceneErrors");
     if (f.state.showSceneErrors) {
         ImGui::OpenPopup(title.c_str());
@@ -1410,6 +1626,16 @@ void openSettingsWindow(Frame& f, bool open) {
 }
 
 // Ctrl + 加号 / 减号 / 0：界面放大、缩小、恢复自动；Ctrl + 逗号：偏好设置。输入框获得焦点或正在录制按键时不处理。
+void openQuickOpen(Frame& f) {
+    auto& p = f.state.libraryPanel;
+    p.quickOpen = true;
+    p.quickFocus = true;
+    p.quickFrames = 0;
+    p.quickSelected = 0;
+    p.quickSearch.fill('\0');
+    f.state.assetsStale = f.state.assetsStale || f.state.assetScans == 0;
+}
+
 void shortcuts(Frame& f) {
     if (ImGui::GetIO().WantTextInput || f.state.settingsWindow.capturingKey()) return;
     const auto chord = [](ImGuiKey key) { return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | key); };
@@ -1421,6 +1647,7 @@ void shortcuts(Frame& f) {
     if (chord(ImGuiKey_O)) f.state.fileBrowser.open(f.settings.current.ui.recentScenes.empty() ? std::string{}
                                                                                                : f.settings.current.ui.recentScenes.front(),
                                                     kSceneSuffix);
+    if (chord(ImGuiKey_P)) openQuickOpen(f);  // M4-08c：快速打开（辅助；主要方式是单击资源库中的卡片）
     if (chord(ImGuiKey_R)) simReset(f);  // 固定快捷键；另可在偏好设置中给“仿真：重置”分配单键
     // M3-07d：Ctrl+Shift+R 开始 / 停止记录（组合键要求修饰键完全一致，与 Ctrl+R 不会同时触发）；另可分配单键
     if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_R)) toggleRecording(f);
@@ -1436,6 +1663,31 @@ void menuBar(Frame& f) {
         // M4-08a：导入 URDF / xacro / MJCF（也可以把文件拖进窗口）
         if (ImGui::MenuItem(tr(TextId::MenuFileImport))) {
             f.state.importWizard.browser.open(f.state.importWizard.options.input, vw::kImportFilter, "");
+        }
+        // M4-08c：资产包、快速打开、资源库中的场景（按来源分组，点一下打开）
+        if (ImGui::MenuItem(tr(TextId::MenuFileImportPack))) f.state.packBrowser.open(importDirectory(f), terra::library::kPackSuffix, "");
+        if (ImGui::MenuItem(tr(TextId::MenuFileQuickOpen), "Ctrl+P")) openQuickOpen(f);
+        if (ImGui::BeginMenu(tr(TextId::MenuFileLibraryScenes))) {
+            using Group = std::pair<terra::library::AssetSource, TextId>;
+            bool any = false;
+            for (const auto& [source, text] : {Group{terra::library::AssetSource::Builtin, TextId::LibrarySourceBuiltin},
+                                               Group{terra::library::AssetSource::Imported, TextId::LibrarySourceImported},
+                                               Group{terra::library::AssetSource::User, TextId::LibrarySourceUser}}) {
+                bool header = false;
+                for (const auto& a : f.state.assetList) {
+                    if (a.kind != terra::library::AssetKind::Scene || a.hidden || a.source != source) continue;
+                    if (!header) {
+                        if (any) ImGui::Separator();
+                        ImGui::TextDisabled("%s", tr(text));
+                        header = any = true;
+                    }
+                    ImGui::PushID(a.path.c_str());
+                    if (ImGui::MenuItem(a.title.c_str(), nullptr, f.simulated && f.simulated->path == a.path)) f.state.openRequest = a.path;
+                    ImGui::PopID();
+                }
+            }
+            if (!any) ImGui::TextDisabled("%s", tr(TextId::LibraryEmpty));
+            ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(tr(TextId::MenuFileRecent))) {
             if (recent.empty()) ImGui::TextDisabled("%s", tr(TextId::MenuFileRecentEmpty));
@@ -1566,6 +1818,7 @@ void menuBar(Frame& f) {
     }
     if (ImGui::BeginMenu(tr(TextId::MenuWindow))) {
         st::InterfaceSettings& panels = f.settings.current.ui;
+        ImGui::MenuItem(tr(TextId::PanelLibrary), nullptr, &f.state.showLibrary);
         ImGui::MenuItem(tr(TextId::PanelOutliner), nullptr, &panels.showOutliner);
         ImGui::MenuItem(tr(TextId::PanelDetails), nullptr, &panels.showDetails);
         ImGui::MenuItem(tr(TextId::PanelLog), nullptr, &panels.showLog);
@@ -1699,6 +1952,22 @@ void viewportPanel(Frame& f) {
             const int axis = navigationGizmo(f.camera, f.state.viewportImageMin, f.state.viewportImageMax, f.uiCtx.scale(),
                                              f.state.viewportHovered, f.state.gizmo);
             if (axis >= 0) snapView(f.camera, axis);
+            // M4-08c：没有打开场景时显示欢迎页（场景卡片，单击即打开）
+            if (!f.simulated && f.state.showWelcome) {
+                if (auto action = vw::drawWelcome(f.state.libraryPanel, libraryContext(f), f.state.viewportImageMin, f.state.viewportImageMax)) {
+                    handleLibraryAction(f, *action);
+                }
+                if (f.state.libraryPanel.welcomeCards > 0) {
+                    const float k = ImGui::GetFontSize();
+                    ImGui::SetCursorScreenPos(ImVec2(f.state.viewportImageMax.x - k * 2.2f, f.state.viewportImageMin.y + k * 0.6f));
+                    if (ImGui::Button("##closeWelcome", ImVec2(k * 1.6f, k * 1.6f))) f.state.showWelcome = false;
+                    const ImVec2 b0 = ImGui::GetItemRectMin(), b1 = ImGui::GetItemRectMax();
+                    const float m = k * 0.45f;
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    dl->AddLine(ImVec2(b0.x + m, b0.y + m), ImVec2(b1.x - m, b1.y - m), ImGui::GetColorU32(ImGuiCol_Text), k * 0.12f);
+                    dl->AddLine(ImVec2(b0.x + m, b1.y - m), ImVec2(b1.x - m, b0.y + m), ImGui::GetColorU32(ImGuiCol_Text), k * 0.12f);
+                }
+            }
         }
     }
     ImGui::End();
@@ -3033,7 +3302,25 @@ void helpWindows(Frame& f) {
     }
 }
 
+// 资源库面板（M4-08c）：场景、动作、机器人的卡片，单击即打开
+void libraryPanel(Frame& f) {
+    if (!f.state.showLibrary) return;
+    // 已保存的布局中没有这个面板时，首次显示并入大纲所在的停靠组
+    if (const ImGuiWindow* sibling = ImGui::FindWindowByName("###Outliner"); sibling != nullptr && sibling->DockId != 0) {
+        ImGui::SetNextWindowDockID(sibling->DockId, ImGuiCond_FirstUseEver);
+    }
+    bool visible = true;
+    std::optional<vw::LibraryAction> action;
+    if (ImGui::Begin(label(TextId::PanelLibrary, "Library").c_str(), &visible)) action = vw::drawLibraryPanel(f.state.libraryPanel, libraryContext(f));
+    ImGui::End();
+    if (!visible) f.state.showLibrary = false;
+    if (action) handleLibraryAction(f, *action);
+}
+
 void buildUi(Frame& f) {
+    syncLibraryLocation(f);  // M4-08c
+    copyLibraryIfRequested(f);
+    if (f.state.assetsStale) refreshAssets(f);
     shortcuts(f);
     menuBar(f);
     statusBar(f);
@@ -3045,6 +3332,7 @@ void buildUi(Frame& f) {
         f.state.layoutBuilt = true;
     }
     viewportPanel(f);
+    libraryPanel(f);  // 在大纲之前：首次显示时并入大纲所在的停靠组
     outlinerPanel(f);
     detailsPanel(f);
     actuatorPanel(f);
@@ -3060,7 +3348,13 @@ void buildUi(Frame& f) {
     // M4-08a：导入向导
     auto& wizard = f.state.importWizard;
     if (auto chosen = wizard.browser.draw(label(TextId::ImportBrowserTitle, "ImportBrowser").c_str())) vw::beginImport(wizard, *chosen, importDirectory(f));
-    if (auto imported = vw::drawImportWizard(wizard, terra::physics::mujoco::composeWorld)) f.state.openRequest = *imported;
+    if (auto imported = vw::drawImportWizard(wizard, terra::physics::mujoco::composeWorld)) {
+        f.state.openRequest = *imported;
+        writableLibrary(f);  // M4-08c：导入后登记（下一帧重新扫描）
+        f.state.assetsStale = true;
+    }
+    if (auto chosen = f.state.packBrowser.draw(label(TextId::PackBrowserTitle, "PackBrowser").c_str())) importPackFile(f, *chosen);
+    if (auto action = vw::drawQuickOpen(f.state.libraryPanel, libraryContext(f))) handleLibraryAction(f, *action);
     if (wizard.open && ImGui::FindWindowByName("###ImportWizard") != nullptr) f.state.importWizardSeen = true;
     for (auto& line : wizard.log) f.state.log.push_back(std::move(line));
     wizard.log.clear();
@@ -3490,6 +3784,13 @@ int importSelfTest(Frame& f) {
         const std::string expected = std::filesystem::absolute(wizard.result->scene).lexically_normal().string();
         check(f.simulated && f.simulated->path == expected, "打开了生成的场景：" + expected);
         check(wizard.result->directory.rfind(importDirectory(f), 0) == 0, "导入目录在资源库目录下的 assets/ 中");
+        // M4-08c：导入后登记到资源库，卡片来源为“导入”
+        const auto registered = std::find_if(f.state.assetList.begin(), f.state.assetList.end(), [&](const terra::library::AssetEntry& a) {
+            return a.kind == terra::library::AssetKind::Scene && a.path == expected;
+        });
+        check(registered != f.state.assetList.end() && registered->source == terra::library::AssetSource::Imported &&
+                  registered->title == wizard.result->directory.substr(wizard.result->directory.find_last_of('/') + 1),
+              "导入的场景已登记到资源库（来源为导入，标题为实例名）");
     }
     if (f.simulated) {
         const auto& d = f.simulated->instance.world->description();
@@ -3500,6 +3801,91 @@ int importSelfTest(Frame& f) {
     }
     check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
     std::printf(failures == 0 ? "导入向导自检通过\n" : "导入向导自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
+// ---- 资源库面板自检（M4-08c）----
+// 另扫描测试夹具（tests/scene、tests/motion），因为它们不需要下载参考机器人就能打开
+
+std::string fixturePath(const char* rel) {
+    return (std::filesystem::path{TERRA_ASSETS_DIR} / "tests" / rel).lexically_normal().string();
+}
+
+void librarySelfTestScript(Frame& f, int frame) {
+    namespace lib = terra::library;
+    auto& p = f.state.libraryPanel;
+    auto& t = f.state.libraryTest;
+    const std::string arm = fixturePath("scene/keyframe_arm.terra-scene.json");
+    const std::string carts = fixturePath("scene/two_carts.terra-scene.json");
+    const std::string drop = fixturePath("scene/drop.terra-scene.json");
+    const std::string motion = fixturePath("motion/arm_swing.terra-motion.json");
+    switch (frame) {
+        case 3:  // 欢迎页与面板中的卡片；单击欢迎页中的卡片
+            t.welcomeCards = p.welcomeCards;
+            t.panelCards = p.panelCards;
+            for (const auto& a : f.state.assetList) t.builtinScenes += a.kind == lib::AssetKind::Scene && a.source == lib::AssetSource::Builtin ? 1u : 0u;
+            p.selfTestClick = arm;
+            break;
+        case 6: t.cardOpened = f.simulated && f.simulated->path == arm; break;
+        case 8: t.highlighted = p.currentHighlighted; break;
+        case 9: {  // 收藏：建立资源库文件并写入，排到最前
+            handleLibraryAction(f, vw::LibraryAction{vw::LibraryAction::Type::ToggleFavorite, lib::AssetKind::Scene, carts, {}, true});
+            std::error_code ec;
+            const auto saved = f.state.library ? f.state.library->asset(lib::AssetKind::Scene, carts) : std::nullopt;
+            const auto shown = vw::visibleAssets(libraryContext(f), lib::AssetKind::Scene, vw::LibraryFilter::All, {}, false);
+            t.favoriteSaved = std::filesystem::exists(f.state.activeLibraryFile, ec) && saved && saved->favorite && !shown.empty() &&
+                              shown.front()->path == carts;
+            break;
+        }
+        case 11:
+            openQuickOpen(f);
+            std::snprintf(p.quickSearch.data(), p.quickSearch.size(), "%s", "two_carts");
+            break;
+        case 13:
+            t.quickMatches = p.quickMatches;
+            p.selfTestQuickEnter = true;
+            break;
+        case 16: t.quickOpened = f.simulated && f.simulated->path == carts && !p.quickOpen; break;
+        case 18:  // 动作分页，单击动作卡片：打开推荐场景并播放
+            p.selectTab = vw::LibraryTab::Motions;
+            p.selfTestClick = motion;
+            break;
+        case 24:
+            t.motionPlayed = f.simulated && f.simulated->path == arm && f.simulated->motion && f.simulated->motionPath == motion;
+            p.selectTab = vw::LibraryTab::Scenes;
+            handleLibraryAction(f, vw::LibraryAction{vw::LibraryAction::Type::Hide, lib::AssetKind::Scene, drop, {}, false});
+            {
+                const auto shown = vw::visibleAssets(libraryContext(f), lib::AssetKind::Scene, vw::LibraryFilter::All, {}, false);
+                t.hidden = std::none_of(shown.begin(), shown.end(), [&](const lib::AssetEntry* a) { return a->path == drop; });
+            }
+            break;
+        case 26: f.state.closeRequest = true; break;
+        case 30: t.welcomeAgain = !f.simulated && p.welcomeCards > 0; break;
+        default: break;
+    }
+}
+
+int librarySelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const auto& t = f.state.libraryTest;
+    std::printf("INFO 资源库：%zu 个资产，内置场景 %zu 个；欢迎页 %zu 张卡片，面板 %zu 张；快速打开匹配 %zu 个；扫描 %zu 次\n", f.state.assetList.size(),
+                t.builtinScenes, t.welcomeCards, t.panelCards, t.quickMatches, f.state.assetScans);
+    check(t.builtinScenes >= 8, "内置场景已登记（assets/scenes/robots 中的 8 个，及导入生成的）");
+    check(t.welcomeCards >= t.builtinScenes && t.panelCards == t.welcomeCards, "欢迎页与资源库面板列出全部场景卡片");
+    check(t.cardOpened, "单击欢迎页中的卡片：立即打开场景");
+    check(t.highlighted, "当前场景的卡片高亮");
+    check(t.favoriteSaved, "收藏：建立资源库文件并写入，收藏的排在最前");
+    check(t.quickMatches >= 1, "快速打开：按名字筛选");
+    check(t.quickOpened, "快速打开：回车打开选中的场景，窗口关闭");
+    check(t.motionPlayed, "单击动作卡片：打开推荐场景并播放");
+    check(t.hidden, "隐藏的卡片不再显示");
+    check(t.welcomeAgain, "关闭场景后欢迎页再次出现");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "资源库面板自检通过\n" : "资源库面板自检失败：%d 项\n", failures);
     return failures == 0 ? 0 : 1;
 }
 
@@ -3915,6 +4301,13 @@ int main(int argc, char** argv) {
 
     AppState state;
     state.libraryPath = options.libraryPath;  // M3-07c：空表示默认位置
+    // M4-08c：自检没有给 --library 时只用内存中的库；欢迎页会盖住视口，只在资源库自检与正常使用时显示
+    state.libraryMemoryOnly = options.selfTest && options.libraryPath.empty();
+    state.showWelcome = !options.selfTest || options.librarySelfTest;
+    if (options.librarySelfTest) {
+        state.extraScanRoots = {{std::string{TERRA_ASSETS_DIR} + "/tests/scene", terra::library::AssetSource::User},
+                                {std::string{TERRA_ASSETS_DIR} + "/tests/motion", terra::library::AssetSource::User}};
+    }
     state.autoUiScale = autoUiScale;
     state.monitors = monitors;
     state.log.push_back(tr(TextId::LogStarted));
@@ -4014,6 +4407,7 @@ int main(int argc, char** argv) {
             };
             if (ends(kSceneSuffix)) state.openRequest = dropped;
             else if (ends(".terra-motion.json")) state.motionRequest = dropped;
+            else if (ends(terra::library::kPackSuffix)) importPackFile(frame, dropped);  // M4-08c
             else vw::beginImport(state.importWizard, dropped, importDirectory(frame));
         }
         const double now = platform.time();
@@ -4066,6 +4460,7 @@ int main(int argc, char** argv) {
         }
         updateCameraPreviews(frame);  // M4-04：渲染本帧该采样的相机画面
 
+        if (options.selfTest && options.librarySelfTest) librarySelfTestScript(frame, frames);  // M4-08c
         if (options.selfTest && options.frames > 0) {
             // 自检脚本：第 4–7 帧依次打开偏好设置的四个页面，第 7 帧打开按键录制弹窗，第 8 帧取消录制、第 9 帧关闭窗口；
             // 中间帧切换为英文（经由设置）。
@@ -4087,7 +4482,11 @@ int main(int argc, char** argv) {
                 state.importWizard.options.overwrite = true;  // 重复运行自检时覆盖上一次的导入目录
             }
             if (!options.importSelfTestPath.empty() && frames == 14) {
-                if (auto imported = vw::runImport(state.importWizard, terra::physics::mujoco::composeWorld)) state.openRequest = *imported;
+                if (auto imported = vw::runImport(state.importWizard, terra::physics::mujoco::composeWorld)) {
+                    state.openRequest = *imported;
+                    writableLibrary(frame);  // M4-08c：与向导的“导入并打开”相同，导入后登记
+                    state.assetsStale = true;
+                }
             }
             if (frames == options.frames / 2) settings.current.ui.language = "en";
             // 前 3/4 的帧使用室外环境贴图（检查 IBL 管线；2026-11-24 起默认是半球光，这里显式切换），
@@ -4132,7 +4531,8 @@ int main(int argc, char** argv) {
         const bool lastFrame = (options.frames > 0 && frames >= options.frames) ||
                                (options.seconds > 0.0 && now - start >= options.seconds);
         if (lastFrame && options.selfTest) {
-            result = !options.importSelfTestPath.empty() ? importSelfTest(frame)
+            result = options.librarySelfTest               ? librarySelfTest(frame)
+                     : !options.importSelfTestPath.empty() ? importSelfTest(frame)
                      : simulated                        ? sceneSelfTest(frame, options)
                                                         : selfTest(frame, uiContext, options);
         }

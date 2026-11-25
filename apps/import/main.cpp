@@ -6,6 +6,9 @@
 //   --output   导入目录的上级；默认为资源库目录下的 assets/（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
 //   --dry-run  只分析，不写文件
 //   --recipe   （M4-08b）按导入配方（*.terra-import.json）导入；配方中的选择优先，命令行可另给 --output、--overwrite、--dry-run
+//   --library  （M4-08c）导入成功后把导入目录登记到该资源库（不给时不写库；查看器启动时会扫描默认资源库目录下的 assets/）
+//   --export-pack <导入目录> <文件.terra-pack>  （M4-08c）把导入目录打包为资产包
+//   --import-pack <文件.terra-pack>  （M4-08c）解包到 --output（默认同上），可加 --overwrite、--library
 // 标准错误：每个问题一行（级别、代码、说明、处理办法）；标准输出：最后一行 {"type":"import",...}
 // 退出码：0 成功；2 参数错误；4 有错误（分析或检查）
 
@@ -16,6 +19,7 @@
 
 #include "terra/import/importer.hpp"
 #include "terra/library/library.hpp"
+#include "terra/library/pack.hpp"
 #include "terra/physics/mujoco/mujoco_backend.hpp"
 
 namespace {
@@ -27,7 +31,10 @@ int usage() {
                  "用法：terra_import <URDF / xacro / MJCF> [--name 名字] [--output 目录] [--package 包名=目录]... [--mesh-scale 比例]\n"
                  "                   [--fixed-base | --floating-base] [--no-actuators] [--no-sensors] [--overwrite] [--dry-run]\n"
                  "                   [--assimp 程序] [--python 程序] [名字:=值]...\n"
-                 "       terra_import --recipe <导入配方.terra-import.json> [--output 目录] [--overwrite] [--dry-run]\n");
+                 "       terra_import --recipe <导入配方.terra-import.json> [--output 目录] [--overwrite] [--dry-run]\n"
+                 "       terra_import --export-pack <导入目录> <文件.terra-pack> [--overwrite]\n"
+                 "       terra_import --import-pack <文件.terra-pack> [--output 目录] [--overwrite]\n"
+                 "       （导入与解包可加 --library <库文件>：成功后登记到资源库）\n");
     return 2;
 }
 
@@ -38,6 +45,20 @@ std::string escape(const std::string& s) {
         out += c;
     }
     return out;
+}
+
+// 把目录登记到资源库（M4-08c）；失败只警告
+void registerDirectory(const std::string& libraryPath, const std::string& directory) {
+    if (libraryPath.empty()) return;
+    std::string error;
+    auto library = terra::library::Library::open(libraryPath, error);
+    if (!library) {
+        std::fprintf(stderr, "terra_import: [warning] library：资源库无法打开：%s\n", error.c_str());
+        return;
+    }
+    const auto scan = library->scanAssets({{directory, terra::library::AssetSource::Imported}});
+    for (const auto& e : scan.errors) std::fprintf(stderr, "terra_import: [warning] library：%s\n", e.c_str());
+    std::fprintf(stderr, "terra_import: 已登记到资源库 %s：%zu 个文件、%zu 个机器人\n", library->path().c_str(), scan.files, scan.robots);
 }
 
 void printIssues(const std::vector<im::ImportIssue>& issues) {
@@ -52,7 +73,7 @@ void printIssues(const std::vector<im::ImportIssue>& issues) {
 int main(int argc, char** argv) {
     im::ImportOptions options = im::defaultOptions();
     bool dryRun = false, noActuators = false, noSensors = false;
-    std::string recipePath;
+    std::string recipePath, libraryPath, exportDir, exportFile, importFile;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const bool has = i + 1 < argc;
@@ -75,13 +96,35 @@ int main(int argc, char** argv) {
         else if (a == "--assimp" && has) options.assimp = argv[++i];
         else if (a == "--python" && has) options.python = argv[++i];
         else if (a == "--recipe" && has) recipePath = argv[++i];
+        else if (a == "--library" && has) libraryPath = argv[++i];
+        else if (a == "--export-pack" && i + 2 < argc) {
+            exportDir = argv[++i];
+            exportFile = argv[++i];
+        } else if (a == "--import-pack" && has) importFile = argv[++i];
         else if (a.find(":=") != std::string::npos) options.xacroArgs.push_back(a);
         else if (!a.empty() && a[0] != '-' && options.input.empty()) options.input = a;
         else return usage();
     }
-    if (options.input.empty() && recipePath.empty()) return usage();
+    if (!exportDir.empty()) {  // M4-08c：资产包
+        if (!options.input.empty() || !recipePath.empty() || !importFile.empty()) return usage();
+        const auto r = terra::library::exportPack(exportDir, exportFile, options.overwrite);
+        if (!r.ok) std::fprintf(stderr, "terra_import: [error] pack：%s\n", r.error.c_str());
+        std::printf("{\"type\":\"export_pack\",\"ok\":%s,\"name\":\"%s\",\"pack\":\"%s\",\"files\":%zu,\"bytes\":%llu}\n", r.ok ? "true" : "false",
+                    escape(r.name).c_str(), escape(exportFile).c_str(), r.files, static_cast<unsigned long long>(r.bytes));
+        return r.ok ? 0 : 4;
+    }
+    if (options.input.empty() && recipePath.empty() && importFile.empty()) return usage();
     if (options.outputRoot.empty()) {
         options.outputRoot = (std::filesystem::path{terra::library::defaultLibraryPath()}.parent_path() / "assets").string();
+    }
+    if (!importFile.empty()) {
+        if (!options.input.empty() || !recipePath.empty()) return usage();
+        const auto r = terra::library::importPack(importFile, options.outputRoot, options.overwrite);
+        if (!r.ok) std::fprintf(stderr, "terra_import: [error] pack：%s\n", r.error.c_str());
+        if (r.ok) registerDirectory(libraryPath, r.directory);
+        std::printf("{\"type\":\"import_pack\",\"ok\":%s,\"name\":\"%s\",\"directory\":\"%s\",\"files\":%zu,\"bytes\":%llu}\n",
+                    r.ok ? "true" : "false", escape(r.name).c_str(), escape(r.directory).c_str(), r.files, static_cast<unsigned long long>(r.bytes));
+        return r.ok ? 0 : 4;
     }
     im::ImportPlan plan;
     if (!recipePath.empty()) {
@@ -109,6 +152,7 @@ int main(int argc, char** argv) {
     }
     const auto result = im::execute(plan, options, terra::physics::mujoco::composeWorld);
     printIssues(result.issues);
+    if (result.ok) registerDirectory(libraryPath, result.directory);
     std::printf("{\"type\":\"import\",\"ok\":%s,\"name\":\"%s\",\"directory\":\"%s\",\"scene\":\"%s\",\"report\":\"%s\",\"settled_height\":%.6g}\n",
                 result.ok ? "true" : "false", escape(plan.name).c_str(), escape(result.directory).c_str(), escape(result.scene).c_str(),
                 escape(result.report).c_str(), result.settledHeight);

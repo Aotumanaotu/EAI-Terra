@@ -2,6 +2,7 @@
   "format": "terra.scene",
   "version": 1,
   "name": "宇树 G1 人形机器人（悬挂模式：基座固定在离地 0.3 m 处）",
+  "title": "宇树 G1 悬挂",
   "models": [
     {
       "name": "g1",

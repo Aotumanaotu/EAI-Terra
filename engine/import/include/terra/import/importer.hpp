@@ -76,6 +76,7 @@ struct ExtraModel {
 struct ImportOptions {
     std::string input;                             // URDF、xacro 或 MJCF 文件
     std::string name;                              // 导入后的名字；空表示取模型中的名字
+    std::string title;                             // M4-08c：场景的短标题（资源库卡片）；空表示用 name
     std::string outputRoot;                        // 导入目录的上级
     std::map<std::string, std::string> packages;   // 包名 → 包目录（补充自动查找的结果）
     std::vector<std::string> xacroArgs;            // xacro 参数，名字:=值

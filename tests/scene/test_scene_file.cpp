@@ -126,6 +126,15 @@ void testControllersAndFixedBase() {
     check(noKd.document && noKd.document->controllers[0].kd == 0.0, "kd 可省略（为 0）" + dump(noKd));
 }
 
+// M4-08c：可选的短标题（资源库卡片）
+void testTitle() {
+    const auto r = sc::parseScene(scene(R"(, "name": "长说明", "title": "小车")"), kScenePath);
+    check(r.document && r.issues.empty() && r.document->title == "小车" && r.document->name == "长说明", "title：短标题" + dump(r));
+    const auto none = sc::parseScene(scene(""), kScenePath);
+    check(none.document && none.document->title.empty(), "没有 title 时为空" + dump(none));
+    expectError(scene(R"(, "title": 3)"), "/title", "", "title 不是字符串");
+}
+
 void testErrors() {
     expectError("{ not json", "", "JSON 语法错误", "JSON 语法错误");
     expectError("[1, 2]", "", "应为对象", "根不是对象");
@@ -208,6 +217,7 @@ int main(int argc, char** argv) {
     testRotation();
     testInitialKeyframe();
     testControllersAndFixedBase();
+    testTitle();
     testErrors();
     if (failures == 0) std::printf("all passed\n");
     return failures == 0 ? 0 : 1;

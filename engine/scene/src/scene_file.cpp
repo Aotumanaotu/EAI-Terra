@@ -525,8 +525,8 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     SceneDocument doc;
     doc.path = path.string();
     doc.directory = path.parent_path().string();
-    if (r.object(root, "", {"format", "version", "name", "physics", "models", "visuals", "view", "initialKeyframe", "controllers",
-                            "sensors"})) {
+    if (r.object(root, "", {"format", "version", "name", "title", "physics", "models", "visuals", "view", "initialKeyframe",
+                            "controllers", "sensors"})) {
         if (!root.contains("format")) {
             r.error("", "缺少 format（应为 “terra.scene”）");
         } else if (const auto s = r.string(root["format"], "/format"); s && *s != "terra.scene") {
@@ -544,6 +544,9 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
         }
         if (root.contains("name")) {
             if (const auto s = r.string(root["name"], "/name")) doc.name = *s;
+        }
+        if (root.contains("title")) {  // M4-08c：资源库卡片上的短标题
+            if (const auto s = r.string(root["title"], "/title")) doc.title = *s;
         }
         if (root.contains("physics")) readPhysics(r, root["physics"], doc.physics);
         if (!root.contains("models")) r.error("", "缺少 models（模型实例列表）");

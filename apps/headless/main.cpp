@@ -183,7 +183,47 @@ int listRecords(const RunOptions& options) {
     return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
 }
 
+// --list-assets（M4-08c）：先扫描（增量），输出一行 asset_scan，再每行一个 asset。
+// 没有 --library 且默认位置还没有库文件时只在内存中扫描，不在用户目录中新建库
+std::string jsonStrings(const std::vector<std::string>& items) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < items.size(); ++i) out += (i ? ",\"" : "\"") + jsonEscape(items[i]) + "\"";
+    return out + "]";
+}
+
+int listAssets(const RunOptions& options) {
+    namespace lib = terra::library;
+    std::string error, warning;
+    std::string path = options.libraryPath.empty() ? lib::defaultLibraryPath() : options.libraryPath;
+    std::error_code ec;
+    if (options.libraryPath.empty() && !std::filesystem::exists(path, ec)) path = ":memory:";
+    auto library = lib::Library::open(path, error, &warning);
+    if (!warning.empty()) diagnose("资源库警告：" + warning);
+    if (!library) {
+        diagnose("资源库无法打开：" + error);
+        return kExitInternal;
+    }
+    const auto scan = library->scanAssets(lib::defaultScanRoots(TERRA_ASSETS_DIR, library->path()));
+    for (const auto& e : scan.errors) diagnose("资产扫描：" + e);
+    bool ok = emit("{\"type\":\"asset_scan\",\"library\":\"" + jsonEscape(library->path()) + "\",\"files\":" + std::to_string(scan.files) +
+                   ",\"updated\":" + std::to_string(scan.updated) + ",\"unchanged\":" + std::to_string(scan.unchanged) +
+                   ",\"missing\":" + std::to_string(scan.missing) + ",\"robots\":" + std::to_string(scan.robots) +
+                   ",\"errors\":" + std::to_string(scan.errors.size()) + "}");
+    const auto kind = lib::assetKindFromName(options.assetKind);
+    for (const auto& a : library->assets(kind)) {
+        ok = ok && emit("{\"type\":\"asset\",\"kind\":\"" + std::string{lib::assetKindName(a.kind)} + "\",\"source\":\"" +
+                        lib::assetSourceName(a.source) + "\",\"title\":\"" + jsonEscape(a.title) + "\",\"path\":\"" + jsonEscape(a.path) +
+                        "\",\"description\":\"" + jsonEscape(a.description) + "\",\"tags\":" + jsonStrings(a.tags) +
+                        ",\"related\":" + jsonStrings(a.related) + ",\"favorite\":" + (a.favorite ? "true" : "false") +
+                        ",\"hidden\":" + (a.hidden ? "true" : "false") + ",\"import_dir\":\"" + jsonEscape(a.importDirectory) +
+                        "\",\"license\":\"" + jsonEscape(a.license) + "\",\"bytes\":" + std::to_string(a.bytes) + ",\"sha256\":\"" +
+                        a.sha256 + "\"}");
+    }
+    return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
+}
+
 int run(const RunOptions& requested) {
+    if (requested.listAssets) return listAssets(requested);
     if (requested.listRecords) return listRecords(requested);
     if (!requested.rerunPath.empty()) return rerun(requested);
     if (!backendUsable()) {

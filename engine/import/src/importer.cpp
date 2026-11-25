@@ -917,6 +917,7 @@ ImportResult execute(const ImportPlan& plan, const ImportOptions& options, const
     scene["format"] = "terra.scene";
     scene["version"] = 1;
     scene["name"] = plan.name + "（由 " + fs::path{plan.input}.filename().string() + " 导入）";
+    scene["title"] = options.title.empty() ? plan.name : options.title;  // M4-08c：资源库卡片上的短标题
     Json models = Json::array();
     models.push_back({{"name", plan.name}, {"mjcf", plan.kind == SourceKind::Mjcf ? plan.input : base + ".xml"}});
     if (hasFloor) models.push_back({{"name", "floor"}, {"mjcf", "floor.xml"}});
@@ -1022,8 +1023,8 @@ RecipeResult readRecipe(const std::string& path, const ImportOptions& base) {
         err("", "不是有效的 JSON 对象：" + file.string());
         return out;
     }
-    const std::set<std::string> allowed{"format", "version", "input", "name", "xacroArgs", "packages", "placeholderPackages", "meshScale",
-                                        "fixedBase", "joints", "actuators", "sensors", "extraModels", "view"};
+    const std::set<std::string> allowed{"format", "version", "input", "name", "title", "xacroArgs", "packages", "placeholderPackages",
+                                        "meshScale", "fixedBase", "joints", "actuators", "sensors", "extraModels", "view"};
     for (auto it = j.begin(); it != j.end(); ++it) {
         if (allowed.count(it.key()) == 0) err("/" + it.key(), "未知字段“" + it.key() + "”");
     }
@@ -1062,6 +1063,7 @@ RecipeResult readRecipe(const std::string& path, const ImportOptions& base) {
     if (input.empty()) err("/input", "缺少要导入的文件（相对配方文件）");
     else r.options.input = rel(input);
     str("name", r.options.name);
+    str("title", r.options.title);
     r.options.xacroArgs.clear();
     strings("xacroArgs", r.options.xacroArgs);
     strings("placeholderPackages", r.options.placeholderPackages);
@@ -1235,6 +1237,7 @@ bool writeRecipe(const std::string& path, const ImportPlan& plan, const ImportOp
     j["version"] = 1;
     j["input"] = plan.input;
     j["name"] = plan.name;
+    if (!options.title.empty()) j["title"] = options.title;
     j["xacroArgs"] = options.xacroArgs;
     if (!options.placeholderPackages.empty()) j["placeholderPackages"] = options.placeholderPackages;
     if (!options.packages.empty()) {

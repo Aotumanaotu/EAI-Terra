@@ -10,7 +10,7 @@ target_include_directories(terra_viewer_scene PUBLIC "${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(terra_viewer_scene PUBLIC terra::render terra::asset terra::settings terra::scene)
 terra_configure_target(terra_viewer_scene)
 
-add_executable(terra_viewer main.cpp viewer_settings.cpp import_wizard.cpp)
+add_executable(terra_viewer main.cpp viewer_settings.cpp import_wizard.cpp library_panel.cpp)
 target_link_libraries(terra_viewer PRIVATE terra::viewer_scene terra::ui terra::render terra::asset terra::view terra::settings
                                            terra::platform_glfw terra::core
                                            terra::scene terra::simulation terra::library terra::physics_mujoco

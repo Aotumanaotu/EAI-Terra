@@ -147,6 +147,7 @@ struct SceneDocument {
     std::string path;       // 场景文件（绝对路径；从文本解析时为调用方给出的路径）
     std::string directory;  // 相对路径的基准目录
     std::string name;
+    std::string title;  // M4-08c：资源库卡片上的短标题（可选；空时显示 name）
     PhysicsOverrides physics;
     std::vector<SceneModel> models;  // mjcf 已展开为相对场景目录的路径
     std::vector<VisualBindingSpec> visuals;

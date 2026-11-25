@@ -28,9 +28,14 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-07：传感器记录（record.sensors；record.file 扩充：版本 2 与读取版本 1；headless.record_sensors、headless.rerun_sensors；
+#   graphics.viewer_sensor_record_selftest：查看器记录传感器与相机图像、复现、回放时传感器面板跟随）。
 # M4-06a：ROS2 桥接。没有 ROS2 的构建：--ros2 提示安装并返回 3（headless.ros2_unavailable）。ROS2 构建（TERRA_ROS2_ENABLED，
 #   需先 source /opt/ros/humble/setup.bash）：通信配置（ros2.profile）、端到端（ros2.bridge_headless、ros2.bridge_commands、
 #   graphics.ros2_bridge_viewer，标签 ros2）、配置错误（headless.ros2_bad_profile）。
+# M4-06b：宇树低层控制场景（robots.unitree_lowlevel，不需要 ROS2）。找到宇树消息包的 ROS2 构建（TERRA_ROS2_UNITREE，需再 source
+#   unitree_ros2 的 cyclonedds_ws/install/setup.bash）：CRC 与官方结构体逐字节对照（ros2.unitree_crc）；端到端（ros2.unitree_go2、
+#   ros2.unitree_g1、ros2.unitree_as2）；宇树官方示例原样运行（ros2.unitree_official_go2、_go2w、_g1；找不到示例程序时跳过）。
 # M4-05：宇树官方模型 Go2W、AS2 的导入核查（robots.unitree_import）。
 # M4-04：查看器传感器自检（graphics.viewer_sensor_selftest）、terra_capture（graphics.capture_determinism、capture.no_cameras）。
 # M4-03b：2D 激光雷达（simulation.lidar）；Headless --sensors 输出雷达（headless.sensors_lidar）。
@@ -172,6 +177,17 @@ terra_add_cli_test(rerun_motion EXPECT 0
     STDOUT "[{].type.:.rerun.,[^\n]*.steps.:1250,.compared.:126,.bitwise.:true,.max_position_error.:0,.max_rotation_error.:0,[^\n]*.within_tolerance.:true"
     ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/headless_record/arm.terra-record.jsonl)
 set_tests_properties(headless.rerun_motion PROPERTIES FIXTURES_REQUIRED headless_record)
+# M4-07：传感器记录——sensor_suite 200 步（IMU 随每份状态、雷达 10 Hz 共 5 次、相机元数据 30 Hz 共 13 帧）；
+# 复现时 201 + 5 + 13 = 219 个传感器采样逐位相同
+terra_add_cli_test(record_sensors EXPECT 0 STDERR "相机需要图形上下文"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json --steps 200
+         --record ${CMAKE_CURRENT_BINARY_DIR}/headless_record_sensors/suite.terra-record.jsonl
+         --library ${CMAKE_CURRENT_BINARY_DIR}/headless_record_sensors/library.sqlite3)
+set_tests_properties(headless.record_sensors PROPERTIES FIXTURES_SETUP headless_record_sensors)
+terra_add_cli_test(rerun_sensors EXPECT 0
+    STDOUT "[{].type.:.rerun.,[^\n]*.steps.:200,.compared.:201,.bitwise.:true,[^\n]*.within_tolerance.:true,.sensor_samples.:219,.sensors_bitwise.:true"
+    ARGS --rerun ${CMAKE_CURRENT_BINARY_DIR}/headless_record_sensors/suite.terra-record.jsonl)
+set_tests_properties(headless.rerun_sensors PROPERTIES FIXTURES_REQUIRED headless_record_sensors)
 # M3-07b：记录完成后已加入资源库；按场景筛选列出
 # M4-02：--sensors 输出传感器清单（频率）与按频率采样的读数；不能与 --rerun 同用
 terra_add_cli_test(sensors_imu EXPECT 0
@@ -322,6 +338,14 @@ terra_configure_target(test_unitree_import)
 add_test(NAME robots.unitree_import COMMAND test_unitree_import)
 set_tests_properties(robots.unitree_import PROPERTIES SKIP_RETURN_CODE 77)
 
+# 宇树低层控制场景（M4-06b）：G1 的位置执行器改为力矩执行器（torqueActuators）；Go2 加机身 IMU、没有 PD 层
+add_executable(test_unitree_lowlevel robots/test_unitree_lowlevel.cpp)
+target_link_libraries(test_unitree_lowlevel PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_unitree_lowlevel PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_unitree_lowlevel)
+add_test(NAME robots.unitree_lowlevel COMMAND test_unitree_lowlevel)
+set_tests_properties(robots.unitree_lowlevel PROPERTIES SKIP_RETURN_CODE 77)
+
 # 关节与接触验证（M3-06）：每台参考机器人一组数值判据（冻结，见 M3-06 报告）
 add_executable(test_robot_validation robots/test_robot_validation.cpp)
 target_link_libraries(test_robot_validation PRIVATE terra::scene terra::simulation terra::physics_mujoco)
@@ -368,6 +392,8 @@ target_link_libraries(test_record_rerun PRIVATE terra::simulation terra::core te
 target_compile_definitions(test_record_rerun PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests" TERRA_RECORD_RERUN=1)
 terra_configure_target(test_record_rerun)
 add_test(NAME record.rerun COMMAND test_record_rerun rerun "${CMAKE_CURRENT_BINARY_DIR}/record_rerun_tmp")
+# M4-07：传感器的记录与复现（雷达距离含 ±inf 的往返、IMU、相机位姿；改动一处雷达距离后复现报告不同）
+add_test(NAME record.sensors COMMAND test_record_rerun sensors "${CMAKE_CURRENT_BINARY_DIR}/record_sensors_tmp")
 
 # 资源库（M3-07b）：SQLite 中的实验记录索引
 add_executable(test_library library/test_library.cpp)
@@ -634,6 +660,12 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)
     set_tests_properties(graphics.viewer_sensor_selftest PROPERTIES LABELS graphics)
+    # M4-07：第 6 帧开始记录（保存相机图像），中间停止并回放到一帧有图像的时刻；资源库在构建目录中
+    add_test(NAME graphics.viewer_sensor_record_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-record-self-test
+                --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_sensor_record/library.sqlite3")
+    set_tests_properties(graphics.viewer_sensor_record_selftest PROPERTIES LABELS graphics)
     add_test(NAME graphics.capture_determinism
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${CMAKE_COMMAND}" -DCAPTURE=$<TARGET_FILE:terra_capture>
                 "-DSCENE=${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json"
@@ -740,5 +772,34 @@ else()
             COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${TERRA_PYTHON3}" "${_terra_check_bridge}" viewer --viewer $<TARGET_FILE:terra_viewer>
                     --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_bridge_viewer")
         set_tests_properties(graphics.ros2_bridge_viewer PROPERTIES LABELS "graphics;ros2" RUN_SERIAL TRUE TIMEOUT 240)
+    endif()
+
+    # ---- 宇树配置（M4-06b）：需要宇树消息包 ----
+    if(TERRA_ROS2_UNITREE)
+        add_executable(test_unitree_crc ros2/test_unitree_crc.cpp)
+        target_include_directories(test_unitree_crc PRIVATE "${PROJECT_SOURCE_DIR}/engine/ros2/src")
+        target_link_libraries(test_unitree_crc PRIVATE terra::ros2 ${unitree_go_TARGETS} ${unitree_hg_TARGETS})
+        terra_configure_target(test_unitree_crc)
+        add_test(NAME ros2.unitree_crc COMMAND test_unitree_crc)
+        set_tests_properties(ros2.unitree_crc PROPERTIES LABELS ros2)
+
+        set(TERRA_UNITREE_ROS2_DIR "$ENV{HOME}/unitree_ros2" CACHE PATH "unitree_ros2 的检出目录（官方示例在其 example/ 下编译）")
+        set(_terra_check_unitree "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_unitree.py")
+        set(_terra_unitree_args --headless $<TARGET_FILE:terra_headless> --assets "${PROJECT_SOURCE_DIR}/assets")
+        add_test(NAME ros2.unitree_go2
+            COMMAND "${TERRA_PYTHON3}" "${_terra_check_unitree}" go2 ${_terra_unitree_args} --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_unitree_go2")
+        add_test(NAME ros2.unitree_g1
+            COMMAND "${TERRA_PYTHON3}" "${_terra_check_unitree}" hg --robot g1 ${_terra_unitree_args}
+                    --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_unitree_g1")
+        add_test(NAME ros2.unitree_as2
+            COMMAND "${TERRA_PYTHON3}" "${_terra_check_unitree}" hg --robot as2 ${_terra_unitree_args}
+                    --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_unitree_as2")
+        set_tests_properties(ros2.unitree_go2 ros2.unitree_g1 ros2.unitree_as2 PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 180)
+        foreach(_robot go2 go2w g1)
+            add_test(NAME ros2.unitree_official_${_robot}
+                COMMAND "${TERRA_PYTHON3}" "${_terra_check_unitree}" official --robot ${_robot} ${_terra_unitree_args}
+                        --unitree-examples "${TERRA_UNITREE_ROS2_DIR}/example" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_unitree_official_${_robot}")
+            set_tests_properties(ros2.unitree_official_${_robot} PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 180 SKIP_RETURN_CODE 77)
+        endforeach()
     endif()
 endif()

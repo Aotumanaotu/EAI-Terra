@@ -347,7 +347,7 @@ constexpr Entry kEntries[] = {
     {TextId::RecordReasonError, "出错", "Error"},
     {TextId::RecordReasonIncomplete, "未完成", "Incomplete"},
     {TextId::PanelSensors, "传感器", "Sensors"},
-    {TextId::SensorsReplay, "回放中：传感器不更新（传感器的记录在 M4-07 中加入）", "Replaying: sensors are not updated (sensor recording comes in M4-07)"},
+    {TextId::SensorsReplay, "回放中：显示记录中的传感器读数", "Replaying: showing the sensor readings from the record"},
     {TextId::SensorsNone, "场景中没有传感器。可在场景文件的 sensors 中添加 IMU、相机或 2D 激光雷达", "No sensors in this scene. Add an IMU, camera or 2D lidar under sensors in the scene file"},
     {TextId::SensorsImu, "IMU", "IMU"},
     {TextId::SensorsLidar, "2D 激光雷达", "2D lidar"},
@@ -373,6 +373,9 @@ constexpr Entry kEntries[] = {
     {TextId::LogRos2Failed, "ROS2 桥接无法开启：", "ROS2 bridge could not start: "},
     {TextId::LogRos2Request, "ROS2 服务请求：", "ROS2 service request: "},
     {TextId::LogRos2RequestIgnored, "回放中，忽略 ROS2 服务请求：", "Replaying; ROS2 service request ignored: "},
+    {TextId::SimRecordImages, "记录相机图像", "Record Camera Images"},
+    {TextId::SensorsNoImage, "记录中没有这一帧的图像（只有步序号、时间与位姿）", "No image for this frame in the record (step, time and pose only)"},
+    {TextId::LogRecordImageFailed, "相机图像保存失败：", "Could not save camera image: "},
 };
 
 constexpr bool entriesInOrder() {

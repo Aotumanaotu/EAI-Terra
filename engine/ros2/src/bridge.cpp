@@ -1,4 +1,4 @@
-// ROS2 桥接（M4-06a 通用配置）。rclcpp 与 ROS 消息只在本文件中使用，不进入公共头。
+// ROS2 桥接（M4-06a 通用配置；M4-06b 宇树配置在 unitree.cpp）。rclcpp 与 ROS 消息只在 engine/ros2/src 中使用，不进入公共头。
 
 #include "terra/ros2/bridge.hpp"
 
@@ -8,6 +8,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -29,6 +30,9 @@
 #include "terra/simulation/lidar.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+#include "unitree_link.hpp"
+#endif
 
 namespace terra::ros2 {
 
@@ -106,6 +110,9 @@ struct Bridge::Impl {
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr resetService;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr pauseService;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stepService;
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+    std::unique_ptr<detail::UnitreeLink> unitree;  // 宇树配置（M4-06b）
+#endif
 
     // 关节：发布 /joint_states 的转动与滑动关节（关节下标），以及作用在它上面的第一个执行器（下标，没有时为 -1）
     std::vector<std::size_t> publishedJoints;
@@ -200,16 +207,26 @@ Bridge::~Bridge() {
     impl_->stopping = true;
     if (impl_->spinner.joinable()) impl_->spinner.join();
     impl_->executor.reset();
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+    impl_->unitree.reset();
+#endif
     impl_->node.reset();
     releaseRclcpp();
 }
 
 std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene, const terra::simulation::PdLayer& pd,
                                        const Profile& profile, std::string& error) {
-    if (profile.kind != "generic") {
-        error = "配置类型“" + profile.kind + "”还不支持（M4-06a 只有 generic）";
+    if (profile.kind != "generic" && profile.kind != "unitree") {
+        error = "未知的配置类型“" + profile.kind + "”";
         return nullptr;
     }
+#ifndef TERRA_ROS2_UNITREE_ENABLED
+    if (profile.kind == "unitree") {
+        error = "宇树配置需要宇树消息包（unitree_go、unitree_hg），本程序构建时没有找到。请按固定提交编译 unitree_ros2 的 cyclonedds_ws，"
+                "source 它的 install/setup.bash 后重新配置并构建（M4-05 设计稿第 6 节）";
+        return nullptr;
+    }
+#endif
     acquireRclcpp();
     auto impl = std::make_unique<Impl>(scene, pd, profile);
     Impl& b = *impl;
@@ -259,6 +276,20 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
                 "/terra/joint_commands", rclcpp::QoS(10).reliable(),
                 [self](const sensor_msgs::msg::JointState::SharedPtr msg) { self->onCommand(*msg); });
         }
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+        if (profile.unitree) {
+            std::string linkError;
+            b.unitree = detail::createUnitreeLink(
+                *b.node, scene, profile,
+                [self](bool accepted, const std::string& reason) {
+                    std::lock_guard<std::mutex> lock(self->mutex);
+                    if (accepted) ++self->stats.commandsAccepted;
+                    else self->reject(reason);
+                },
+                linkError);
+            if (!b.unitree) throw std::runtime_error(linkError);
+        }
+#endif
         if (profile.services) {
             b.resetService = b.node->create_service<std_srvs::srv::Trigger>(
                 "/terra/reset", [self](const std::shared_ptr<std_srvs::srv::Trigger::Request>, std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
@@ -292,6 +323,9 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
         b.stopping = true;
         if (b.spinner.joinable()) b.spinner.join();
         b.executor.reset();
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+        b.unitree.reset();
+#endif
         b.node.reset();
         releaseRclcpp();
         return nullptr;
@@ -309,6 +343,13 @@ std::vector<terra::physics::ActuatorCommand> Bridge::takeCommands() {
     out.reserve(pending.size());
     for (const auto& [id, value] : pending) out.push_back({td::ActuatorId{id}, {value}});
     return out;
+}
+
+std::vector<terra::physics::ActuatorCommand> Bridge::directCommands() {
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+    if (impl_->unitree) return impl_->unitree->commands(*impl_->scene.world->snapshot());
+#endif
+    return {};
 }
 
 void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
@@ -388,6 +429,9 @@ void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
         b.scans[k]->publish(msg);
         ++b.published;
     }
+#ifdef TERRA_ROS2_UNITREE_ENABLED
+    if (b.unitree) b.unitree->publish(snapshot);
+#endif
 }
 
 void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {

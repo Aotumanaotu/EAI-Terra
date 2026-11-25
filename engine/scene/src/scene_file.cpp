@@ -213,7 +213,7 @@ void readModels(Reader& r, const Json& v, std::vector<SceneModel>& out) {
     for (std::size_t i = 0; i < v.size(); ++i) {
         const std::string where = "/models/" + std::to_string(i);
         const Json& item = v[i];
-        if (!r.object(item, where, {"name", "mjcf", "position", "rotation", "fixedBase"})) continue;
+        if (!r.object(item, where, {"name", "mjcf", "position", "rotation", "fixedBase", "torqueActuators"})) continue;
         SceneModel m;
         m.where = where;
         if (!item.contains("name")) r.error(where, "缺少 name（实例名）");
@@ -223,6 +223,9 @@ void readModels(Reader& r, const Json& v, std::vector<SceneModel>& out) {
         r.pose(item, where, m.placement);
         if (item.contains("fixedBase")) {
             if (const auto b = r.boolean(item["fixedBase"], where + "/fixedBase")) m.fixedBase = *b;
+        }
+        if (item.contains("torqueActuators")) {
+            if (const auto b = r.boolean(item["torqueActuators"], where + "/torqueActuators")) m.torqueActuators = *b;
         }
         out.push_back(std::move(m));
     }

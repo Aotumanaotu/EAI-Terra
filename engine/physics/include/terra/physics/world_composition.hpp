@@ -51,6 +51,9 @@ struct ModelPlacement {
     // M3-04：删掉该实例根部 body 的自由关节（悬挂模式）。没有自由关节时给出警告。
     bool fixedBase = false;
     std::vector<ImuMount> imus;  // M4-02
+    // M4-06b：把该实例的位置执行器（<position>）改为力矩执行器：增益 1、无偏置，控制范围取原来的力限（没有力限时不限）。
+    // 宇树低层控制（LowCmd）按 τ = tau + kp (q − q̂) + kd (dq − dq̂) 给力矩，需要力矩执行器（M4-05 设计稿问题 1）
+    bool torqueActuators = false;
 };
 
 struct WorldComposition {

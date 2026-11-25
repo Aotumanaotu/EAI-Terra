@@ -348,6 +348,8 @@ std::string usageText() {
            "  --sample-every N     每 N 步输出一次状态（默认 1；第 0 步与最后一步总是输出）\n"
            "  --ros2 <路径>        ROS2 桥接（M4-06a，*.terra-ros2.json）：发布 /clock、/joint_states、/tf 与传感器，订阅\n"
            "                       /terra/joint_commands，提供 /terra/reset、/terra/pause、/terra/step；隐含 --realtime。\n"
+           "                       宇树配置（M4-06b，assets/ros2/profiles/unitree_*.terra-ros2.json）另有与真机相同的\n"
+           "                       /lowstate、/lowcmd 等（需要宇树消息包）。\n"
            "                       只有构建时打开 TERRA_BUILD_ROS2 并找到 ROS2 Humble 才可用\n"
            "  --realtime           按墙钟节奏推进（1 秒仿真时间 = 1 秒）\n"
            "  --sensors            输出传感器读数（M4-02）：model 之后一行 sensor_list（清单与频率），之后按各传感器的频率\n"

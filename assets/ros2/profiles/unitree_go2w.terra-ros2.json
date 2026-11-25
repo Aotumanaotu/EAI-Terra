@@ -1,0 +1,48 @@
+{
+  "format": "terra.ros2",
+  "version": 1,
+  "name": "宇树 Go2W：与真机相同的低层话题（unitree_go；电机 12～15 为轮子，顺序同 unitree_mujoco）",
+  "kind": "unitree",
+  "clock": true,
+  "jointStatesHz": 100,
+  "tfHz": 100,
+  "sensors": true,
+  "commands": false,
+  "services": true,
+  "unitree": {
+    "messages": "go",
+    "instance": "go2w",
+    "motors": [
+      "FR_hip_joint",
+      "FR_thigh_joint",
+      "FR_calf_joint",
+      "FL_hip_joint",
+      "FL_thigh_joint",
+      "FL_calf_joint",
+      "RR_hip_joint",
+      "RR_thigh_joint",
+      "RR_calf_joint",
+      "RL_hip_joint",
+      "RL_thigh_joint",
+      "RL_calf_joint",
+      "FR_wheel_joint",
+      "FL_wheel_joint",
+      "RR_wheel_joint",
+      "RL_wheel_joint"
+    ],
+    "imu": "imu",
+    "feet": [
+      "FR_wheel_link",
+      "FL_wheel_link",
+      "RR_wheel_link",
+      "RL_wheel_link"
+    ],
+    "base": "base_link",
+    "lowstateHz": 500,
+    "lfLowstateHz": 50,
+    "sportModeStateHz": 500,
+    "lfSportModeStateHz": 50,
+    "wirelessControllerHz": 50,
+    "checkCrc": true
+  }
+}

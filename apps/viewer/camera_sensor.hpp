@@ -60,4 +60,9 @@ terra::render::ImageRgba8 depthPreview(const std::vector<float>& depth, int widt
 // 彩色图转为 RGBA8 图像（便于写 PNG 与界面显示）
 terra::render::ImageRgba8 colorImage(const CameraFrame& frame);
 
+// 深度图的 NumPy .npy 文件（格式 1.0，小端 float32，形状 (height, width)，行优先；与 terra_capture 相同）。
+// M4-07：记录相机图像时写，回放时读。读失败（文件不存在、格式或尺寸不对）时返回空
+bool writeDepthNpy(const std::string& path, const std::vector<float>& depth, int width, int height);
+std::vector<float> readDepthNpy(const std::string& path, int width, int height);
+
 }  // namespace terra::viewer

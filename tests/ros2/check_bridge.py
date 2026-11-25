@@ -162,7 +162,13 @@ def read_text(path):
 
 def check_qos(node, topic, reliable, transient_local, what):
     from rclpy.qos import ReliabilityPolicy, DurabilityPolicy
-    infos = [i for i in node.get_publishers_info_by_topic(topic) if i.node_name == "terra_simulator"]
+    # 端点的节点名经 ros_discovery_info 另行传播，可能晚于 DDS 端点本身被发现：最多等 5 s
+    end = time.monotonic() + 5.0
+    while True:
+        infos = [i for i in node.get_publishers_info_by_topic(topic) if i.node_name == "terra_simulator"]
+        if infos or time.monotonic() > end:
+            break
+        time.sleep(0.05)
     if not check(len(infos) == 1, what + "：terra_simulator 发布 " + topic):
         return
     qos = infos[0].qos_profile

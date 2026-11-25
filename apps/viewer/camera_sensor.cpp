@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <string>
 #include <utility>
 
 #include "terra/scene/pose_math.hpp"
@@ -119,6 +122,41 @@ r::ImageRgba8 colorImage(const CameraFrame& frame) {
         for (std::size_t c = 0; c < 3; ++c) image.pixels[i * 4 + c] = frame.rgb[i * 3 + c];
     }
     return image;
+}
+
+bool writeDepthNpy(const std::string& path, const std::vector<float>& depth, int width, int height) {
+    std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" + std::to_string(height) + ", " + std::to_string(width) + "), }";
+    const std::size_t prefix = 10;  // 魔数 6 + 版本 2 + 头长度 2
+    while ((prefix + header.size() + 1) % 64 != 0) header += ' ';
+    header += '\n';
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const unsigned char magic[8] = {0x93, 'N', 'U', 'M', 'P', 'Y', 1, 0};
+    out.write(reinterpret_cast<const char*>(magic), 8);
+    const auto length = static_cast<std::uint16_t>(header.size());
+    const char lengthBytes[2] = {static_cast<char>(length & 0xFFu), static_cast<char>((length >> 8) & 0xFFu)};
+    out.write(lengthBytes, 2);
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    // 只在小端机器上运行（x86-64），float 的内存布局即 '<f4'
+    out.write(reinterpret_cast<const char*>(depth.data()), static_cast<std::streamsize>(depth.size() * sizeof(float)));
+    return static_cast<bool>(out);
+}
+
+std::vector<float> readDepthNpy(const std::string& path, int width, int height) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in || width <= 0 || height <= 0) return {};
+    unsigned char head[10];
+    in.read(reinterpret_cast<char*>(head), 10);
+    if (!in || head[0] != 0x93 || head[1] != 'N' || head[6] != 1) return {};
+    const std::size_t length = static_cast<std::size_t>(head[8]) | (static_cast<std::size_t>(head[9]) << 8);
+    std::string header(length, '\0');
+    in.read(header.data(), static_cast<std::streamsize>(length));
+    const std::string shape = "(" + std::to_string(height) + ", " + std::to_string(width) + ")";
+    if (!in || header.find("'<f4'") == std::string::npos || header.find(shape) == std::string::npos) return {};
+    std::vector<float> depth(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    in.read(reinterpret_cast<char*>(depth.data()), static_cast<std::streamsize>(depth.size() * sizeof(float)));
+    if (!in) return {};
+    return depth;
 }
 
 }  // namespace terra::viewer

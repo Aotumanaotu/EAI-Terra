@@ -1,0 +1,18 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 Go2 低层控制（宇树通信配置，M4-06b）：机身 IMU 装在安装点 imu，没有 PD 层",
+  "models": [
+    {
+      "name": "go2",
+      "mjcf": "../../robots/unitree_go2/scene.xml"
+    }
+  ],
+  "initialKeyframe": "go2/home",
+  "sensors": [
+    {"type": "imu", "site": "go2/imu", "rateHz": 500}
+  ],
+  "view": {
+    "camera": {"position": [1.4, -1.1, 0.7], "target": [0, 0, 0.25]}
+  }
+}

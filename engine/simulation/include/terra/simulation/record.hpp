@@ -9,6 +9,13 @@
 //   state    采样的状态（实体位姿与速度、关节、接触摘要、诊断），字段与 Headless 的 state 行相同
 //   event    事件（如 "error"），带步序号
 //   summary  最后一行：总步数、仿真时间、结束原因
+// 版本 2（M4-07，传感器记录）：
+//   header   另有 sensors：IMU 名字（按传感器 ID 顺序）、2D 激光雷达与相机（名字、频率、束数或分辨率）
+//   state    另有 sensors：每份状态都记全部 IMU 的读数（快照的 sensors，每个 10 个数）
+//   lidar    雷达在其采样步上的一次扫描（距离；没有命中写成字符串 "inf" / "-inf"）
+//   camera   相机在其采样步上的元数据：步序号、时间、相机位姿（Terra 相机坐标系在世界中）
+//   camera_image  该步的图像已保存（相对记录文件所在目录的路径；只有查看器在打开“记录相机图像”时写，且只写实际渲染的帧）
+// 版本 1 的记录照常读取（没有传感器）。
 // 数值按往返精确的方式写出，读回后逐位相同。一份记录对应一段连续运行（中途重置时由调用方结束本记录、另起一份）。
 //
 // 复现（重新仿真）：按记录头加载同一场景，从同一起始状态开始，每步之前下发记录的控制量（其中已包含 PD 层与动作的输出，
@@ -25,8 +32,23 @@
 #include "terra/data/state.hpp"
 #include "terra/physics/physics_world.hpp"
 #include "terra/scene/composition.hpp"
+#include "terra/scene/scene.hpp"
+#include "terra/simulation/lidar.hpp"
 
 namespace terra::simulation {
+
+// M4-07：记录头中的传感器清单
+struct RecordLidarInfo {
+    std::string name;
+    double rateHz = 0.0;
+    int samples = 0;
+};
+struct RecordCameraInfo {
+    std::string name;
+    double rateHz = 0.0;
+    int width = 0;
+    int height = 0;
+};
 
 struct RecordHeader {
     // 运行环境（由调用方填写）
@@ -53,10 +75,35 @@ struct RecordHeader {
     std::vector<std::string> entities;
     std::vector<std::string> joints;
     std::vector<std::string> actuators;
+    // M4-07（版本 2）：传感器
+    std::vector<std::string> imus;
+    std::vector<RecordLidarInfo> lidars;
+    std::vector<RecordCameraInfo> cameras;
 };
 
 // 由模型描述与场景信息填写物理设置与名字清单（运行环境、文件摘要由调用方补充）
 RecordHeader makeRecordHeader(const terra::data::ModelDescription& model, std::uint64_t sampleEvery);
+// M4-07：填写传感器清单（IMU 已由 makeRecordHeader 按模型描述填写；这里补雷达与相机）
+void describeSensors(RecordHeader& header, const terra::scene::SceneInstance& scene);
+
+// M4-07：雷达的一次扫描与相机的一帧元数据
+struct RecordLidar {
+    std::uint64_t step = 0;
+    double time = 0.0;
+    std::string name;
+    std::vector<float> ranges;
+};
+struct RecordCameraFrame {
+    std::uint64_t step = 0;
+    double time = 0.0;
+    std::string name;
+    terra::data::Pose pose;  // Terra 相机坐标系在世界中的位姿（terra::scene::cameraWorldPose）
+    std::string rgb;         // 图像文件（相对记录文件所在目录）；空表示没有保存
+    std::string depth;
+};
+
+// 相机图像保存的目录：记录文件名去掉 ".terra-record.jsonl" 再加 ".frames"（与记录文件在同一目录）
+std::string recordFramesDirectory(const std::string& recordPath);
 
 struct RecordControl {
     std::uint64_t step = 0;
@@ -80,6 +127,8 @@ struct Record {
     std::vector<RecordControl> controls;            // 按步序号递增
     std::vector<terra::data::PhysicsSnapshot> states;  // 按步序号递增
     std::vector<RecordEvent> events;
+    std::vector<RecordLidar> lidars;              // M4-07：按写入顺序（步序号不减）
+    std::vector<RecordCameraFrame> cameraFrames;  // M4-07：按写入顺序；camera_image 合并到同一帧
     std::optional<RecordSummary> summary;  // 没有时表示记录没有正常结束（如程序中断）
 };
 
@@ -95,6 +144,10 @@ public:
     void control(std::uint64_t step, const std::vector<terra::physics::ActuatorCommand>& commands);
     void state(const terra::data::PhysicsSnapshot& snapshot);
     void event(std::uint64_t step, const std::string& kind, const std::string& detail = {});
+    // M4-07：传感器（IMU 随 state 写，不需要单独调用）
+    void lidar(const LidarScan& scan);
+    void camera(const RecordCameraFrame& frame);  // 只写元数据（rgb、depth 忽略）
+    void cameraImage(std::uint64_t step, const std::string& name, const std::string& rgb, const std::string& depth);
     // 写入 summary 并关闭文件；返回整个记录是否写入成功
     bool finish(std::uint64_t steps, double time, const std::string& reason);
 
@@ -115,6 +168,10 @@ struct RecordReadResult {
 };
 
 RecordReadResult readRecord(const std::string& path);
+
+// M4-07：按场景的频率记录这一步的雷达扫描与相机元数据（Headless 用；查看器自己算过雷达，直接调用 lidar / camera）
+void recordSceneSensors(RecordWriter& writer, const terra::physics::PhysicsWorld& world, const terra::scene::SceneInstance& scene,
+                        const terra::data::PhysicsSnapshot& snapshot);
 
 // 只读记录头与摘要（第一行与最后一个非空行），用于建立索引（M3-07b）：不解析中间的状态，大文件也很快。
 // 失败时返回空，error 为原因；没有 summary 时 summary 为空（记录没有正常结束）。
@@ -145,6 +202,10 @@ struct RerunResult {
     std::optional<std::uint64_t> firstExceedStep;  // 第一次超出容差的采样步
     std::optional<std::uint64_t> firstDifferenceStep;  // 第一个不逐位相同的采样步（诊断用）
     std::string firstDifference;                       // 该采样点上第一个不同的实体与差值（诊断用）
+    // M4-07：传感器（IMU 在每个采样点、雷达与相机位姿在记录的采样步上比较；逐位比较，不设容差）
+    std::size_t sensorSamples = 0;
+    bool sensorsBitwise = true;
+    std::string firstSensorDifference;
     bool withinTolerance() const noexcept { return ran && !firstExceedStep; }
 };
 

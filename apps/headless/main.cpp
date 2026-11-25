@@ -145,7 +145,9 @@ int rerun(const RunOptions& options) {
                        ",\"position_tolerance\":" + formatNumber(ro.positionTolerance) + ",\"rotation_tolerance\":" +
                        formatNumber(ro.rotationTolerance) + ",\"first_exceed_step\":" +
                        (result.firstExceedStep ? std::to_string(*result.firstExceedStep) : std::string{"null"}) +
-                       ",\"within_tolerance\":" + (result.withinTolerance() ? "true" : "false") + "}";
+                       ",\"within_tolerance\":" + (result.withinTolerance() ? "true" : "false") + ",\"sensor_samples\":" +
+                       std::to_string(result.sensorSamples) + ",\"sensors_bitwise\":" + (result.sensorsBitwise ? "true" : "false") + "}";
+    if (!result.sensorsBitwise) diagnose("复现诊断：传感器 " + result.firstSensorDifference);
     if (result.firstDifferenceStep) {
         diagnose("复现诊断：第一个不逐位相同的采样点在第 " + std::to_string(*result.firstDifferenceStep) + " 步：" + result.firstDifference);
     }
@@ -285,6 +287,7 @@ int run(const RunOptions& requested) {
     std::unique_ptr<terra::simulation::RecordWriter> recorder;
     if (!options.recordPath.empty()) {
         auto header = terra::simulation::makeRecordHeader(world.description(), options.sampleEvery);
+        if (sceneInstance) terra::simulation::describeSensors(header, *sceneInstance);  // M4-07
         fillEnvironment(header);
         std::error_code ec;
         header.scenePath = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
@@ -385,6 +388,11 @@ int run(const RunOptions& requested) {
     ok = ok && emitSensors();
     publishBridge();
     if (recorder) recorder->state(*world.snapshot());
+    // M4-07：记录中的雷达扫描与相机元数据（各自的频率；IMU 随 state 记录）
+    const auto recordSensors = [&] {
+        if (recorder && sceneInstance) terra::simulation::recordSceneSensors(*recorder, world, *sceneInstance, *world.snapshot());
+    };
+    recordSensors();
     for (std::uint64_t i = 0; ok && i < resolved.totalSteps; ++i) {
 #ifdef TERRA_WITH_ROS2
         // ROS2 的服务请求：暂停期间等待（继续或单步）；重置回到场景的初始状态
@@ -424,6 +432,10 @@ int run(const RunOptions& requested) {
             if (bridge) commands = terra::ros2::mergeCommands(std::move(commands), bridge->takeCommands());
 #endif
             if (!pd.empty()) commands = pd.process(std::move(commands), *world.snapshot());
+#ifdef TERRA_WITH_ROS2
+            // M4-06b：宇树 LowCmd 换算的力矩在 PD 层之后，同一执行器以它为准（PD 层让位）
+            if (bridge) commands = terra::ros2::mergeCommands(std::move(commands), bridge->directCommands());
+#endif
             if (!commands.empty()) {
                 if (recorder) recorder->control(world.stepIndex(), commands);
                 if (const auto error = world.setControl(commands)) {
@@ -453,6 +465,7 @@ int run(const RunOptions& requested) {
             ok = emit(sampleState(world));
             if (recorder) recorder->state(*world.snapshot());
         }
+        recordSensors();
         ok = ok && emitSensors();
         publishBridge();
     }

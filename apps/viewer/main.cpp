@@ -17,6 +17,7 @@
 //   --library    （M3-07c）资源库文件（实验记录的索引）；默认 $TERRA_LIBRARY 或 ~/.local/share/eai-terra/library.sqlite3
 //   --record-self-test （M3-07c）自检时测试记录与回放（与 --self-test、--motion 同用）
 //   --sensor-self-test （M4-04）自检时检查传感器采样与预览（与 --self-test、--scene 同用；场景需含 IMU、雷达与相机）
+//   --sensor-record-self-test （M4-07）自检时检查传感器的记录（含相机图像）、复现与回放（与 --self-test、--scene、--library 同用）
 //   --ros2       （M4-06a）打开场景后开启 ROS2 桥接，使用给出的通信配置（*.terra-ros2.json）；构建时没有 ROS2 时提示安装并返回 3
 //   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
 //                自检时在第 3 帧打开（代替按播放），并与“动作 → PD 层 → setControl → step”的纯物理对照逐位比较
@@ -114,6 +115,7 @@ struct Options {
     std::string libraryPath;  // M3-07c：资源库文件；空表示默认位置（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
     bool recordSelfTest = false;  // M3-07c：自检时测试记录与回放（第 5 帧开始记录，中间停止并回放）
     bool sensorSelfTest = false;  // M4-04：自检时检查传感器采样与预览
+    bool sensorRecordSelfTest = false;  // M4-07：自检时检查传感器的记录、复现与回放（与 --self-test、--scene、--library 同用）
     std::string ros2Profile;      // M4-06a：开启 ROS2 桥接的通信配置
     bool demoDrive = false;
 };
@@ -145,6 +147,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.recordSelfTest = true;
         } else if (a == "--sensor-self-test") {
             o.sensorSelfTest = true;
+        } else if (a == "--sensor-record-self-test") {
+            o.sensorRecordSelfTest = true;
         } else if (a == "--ros2" && hasValue) {
             o.ros2Profile = argv[++i];
         } else if (a == "--demo-drive") {
@@ -330,6 +334,7 @@ struct AppState {
     std::vector<terra::library::RecordEntry> recordList;
     std::optional<std::string> replayRequest;            // 请求回放的记录（帧末处理：可能需要切换场景）
     std::string ros2Profile;  // M4-06a：非空表示开启 ROS2 桥接（打开其他场景时以同一配置重新开启）
+    bool recordCameraImages = false;  // M4-07：记录时同时保存相机图像（实际渲染的帧）到记录旁的 .frames 目录
     std::string lastRecordPath;                          // 最近一次保存的记录（自检用）
     bool closeRequest = false;
     bool demoAssetsLoaded = false;
@@ -415,6 +420,8 @@ struct SimulatedScene {
         terra::render::Texture2D color;
         terra::render::Texture2D depth;
         std::uint64_t rendered = 0;
+        bool pendingRecorded = false;  // M4-07：pending 这一步的元数据已写入记录（图像可以随后写入）
+        std::string shownImage;        // M4-07：回放时显示的图像文件（避免每帧重读）
     };
     static constexpr std::size_t kImuHistory = 2500;
     std::vector<std::deque<ImuSample>> imuHistory;  // 与模型描述的 sensors 一一对应
@@ -423,6 +430,9 @@ struct SimulatedScene {
     std::vector<std::uint64_t> lidarSamples;
     std::vector<CameraPreview> cameraPreviews;
     std::unique_ptr<vw::CameraRenderer> cameraRenderer;  // 场景中有相机时才创建
+    // M4-07：回放时传感器面板显示记录中的读数（回放时间变化时更新）
+    double replaySensorTime = std::numeric_limits<double>::quiet_NaN();
+    bool replaySensorsShown = false;
 
     void resetSensors() {
         const std::size_t imus = instance.world->description().sensors.size();
@@ -458,10 +468,20 @@ struct SimulatedScene {
             if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.lidars[k].rateHz)) continue;
             lidarScans[k] = terra::simulation::scanLidar(*instance.world, instance.lidars[k]);
             ++lidarSamples[k];
+            if (recorder) recorder->lidar(*lidarScans[k]);  // M4-07
         }
         for (std::size_t k = 0; k < cameraPreviews.size(); ++k) {
             if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.cameras[k].rateHz)) continue;
             cameraPreviews[k].pending = std::make_shared<terra::data::PhysicsSnapshot>(snapshot);
+            cameraPreviews[k].pendingRecorded = recorder != nullptr;
+            if (recorder) {  // M4-07：相机元数据（步序号、时间、位姿）；图像在渲染后按需写入
+                terra::simulation::RecordCameraFrame meta;
+                meta.step = snapshot.stepIndex;
+                meta.time = snapshot.simulationTime;
+                meta.name = instance.cameras[k].name;
+                meta.pose = terra::scene::cameraWorldPose(snapshot, instance.cameras[k]);
+                recorder->camera(meta);
+            }
         }
 #ifdef TERRA_WITH_ROS2
         if (ros2) ros2->publish(snapshot);  // M4-06a：与 Headless 相同，每步之后与初始状态
@@ -576,8 +596,12 @@ struct SimulatedScene {
 #ifdef TERRA_WITH_ROS2
         if (ros2) commands = terra::ros2::mergeCommands(std::move(commands), ros2->takeCommands());  // M4-06a：桥接的命令在后
 #endif
-        if (pd.empty()) return commands;
-        return pd.process(std::move(commands), *instance.world->snapshot());
+        if (!pd.empty()) commands = pd.process(std::move(commands), *instance.world->snapshot());
+#ifdef TERRA_WITH_ROS2
+        // M4-06b：宇树 LowCmd 换算的力矩在 PD 层之后，同一执行器以它为准（PD 层让位）
+        if (ros2) commands = terra::ros2::mergeCommands(std::move(commands), ros2->directCommands());
+#endif
+        return commands;
     }
 
     std::vector<r::RenderItem> items(const st::RenderSettings& rs, terra::data::EntityId highlight) const {
@@ -974,6 +998,7 @@ void startRecording(Frame& f) {
     const double hz = f.settings.current.ui.recordSampleHz;
     sim.recordSampleEvery = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::llround(1.0 / (hz * d.timestep))));
     auto header = terra::simulation::makeRecordHeader(d, sim.recordSampleEvery);
+    terra::simulation::describeSensors(header, sim.instance);  // M4-07
     const terra::BuildInfo& info = terra::buildInfo();
     header.terraVersion = std::string{info.version};
     header.compiler = std::string{info.compilerId} + " " + std::string{info.compilerVersion};
@@ -1006,6 +1031,14 @@ void startRecording(Frame& f) {
         return;
     }
     sim.recorder->state(*sim.instance.world->snapshot());
+    // M4-07：起始状态的雷达与相机（restartSensors 在记录开始之前已采过这一步）
+    {
+        const auto start = sim.instance.world->snapshot();
+        terra::simulation::recordSceneSensors(*sim.recorder, *sim.instance.world, sim.instance, *start);
+        for (auto& c : sim.cameraPreviews) {
+            if (c.pending && c.pending->stepIndex == start->stepIndex) c.pendingRecorded = true;
+        }
+    }
     sim.recordStartTime = sim.instance.world->simulationTime();
     SimulatedScene* self = &sim;
     sim.runner->setControlObserver([self](std::uint64_t step, const std::vector<terra::physics::ActuatorCommand>& commands) {
@@ -1426,6 +1459,10 @@ void menuBar(Frame& f) {
         ImGui::Separator();
         if (ImGui::MenuItem(sim.recorder ? tr(TextId::SimRecordStop) : tr(TextId::SimRecordStart), "Ctrl+Shift+R", false, !sim.replay)) {
             toggleRecording(f);
+        }
+        // M4-07：记录时同时保存相机图像（只在场景中有相机时有意义）
+        if (ImGui::MenuItem(tr(TextId::SimRecordImages), nullptr, f.state.recordCameraImages, !sim.recorder && !sim.instance.cameras.empty())) {
+            f.state.recordCameraImages = !f.state.recordCameraImages;
         }
         if (ImGui::BeginMenu(tr(TextId::SimRecordRate), !sim.recorder)) {
             for (const double hz : {10.0, 25.0, 50.0, 100.0, 250.0, 500.0}) {
@@ -2460,10 +2497,145 @@ void timelinePanel(Frame& f) {
 
 // ---- 传感器（M4-04）：相机预览的渲染与传感器面板 ----
 
+// M4-07：回放时传感器面板显示记录中的读数——IMU 取每份状态中的读数（时间不晚于回放时间的最近 kImuHistory 份），
+// 雷达取不晚于回放时间的最后一次扫描，相机取最后一帧的元数据，保存了图像时读入图像。只在回放时间变化时更新
+void updateReplaySensors(Frame& f) {
+    SimulatedScene& sim = *f.simulated;
+    const auto& rec = sim.replay->record;
+    const double t = sim.replay->time;
+    if (sim.replaySensorsShown && sim.replaySensorTime == t) return;
+    sim.replaySensorsShown = true;
+    sim.replaySensorTime = t;
+    for (std::size_t k = 0; k < sim.imuHistory.size(); ++k) {
+        auto& history = sim.imuHistory[k];
+        history.clear();
+        std::uint64_t count = 0;
+        for (const auto& s : rec.states) {
+            if (s.simulationTime > t) break;
+            if (k >= s.sensors.size()) continue;
+            SimulatedScene::ImuSample sample;
+            sample.time = s.simulationTime;
+            for (std::size_t c = 0; c < 6 && c < s.sensors[k].values.size(); ++c) sample.values[c] = static_cast<float>(s.sensors[k].values[c]);
+            history.push_back(sample);
+            if (history.size() > SimulatedScene::kImuHistory) history.pop_front();
+            ++count;
+        }
+        sim.imuSamples[k] = count;
+    }
+    for (std::size_t k = 0; k < sim.lidarScans.size(); ++k) {
+        const auto& lidar = sim.instance.lidars[k];
+        const terra::simulation::RecordLidar* last = nullptr;
+        for (const auto& l : rec.lidars) {
+            if (l.time > t) break;
+            if (l.name == lidar.name) last = &l;
+        }
+        sim.lidarScans[k].reset();
+        if (last == nullptr) continue;
+        terra::simulation::LidarScan scan;
+        scan.sensor = last->name;
+        scan.step = last->step;
+        scan.time = last->time;
+        scan.angleMin = lidar.angleMin;
+        scan.angleIncrement = lidar.samples > 1 ? (lidar.angleMax - lidar.angleMin) / static_cast<double>(lidar.samples - 1) : 0.0;
+        scan.rangeMin = lidar.rangeMin;
+        scan.rangeMax = lidar.rangeMax;
+        scan.ranges = last->ranges;
+        sim.lidarScans[k] = std::move(scan);
+    }
+    const std::filesystem::path base = std::filesystem::path{sim.replay->path}.parent_path();
+    for (std::size_t k = 0; k < sim.cameraPreviews.size(); ++k) {
+        const auto& camera = sim.instance.cameras[k];
+        auto& preview = sim.cameraPreviews[k];
+        const terra::simulation::RecordCameraFrame* last = nullptr;
+        for (const auto& c : rec.cameraFrames) {
+            if (c.time > t) break;
+            if (c.name == camera.name) last = &c;
+        }
+        if (last == nullptr) {
+            preview.frame.reset();
+            preview.color = {};
+            preview.depth = {};
+            preview.shownImage.clear();
+            continue;
+        }
+        if (preview.frame && preview.frame->step == last->step && preview.shownImage == last->rgb + "|" + last->depth) continue;
+        vw::CameraFrame frame;
+        frame.sensor = camera.name;
+        frame.step = last->step;
+        frame.time = last->time;
+        frame.pose = last->pose;
+        frame.intrinsics = terra::scene::cameraIntrinsics(camera.width, camera.height, camera.fovyDegrees);
+        preview.color = {};
+        preview.depth = {};
+        if (!last->rgb.empty()) {
+            const auto loaded = terra::render::loadImage((base / last->rgb).string());
+            if (loaded.ok() && loaded.image.width == camera.width && loaded.image.height == camera.height) {
+                preview.color = terra::render::Texture2D::create(loaded.image.width, loaded.image.height, loaded.image.pixels.data(), false);
+            }
+        }
+        if (!last->depth.empty()) {
+            frame.depth = vw::readDepthNpy((base / last->depth).string(), camera.width, camera.height);
+            if (!frame.depth.empty()) {
+                float farthest = 0.0f;
+                for (const float d : frame.depth) {
+                    if (std::isfinite(d)) farthest = std::max(farthest, d);
+                }
+                const auto shown = vw::depthPreview(frame.depth, camera.width, camera.height, 0.0f, std::max(farthest, 0.1f));
+                preview.depth = terra::render::Texture2D::create(shown.width, shown.height, shown.pixels.data(), false);
+            }
+        }
+        preview.shownImage = last->rgb + "|" + last->depth;
+        preview.frame = std::move(frame);
+    }
+}
+
+// M4-07：记录时保存实际渲染的相机图像（彩色 PNG、深度 .npy），写在记录旁的 .frames 目录中，并在记录中登记
+void saveRecordedImage(Frame& f, const terra::scene::CameraSensor& camera, const vw::CameraFrame& frame) {
+    SimulatedScene& sim = *f.simulated;
+    namespace fs = std::filesystem;
+    const fs::path recordPath{sim.recorder->path()};
+    const fs::path frames{terra::simulation::recordFramesDirectory(recordPath.string())};
+    std::string cameraDir = camera.name;
+    std::replace(cameraDir.begin(), cameraDir.end(), '/', '_');
+    char name[32];
+    std::snprintf(name, sizeof name, "%08llu", static_cast<unsigned long long>(frame.step));
+    const std::string relative = frames.filename().string() + "/" + cameraDir;
+    std::error_code ec;
+    std::string rgb, depth;
+    if (!frame.rgb.empty()) {
+        fs::create_directories(frames / cameraDir / "rgb", ec);
+        rgb = relative + "/rgb/" + name + ".png";
+        if (terra::render::savePng((recordPath.parent_path() / rgb).string(), vw::colorImage(frame))) rgb.clear();
+    }
+    if (!frame.depth.empty()) {
+        fs::create_directories(frames / cameraDir / "depth", ec);
+        depth = relative + "/depth/" + name + ".npy";
+        if (!vw::writeDepthNpy((recordPath.parent_path() / depth).string(), frame.depth, camera.width, camera.height)) depth.clear();
+    }
+    if (rgb.empty() && depth.empty()) {
+        f.state.log.push_back(std::string{tr(TextId::LogRecordImageFailed)} + (frames / cameraDir).string());
+        return;
+    }
+    sim.recorder->cameraImage(frame.step, camera.name, rgb, depth);
+}
+
 // 本帧结束前渲染各相机最新一份该采样的快照（预览只渲染最新的一份；不丢帧的完整采集用 terra_capture）
 void updateCameraPreviews(Frame& f) {
-    if (!f.simulated || f.simulated->replay) return;
+    if (!f.simulated) return;
     SimulatedScene& sim = *f.simulated;
+    // M4-07：回放时显示记录中的传感器读数；回到实时后从当前状态重新开始
+    if (sim.replay) {
+        updateReplaySensors(f);
+        return;
+    }
+    if (sim.replaySensorsShown) {
+        sim.replaySensorsShown = false;
+        sim.restartSensors();
+        for (auto& c : sim.cameraPreviews) {
+            c.frame.reset();
+            c.shownImage.clear();
+        }
+    }
     bool pending = false;
     for (const auto& c : sim.cameraPreviews) pending = pending || c.pending != nullptr;
     if (!pending) return;
@@ -2487,6 +2659,7 @@ void updateCameraPreviews(Frame& f) {
         const auto& camera = sim.instance.cameras[k];
         preview.frame = sim.cameraRenderer->capture(sim.instance, *sim.view, camera, *preview.pending, lit);
         preview.pending.reset();
+        if (preview.pendingRecorded && sim.recorder && f.state.recordCameraImages) saveRecordedImage(f, camera, *preview.frame);  // M4-07
         ++preview.rendered;
         const vw::CameraFrame& frame = *preview.frame;
 #ifdef TERRA_WITH_ROS2
@@ -2607,7 +2780,7 @@ void sensorsPanel(Frame& f) {
         } else {
             SimulatedScene& sim = *f.simulated;
             const auto& d = sim.instance.world->description();
-            if (sim.replay) ImGui::TextWrapped("%s", tr(TextId::SensorsReplay));
+            if (sim.replay) ImGui::TextWrapped("%s", tr(TextId::SensorsReplay));  // M4-07：显示记录中的读数
             if (d.sensors.empty() && sim.instance.cameras.empty() && sim.instance.lidars.empty()) {
                 ImGui::TextWrapped("%s", tr(TextId::SensorsNone));
             }
@@ -2674,6 +2847,11 @@ void sensorsPanel(Frame& f) {
                         ImGui::TextDisabled("%d × %d  ·  %.0f°  ·  %.0f Hz", camera.width, camera.height, camera.fovyDegrees, camera.rateHz);
                         if (!preview.frame) {
                             ImGui::TextDisabled("%s", tr(TextId::SensorsWaiting));
+                        } else if (sim.replay && preview.color.name() == 0 && preview.depth.name() == 0) {
+                            // M4-07：回放的这一帧在记录中只有元数据（没有保存图像，或这一帧没有渲染）
+                            ImGui::TextDisabled("t = %.3f s  ·  %s %llu", preview.frame->time, tr(TextId::SensorsStep),
+                                                static_cast<unsigned long long>(preview.frame->step));
+                            ImGui::TextDisabled("%s", tr(TextId::SensorsNoImage));
                         } else {
                             const vw::CameraFrame& frame = *preview.frame;
                             ImGui::TextDisabled("t = %.3f s  ·  %s %llu", frame.time, tr(TextId::SensorsStep),
@@ -3108,6 +3286,9 @@ struct SceneSelfTestRecord {
     bool recordTest = false;
     std::size_t replayIndex = 0;  // 回放跳到的状态下标
     bool sensorTest = false;      // M4-04：传感器自检（播放后不暂停、不单步）
+    bool sensorRecordTest = false;  // M4-07：传感器记录自检（第 6 帧开始记录并保存图像，中间停止并回放到一帧有图像的时刻）
+    std::uint64_t replayCameraStep = 0;
+    double replayCameraTime = -1.0;
     bool toggleStarted = false;   // M3-07d：开始 / 停止切换（工具栏、快捷键共用的路径）确实开始与停止了记录
     bool toggleStopped = false;
 };
@@ -3126,6 +3307,29 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
     }
     if (frame == total / 2) {
         if (const auto* e = sim.instance.world->description().findEntity("cart_a/chassis")) f.state.selectedEntity = e->id;
+    }
+    if (sceneRecord.sensorRecordTest) {
+        if (frame == 6) {
+            f.state.recordCameraImages = true;
+            startRecording(f);
+        }
+        if (frame == total / 2) {
+            stopRecording(f, "stopped");
+            if (startReplay(f, f.state.lastRecordPath) && f.simulated->replay) {
+                auto& replay = *f.simulated->replay;
+                replay.playing = false;
+                // 回放到后半段中一帧保存了图像的相机帧
+                const auto& frames = replay.record.cameraFrames;
+                for (std::size_t i = frames.size() / 2; i < frames.size(); ++i) {
+                    if (frames[i].rgb.empty() || frames[i].depth.empty()) continue;
+                    sceneRecord.replayCameraStep = frames[i].step;
+                    sceneRecord.replayCameraTime = frames[i].time;
+                    replay.time = frames[i].time;
+                    break;
+                }
+            }
+        }
+        return;
     }
     if (sceneRecord.sensorTest) return;  // M4-04：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
@@ -3242,6 +3446,95 @@ int recordSelfTest(Frame& f) {
 
 // 传感器自检（M4-04）：场景 assets/tests/sensors/sensor_suite.terra-scene.json（IMU 夹具、雷达房间、相机夹具）。
 // 采样次数与 Headless、terra_capture 的采样规则一致；雷达与相机的读数与 M4-03 的解析解一致；面板与执行器面板同组。
+// M4-07：传感器记录自检。场景需含 IMU、雷达与相机（sensor_suite）
+int sensorRecordSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const std::string path = f.state.lastRecordPath;
+    std::printf("INFO 记录文件：%s\n", path.c_str());
+    const auto read = terra::simulation::readRecord(path);
+    check(read.record.has_value() && read.errors.empty() && read.warnings.empty(), "记录可以读回");
+    if (!read.record || !f.simulated) return 1;
+    const auto& rec = *read.record;
+    const auto& h = rec.header;
+    SimulatedScene& sim = *f.simulated;
+    const auto& d = sim.instance.world->description();
+    check(h.imus.size() == d.sensors.size() && h.lidars.size() == sim.instance.lidars.size() && h.cameras.size() == sim.instance.cameras.size(),
+          "记录头中的传感器清单：IMU " + std::to_string(h.imus.size()) + "、雷达 " + std::to_string(h.lidars.size()) + "、相机 " +
+              std::to_string(h.cameras.size()));
+    bool imuInStates = !rec.states.empty();
+    for (const auto& s : rec.states) imuInStates = imuInStates && s.sensors.size() == d.sensors.size() && !s.sensors.empty() && s.sensors[0].values.size() == 10;
+    check(imuInStates, "每份状态都记了全部 IMU 的读数（" + std::to_string(rec.states.size()) + " 份）");
+    // 雷达与相机按各自的频率、在记录区间内的每个采样步上都有一行
+    const std::uint64_t first = rec.states.front().stepIndex;
+    const std::uint64_t last = rec.summary ? rec.summary->steps : rec.states.back().stepIndex;
+    const double dt = h.timestep;
+    std::size_t lidarDue = 0, cameraDue = 0;
+    for (std::uint64_t k = first; k <= last; ++k) {
+        lidarDue += terra::simulation::sensorSampleDue(k, dt, sim.instance.lidars[0].rateHz) ? 1u : 0u;
+        cameraDue += terra::simulation::sensorSampleDue(k, dt, sim.instance.cameras[0].rateHz) ? 1u : 0u;
+    }
+    std::size_t images = 0;
+    bool filesExist = true;
+    const std::filesystem::path base = std::filesystem::path{path}.parent_path();
+    for (const auto& c : rec.cameraFrames) {
+        if (c.rgb.empty()) continue;
+        ++images;
+        filesExist = filesExist && std::filesystem::exists(base / c.rgb) && std::filesystem::exists(base / c.depth);
+    }
+    std::printf("INFO 记录：第 %llu～%llu 步，%zu 份状态，雷达 %zu 次（应 %zu），相机 %zu 帧（应 %zu），其中 %zu 帧保存了图像\n",
+                static_cast<unsigned long long>(first), static_cast<unsigned long long>(last), rec.states.size(), rec.lidars.size(), lidarDue,
+                rec.cameraFrames.size(), cameraDue, images);
+    check(rec.lidars.size() == lidarDue && lidarDue >= 2, "雷达按 10 Hz 记录，每个采样步一行（" + std::to_string(rec.lidars.size()) + " 行）");
+    check(rec.cameraFrames.size() == cameraDue && cameraDue >= 5, "相机按 30 Hz 记录元数据，每个采样步一行（" + std::to_string(rec.cameraFrames.size()) + " 行）");
+    check(images >= 3 && images <= rec.cameraFrames.size() && filesExist, "实际渲染的相机帧保存了彩色与深度图像，文件都在（" + std::to_string(images) + " 帧）");
+    const auto rerun = terra::simulation::rerunRecord(rec, terra::physics::mujoco::composeWorld);
+    std::printf("INFO 复现：%zu 个状态采样点，%zu 个传感器采样，位姿逐位相同 %s，传感器逐位相同 %s %s\n", rerun.compared, rerun.sensorSamples,
+                rerun.bitwise ? "是" : "否", rerun.sensorsBitwise ? "是" : "否", rerun.firstSensorDifference.c_str());
+    check(rerun.ran && rerun.bitwise && rerun.sensorsBitwise && rerun.sensorSamples == rec.states.size() + rec.lidars.size() + rec.cameraFrames.size(),
+          "复现：IMU、雷达与相机位姿逐位相同");
+    // 回放：传感器面板显示记录中的读数
+    check(sim.replay.has_value() && sceneRecord.replayCameraTime >= 0.0, "回放已开始，并跳到一帧保存了图像的时刻");
+    if (sim.replay) {
+        const double t = sim.replay->time;
+        const terra::data::PhysicsSnapshot* lastState = nullptr;
+        for (const auto& s : rec.states) {
+            if (s.simulationTime <= t) lastState = &s;
+        }
+        const auto& history = sim.imuHistory.at(0);
+        check(lastState != nullptr && !history.empty() && history.back().time == lastState->simulationTime &&
+                  history.back().values[2] == static_cast<float>(lastState->sensors[0].values[2]),
+              "回放时 IMU 曲线取自记录（最后一点为不晚于回放时间的状态中的读数）");
+        const terra::simulation::RecordLidar* lastLidar = nullptr;
+        for (const auto& l : rec.lidars) {
+            if (l.time <= t) lastLidar = &l;
+        }
+        const auto& scan = sim.lidarScans.at(0);
+        check(lastLidar != nullptr && scan && scan->step == lastLidar->step && scan->ranges.size() == lastLidar->ranges.size() &&
+                  std::equal(scan->ranges.begin(), scan->ranges.end(), lastLidar->ranges.begin(),
+                             [](float a, float b) { return a == b || (std::isnan(a) && std::isnan(b)); }),
+              "回放时雷达俯视图取自记录（第 " + std::to_string(lastLidar ? lastLidar->step : 0) + " 步）");
+        const auto& preview = sim.cameraPreviews.at(0);
+        const auto& camera = sim.instance.cameras[0];
+        float center = std::numeric_limits<float>::quiet_NaN();
+        if (preview.frame && !preview.frame->depth.empty()) {
+            center = preview.frame->depth[static_cast<std::size_t>(camera.height / 2) * static_cast<std::size_t>(camera.width) +
+                                          static_cast<std::size_t>(camera.width / 2)];
+        }
+        std::printf("INFO 回放：相机第 %llu 步，中心深度 %.4f m\n", static_cast<unsigned long long>(preview.frame ? preview.frame->step : 0),
+                    static_cast<double>(center));
+        check(preview.frame && preview.frame->step == sceneRecord.replayCameraStep && preview.color.name() != 0 && preview.depth.name() != 0,
+              "回放时相机预览读入了记录中保存的彩色与深度图像");
+        check(std::fabs(center - 2.0f) < 0.01f, "回放的深度图读回正确（中心深度 2 m）");
+    }
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "传感器记录自检通过\n" : "传感器记录自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int sensorSelfTest(Frame& f) {
     int failures = 0;
     const auto check = [&](bool ok, const std::string& what) {
@@ -3306,6 +3599,7 @@ int sensorSelfTest(Frame& f) {
 }
 
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.sensorRecordTest) return sensorRecordSelfTest(f);
     if (sceneRecord.sensorTest) return sensorSelfTest(f);
     if (sceneRecord.recordTest) return recordSelfTest(f);
     int failures = 0;
@@ -3599,6 +3893,7 @@ int main(int argc, char** argv) {
         sceneRecord.motionPath = options.motionPath;
         sceneRecord.recordTest = options.recordSelfTest;
         sceneRecord.sensorTest = options.sensorSelfTest;
+        sceneRecord.sensorRecordTest = options.sensorRecordSelfTest;
     }
     if (!options.motionPath.empty() && !(options.selfTest && simulated)) {
         if (!openMotion(frame, options.motionPath)) {

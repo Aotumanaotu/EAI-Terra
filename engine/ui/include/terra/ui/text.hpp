@@ -340,6 +340,10 @@ enum class TextId : int {
     LogRos2Failed,
     LogRos2Request,
     LogRos2RequestIgnored,
+    // M4-07：传感器记录
+    SimRecordImages,
+    SensorsNoImage,
+    LogRecordImageFailed,
     Count,
 };
 

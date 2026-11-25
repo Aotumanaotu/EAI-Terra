@@ -1,0 +1,22 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 G1 低层控制（宇树通信配置，M4-06b）：悬挂，位置执行器改为力矩执行器",
+  "models": [
+    {
+      "name": "g1",
+      "mjcf": "../../robots/unitree_g1/g1.xml",
+      "position": [0, 0, 0.3],
+      "fixedBase": true,
+      "torqueActuators": true
+    },
+    {
+      "name": "floor",
+      "mjcf": "../common/floor.xml"
+    }
+  ],
+  "physics": {"integrator": "implicitfast"},
+  "view": {
+    "camera": {"position": [2.4, -1.8, 1.6], "target": [0, 0, 1.0]}
+  }
+}

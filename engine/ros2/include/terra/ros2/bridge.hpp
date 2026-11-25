@@ -31,11 +31,31 @@
 
 namespace terra::ros2 {
 
+// 宇树配置（M4-06b，kind "unitree"）：与真机相同的低层话题（M4-05 设计稿第 4 节）。
+//   发布 /lowstate、/lf/lowstate（unitree_go 或 unitree_hg 的 LowState，含 CRC）；go 另有 /sportmodestate、/lf/sportmodestate、
+//   /wirelesscontroller；订阅 /lowcmd（LowCmd，CRC 不对的拒绝）。每一步按最近一条 LowCmd 计算每个电机的力矩
+//   τ = tau + kp (q − q̂) + kd (dq − dq̂)（mode = 0 时为 0），截断到执行器的控制范围；收到第一条之前力矩为 0。
+struct UnitreeProfile {
+    std::string messages;             // "go"（unitree_go，20 个电机位）或 "hg"（unitree_hg，35 个电机位）
+    std::string instance;             // 场景中的模型实例名（如 "go2"）
+    std::vector<std::string> motors;  // 电机编号 → 关节名（实例内，如 "FR_hip_joint"）；空字符串表示该编号没有电机
+    std::string imu;                  // 机身 IMU（实例内的传感器名，如 "imu"）
+    std::vector<std::string> feet;    // go：foot_force 的四个足端实体（实例内），顺序与真机相同（FR、FL、RR、RL）
+    std::string base;                 // go：sportmodestate 的机身实体（实例内）
+    double lowstateHz = 500.0;
+    double lfLowstateHz = 50.0;       // 0 表示不发布
+    double sportModeStateHz = 500.0;  // go；0 表示不发布
+    double lfSportModeStateHz = 50.0;
+    double wirelessControllerHz = 50.0;
+    bool checkCrc = true;             // 关闭只用于调试（与真机不同）
+    int modeMachine = 0;              // hg：LowState 的 mode_machine（机型代码，待真机核对）
+};
+
 // 通信配置文件（*.terra-ros2.json，format "terra.ros2"、version 1；严格校验，未知字段报错）
 struct Profile {
     std::string path;
     std::string name;
-    std::string kind = "generic";  // "generic"；"unitree" 在 M4-06b 加入
+    std::string kind = "generic";  // "generic" 或 "unitree"（M4-06b，需要 unitree 字段）
     std::string topicPrefix;       // 加在全部话题名前（如 "/sim"），默认为空
     bool clock = true;             // 发布 /clock
     double jointStatesHz = 100.0;
@@ -43,6 +63,7 @@ struct Profile {
     bool sensors = true;           // IMU、雷达、相机
     bool commands = true;          // 订阅 /terra/joint_commands
     bool services = true;          // /terra/reset、/terra/pause、/terra/step
+    std::optional<UnitreeProfile> unitree;
 };
 
 struct ProfileResult {
@@ -60,8 +81,8 @@ enum class Request { Reset, Pause, Resume, Step };
 
 struct Stats {
     std::uint64_t published = 0;         // 发布的消息总数
-    std::uint64_t commandsAccepted = 0;  // 换算成控制量的命令条目数
-    std::uint64_t commandsRejected = 0;  // 拒绝的命令条目数（未知执行器、缺字段、越界、非有限值）
+    std::uint64_t commandsAccepted = 0;  // 换算成控制量的命令条目数（宇树配置：接受的 LowCmd 条数）
+    std::uint64_t commandsRejected = 0;  // 拒绝的命令条目数（未知执行器、缺字段、越界、非有限值；宇树配置：CRC 不对等）
     std::string lastRejection;           // 最近一次拒绝的原因
     std::size_t subscribers = 0;         // 当前订阅了任一话题的订阅者数（界面显示）
 };
@@ -89,6 +110,9 @@ public:
     // 每步之前（仿真线程）：收到的关节命令换算成控制量（同一执行器以最后一条为准）；PD 层接管的执行器给的是目标位置，
     // 由调用方交给 PD 层处理（与动作、面板的路径相同）
     std::vector<terra::physics::ActuatorCommand> takeCommands();
+    // PD 层之后（仿真线程，M4-06b）：直接给执行器的控制量，并在 PD 层与动作的输出之后（同一执行器以它为准）。
+    // 宇树配置：按最近一条 LowCmd 与当前状态算出的各电机力矩；通用配置：空
+    std::vector<terra::physics::ActuatorCommand> directCommands();
     // 每步之后与初始状态（仿真线程）：按频率发布；snapshot 必须是当前状态（雷达在这里做射线检测）
     void publish(const terra::data::PhysicsSnapshot& snapshot);
     // 查看器渲染出相机画面后调用（camera 为 SceneInstance::cameras 的下标）

@@ -1420,6 +1420,36 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
         }
     }
 
+    // 2b'. 位置执行器改为力矩执行器（M4-06b，宇树低层控制）：增益 1、无偏置；控制范围取力限，没有力限时不限。
+    //      inheritrange 置 0（否则编译时又按关节范围设置控制范围）。只改“增益固定、仿射偏置且 bias[1] = −gain[0]”的执行器
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        if (!models[i].torqueActuators) continue;
+        int converted = 0;
+        for (mjsElement* e = mjs_firstElement(children[i].get(), mjOBJ_ACTUATOR); e != nullptr;
+             e = mjs_nextElement(children[i].get(), e)) {
+            mjsActuator* a = mjs_asActuator(e);
+            const bool position = a->dyntype == mjDYN_NONE && a->gaintype == mjGAIN_FIXED && a->biastype == mjBIAS_AFFINE &&
+                                  a->biasprm[0] == 0.0 && a->biasprm[1] == -a->gainprm[0] && a->gainprm[0] != 0.0;
+            if (!position) continue;
+            for (double& g : a->gainprm) g = 0.0;
+            a->gainprm[0] = 1.0;
+            a->biastype = mjBIAS_NONE;
+            for (double& b : a->biasprm) b = 0.0;
+            a->inheritrange = 0.0;
+            a->type = mjACTUATOR_MOTOR;
+            const bool forceRange = a->forcelimited != mjLIMITED_FALSE && a->forcerange[0] < a->forcerange[1];
+            if (forceRange) {
+                a->ctrllimited = mjLIMITED_TRUE;
+                a->ctrlrange[0] = a->forcerange[0];
+                a->ctrlrange[1] = a->forcerange[1];
+            } else {
+                a->ctrllimited = mjLIMITED_FALSE;
+            }
+            ++converted;
+        }
+        if (converted == 0) warning(static_cast<int>(i), "torqueActuators：模型中没有位置执行器，没有改动");
+    }
+
     // 2c. 场景文件添加的 IMU（M4-02）
     for (std::size_t i = 0; i < children.size(); ++i) {
         for (const ImuMount& imu : models[i].imus) {

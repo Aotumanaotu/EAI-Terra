@@ -73,11 +73,72 @@ void testStrict() {
     expectError(R"({"format": "terra.ros2", "version": 1, "tfHz": "100"})", "/tfHz");
     expectError(R"({"format": "terra.ros2", "version": 1, "sensors": 1})", "/sensors");
     expectError(R"({"format": "terra.ros2", "version": 1, "name": 3})", "/name");
-    expectError(R"({"format": "terra.ros2", "version": 1, "kind": "unitree"})", "M4-06b");
+    expectError(R"({"format": "terra.ros2", "version": 1, "kind": "unitree"})", "需要 unitree 字段");
     expectError(R"({"format": "terra.ros2", "version": 1, "kind": "ros1"})", "未知的配置类型");
     expectError(R"({"format": "terra.ros2", "version": 1, "topicPrefix": "sim"})", "/topicPrefix");
     expectError(R"({"format": "terra.ros2", "version": 1, "topicPrefix": "/sim/"})", "/topicPrefix");
     expectError(R"({"format": "terra.ros2", "version": 1, "topicPrefix": "/s-m"})", "/topicPrefix");
+}
+
+// M4-06b：宇树配置
+void testUnitree() {
+    struct Expected {
+        const char* file;
+        const char* messages;
+        const char* instance;
+        std::size_t motors;
+        const char* first;
+        const char* imu;
+    };
+    const Expected profiles[] = {
+        {"unitree_go2", "go", "go2", 12, "FR_hip_joint", "imu"},
+        {"unitree_go2w", "go", "go2w", 16, "FR_hip_joint", "imu"},
+        {"unitree_g1", "hg", "g1", 29, "left_hip_pitch_joint", "imu_in_pelvis"},
+        {"unitree_as2", "hg", "as2", 12, "FR_hip_joint", "imu"},
+    };
+    for (const auto& e : profiles) {
+        const auto r = ros::readProfile(std::string{TERRA_ASSETS_DIR} + "/ros2/profiles/" + e.file + ".terra-ros2.json");
+        for (const auto& err : r.errors) std::fprintf(stderr, "INFO %s：%s\n", e.file, err.c_str());
+        check(r.profile && r.profile->kind == "unitree" && r.profile->unitree, std::string{e.file} + "：可以读取，kind 为 unitree");
+        if (!r.profile || !r.profile->unitree) continue;
+        const auto& u = *r.profile->unitree;
+        check(u.messages == e.messages && u.instance == e.instance && u.motors.size() == e.motors && u.motors[0] == e.first && u.imu == e.imu,
+              std::string{e.file} + "：消息类型、实例、电机表与 IMU");
+        check(u.checkCrc && u.lowstateHz == 500.0 && u.lfLowstateHz == 50.0, std::string{e.file} + "：校验 CRC，500 / 50 Hz");
+        check(!r.profile->commands, std::string{e.file} + "：不订阅 /terra/joint_commands（命令走 /lowcmd）");
+    }
+    // 宇树 G1 的电机顺序与 G1JointIndex 相同：12 为 waist_yaw，22 为 right_shoulder_pitch
+    const auto g1 = ros::readProfile(std::string{TERRA_ASSETS_DIR} + "/ros2/profiles/unitree_g1.terra-ros2.json");
+    if (g1.profile && g1.profile->unitree) {
+        const auto& m = g1.profile->unitree->motors;
+        check(m[12] == "waist_yaw_joint" && m[22] == "right_shoulder_pitch_joint" && m[28] == "right_wrist_yaw_joint", "G1 电机顺序（G1JointIndex）");
+    }
+
+    const std::string head = R"({"format": "terra.ros2", "version": 1, "kind": "unitree", "unitree": )";
+    const auto unitree = [&](const std::string& body) { return head + body + "}"; };
+    const std::string ok = R"("messages": "go", "instance": "go2", "imu": "imu", "motors": ["FR_hip_joint", "", "FR_calf_joint"])";
+    const auto minimal = ros::parseProfile(unitree("{" + ok + "}"), "u.json");
+    check(minimal.profile && minimal.profile->unitree && minimal.profile->unitree->motors.size() == 3 &&
+              minimal.profile->unitree->motors[1].empty() && minimal.profile->unitree->wirelessControllerHz == 50.0,
+          "最小的宇树配置：空字符串表示该编号没有电机，其余取默认值");
+    expectError(unitree("[]"), "/unitree");
+    expectError(unitree("{" + ok + R"(, "lowcmdHz": 5})"), "未知字段“lowcmdHz”");
+    expectError(unitree(R"({"instance": "go2", "imu": "imu", "motors": ["a"]})"), "/unitree/messages");
+    expectError(unitree(R"({"messages": "h1", "instance": "go2", "imu": "imu", "motors": ["a"]})"), "/unitree/messages");
+    expectError(unitree(R"({"messages": "go", "imu": "imu", "motors": ["a"]})"), "/unitree/instance");
+    expectError(unitree(R"({"messages": "go", "instance": "go2", "motors": ["a"]})"), "/unitree/imu");
+    expectError(unitree(R"({"messages": "go", "instance": "go2", "imu": "imu"})"), "/unitree/motors");
+    expectError(unitree(R"({"messages": "go", "instance": "go2", "imu": "imu", "motors": ["", ""]})"), "没有电机");
+    expectError(unitree(R"({"messages": "go", "instance": "go2", "imu": "imu", "motors": [1]})"), "/unitree/motors/0");
+    std::string many = R"({"messages": "go", "instance": "go2", "imu": "imu", "motors": [)";
+    for (int i = 0; i < 21; ++i) many += std::string{i == 0 ? "" : ", "} + "\"j" + std::to_string(i) + "\"";
+    expectError(unitree(many + "]}"), "超过消息的 20 个电机位");
+    expectError(unitree("{" + ok + R"(, "feet": ["a", "b"]})"), "/unitree/feet");
+    expectError(unitree("{" + ok + R"(, "lowstateHz": 0})"), "/unitree/lowstateHz");
+    expectError(unitree("{" + ok + R"(, "lfLowstateHz": -1})"), "/unitree/lfLowstateHz");
+    expectError(unitree("{" + ok + R"(, "checkCrc": "no"})"), "/unitree/checkCrc");
+    expectError(unitree("{" + ok + R"(, "modeMachine": 300})"), "/unitree/modeMachine");
+    expectError(R"({"format": "terra.ros2", "version": 1, "unitree": {}})", "只有 kind 为 unitree");
 }
 
 void testTopicName() {
@@ -108,6 +169,7 @@ void testMerge() {
 int main() {
     testGeneric();
     testStrict();
+    testUnitree();
     testTopicName();
     testMerge();
     if (failures == 0) std::printf("all passed\n");

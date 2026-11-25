@@ -111,12 +111,13 @@ void testInitialKeyframe() {
 
 void testControllersAndFixedBase() {
     const auto r = sc::parseScene(scene(R"(, "controllers": [{"type": "pd", "actuators": ["cart/*", "cart/drive"], "kp": 50, "kd": 0.5}])",
-                                        R"([{"name": "cart", "mjcf": "cart.xml", "fixedBase": true}])"),
+                                        R"([{"name": "cart", "mjcf": "cart.xml", "fixedBase": true, "torqueActuators": true}])"),
                                   kScenePath);
     check(r.document && r.issues.empty(), "读取 controllers 与 fixedBase" + dump(r));
     if (r.document) {
         const auto& d = *r.document;
         check(d.models[0].fixedBase, "fixedBase = true");
+        check(d.models[0].torqueActuators, "torqueActuators = true（M4-06b）");
         check(d.controllers.size() == 1 && d.controllers[0].actuators.size() == 2 && d.controllers[0].kp == 50 &&
                   d.controllers[0].kd == 0.5 && d.controllers[0].where == "/controllers/0",
               "PD 层的执行器、增益与位置");
@@ -171,6 +172,8 @@ void testErrors() {
 
     expectError(scene("", R"([{"name": "c", "mjcf": "cart.xml", "fixedBase": 1}])"), "/models/0/fixedBase", "true 或 false",
                 "fixedBase 不是布尔值");
+    expectError(scene("", R"([{"name": "c", "mjcf": "cart.xml", "torqueActuators": "yes"}])"), "/models/0/torqueActuators", "true 或 false",
+                "torqueActuators 不是布尔值");
     expectError(scene(R"(, "controllers": {})"), "/controllers", "应为数组", "controllers 不是数组");
     expectError(scene(R"(, "controllers": [{"type": "pid", "actuators": ["a/x"], "kp": 1}])"), "/controllers/0/type", "只支持 “pd”",
                 "未知的控制层类型");

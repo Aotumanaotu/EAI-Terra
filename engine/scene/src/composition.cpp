@@ -123,7 +123,7 @@ ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const Physi
     for (std::size_t i = 0; i < instances.size(); ++i) {
         const SceneModel& m = instances[i];
         request.models.push_back({m.name, instancePrefix(m.name), m.mjcf, m.placement, m.fixedBase,
-                                  i < imus.size() ? imus[i] : std::vector<tp::ImuMount>{}});
+                                  i < imus.size() ? imus[i] : std::vector<tp::ImuMount>{}, m.torqueActuators});
     }
     request.resolveOptions = [&](const std::vector<tp::PhysicsOptions>& models) {
         return resolvePhysicsOptions(overrides, models, instances, optionWarnings);

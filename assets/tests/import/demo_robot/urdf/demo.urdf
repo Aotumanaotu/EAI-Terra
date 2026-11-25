@@ -1,0 +1,114 @@
+<?xml version="1.0"?>
+<!--
+  Terra M4-08a 测试夹具（由 Terra 编写）：差速小车。覆盖：package:// 路径、STL 网格、Collada 网格（marker.dae，需要 assimp）、
+  带贴图的材质、两个 continuous 轮子、一个 revolute 关节、没有惯量的固定连杆（激光雷达、相机、IMU）、相机的光学坐标系。
+  base_footprint（地面）→ base_link（轮轴高度 0.05 m）。
+-->
+<robot name="demo_robot">
+  <material name="blue"><color rgba="0.2 0.4 0.8 1"/></material>
+  <material name="checker"><color rgba="1 1 1 1"/><texture filename="package://demo_robot/textures/checker.png"/></material>
+
+  <link name="base_footprint"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0.06"/>
+      <mass value="2.0"/>
+      <inertia ixx="0.0077" ixy="0" ixz="0" iyy="0.016" iyz="0" izz="0.0217"/>
+    </inertial>
+    <visual>
+      <geometry><mesh filename="package://demo_robot/meshes/body.stl"/></geometry>
+      <material name="blue"/>
+    </visual>
+    <visual>
+      <origin xyz="0.1 0 0.1" rpy="0 0 0"/>
+      <geometry><mesh filename="package://demo_robot/meshes/marker.dae"/></geometry>
+    </visual>
+    <collision>
+      <geometry><mesh filename="package://demo_robot/meshes/body.stl"/></geometry>
+    </collision>
+  </link>
+
+  <link name="left_wheel">
+    <inertial><mass value="0.2"/><inertia ixx="0.00013" ixy="0" ixz="0" iyy="0.00025" iyz="0" izz="0.00013"/></inertial>
+    <visual><origin rpy="1.5707963 0 0"/><geometry><cylinder radius="0.05" length="0.02"/></geometry><material name="checker"/></visual>
+    <collision><origin rpy="1.5707963 0 0"/><geometry><cylinder radius="0.05" length="0.02"/></geometry></collision>
+  </link>
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel"/>
+    <origin xyz="0 0.12 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="5" velocity="20"/>
+  </joint>
+
+  <link name="right_wheel">
+    <inertial><mass value="0.2"/><inertia ixx="0.00013" ixy="0" ixz="0" iyy="0.00025" iyz="0" izz="0.00013"/></inertial>
+    <visual><origin rpy="1.5707963 0 0"/><geometry><cylinder radius="0.05" length="0.02"/></geometry><material name="checker"/></visual>
+    <collision><origin rpy="1.5707963 0 0"/><geometry><cylinder radius="0.05" length="0.02"/></geometry></collision>
+  </link>
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel"/>
+    <origin xyz="0 -0.12 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="5" velocity="20"/>
+  </joint>
+
+  <link name="caster_link">
+    <collision><geometry><sphere radius="0.025"/></geometry></collision>
+    <visual><geometry><sphere radius="0.025"/></geometry></visual>
+  </link>
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="caster_link"/>
+    <origin xyz="-0.12 0 -0.025"/>
+  </joint>
+
+  <link name="arm_link">
+    <inertial><origin xyz="0 0 0.05"/><mass value="0.1"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.00002"/></inertial>
+    <visual><origin xyz="0 0 0.05"/><geometry><box size="0.02 0.02 0.1"/></geometry><material name="blue"/></visual>
+    <collision><origin xyz="0 0 0.05"/><geometry><box size="0.02 0.02 0.1"/></geometry></collision>
+  </link>
+  <joint name="arm_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="arm_link"/>
+    <origin xyz="-0.05 0 0.1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.57" upper="1.57" effort="5" velocity="2"/>
+  </joint>
+
+  <link name="laser_link">
+    <visual><geometry><cylinder radius="0.03" length="0.03"/></geometry></visual>
+  </link>
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_link"/>
+    <origin xyz="0.08 0 0.12"/>
+  </joint>
+
+  <link name="camera_link"/>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="0.15 0 0.08"/>
+  </joint>
+  <link name="camera_optical_frame"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin rpy="-1.5707963 0 -1.5707963"/>
+  </joint>
+
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.03"/>
+  </joint>
+</robot>

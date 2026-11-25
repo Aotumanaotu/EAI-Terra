@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Terra M4-08a 测试夹具：单位厘米、Z_UP 的 Collada 方块（两个材质）。由 Terra 编写。 -->
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="centimeter" meter="0.01"/><up_axis>Z_UP</up_axis></asset>
+  <library_effects><effect id="red-effect"><profile_COMMON><technique sid="common"><lambert><diffuse><color>0.9 0.1 0.1 1</color></diffuse></lambert></technique></profile_COMMON></effect><effect id="green-effect"><profile_COMMON><technique sid="common"><lambert><diffuse><color>0.1 0.8 0.2 1</color></diffuse></lambert></technique></profile_COMMON></effect></library_effects>
+  <library_materials><material id="red" name="red"><instance_effect url="#red-effect"/></material><material id="green" name="green"><instance_effect url="#green-effect"/></material></library_materials>
+  <library_geometries><geometry id="box" name="box"><mesh>
+    <source id="box-positions"><float_array id="box-positions-array" count="24">0 0 0 10 0 0 10 4 0 0 4 0 0 0 2 10 0 2 10 4 2 0 4 2</float_array><technique_common><accessor source="#box-positions-array" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+    <vertices id="box-vertices"><input semantic="POSITION" source="#box-positions"/></vertices>
+    <triangles material="red" count="2"><input semantic="VERTEX" source="#box-vertices" offset="0"/><p>4 5 6 4 6 7</p></triangles>
+    <triangles material="green" count="10"><input semantic="VERTEX" source="#box-vertices" offset="0"/><p>0 2 1 0 3 2 0 1 5 0 5 4 1 2 6 1 6 5 2 3 7 2 7 6 3 0 4 3 4 7</p></triangles>
+  </mesh></geometry></library_geometries>
+  <library_visual_scenes><visual_scene id="scene"><node id="box-node" name="box"><instance_geometry url="#box"><bind_material><technique_common><instance_material symbol="red" target="#red"/><instance_material symbol="green" target="#green"/></technique_common></bind_material></instance_geometry></node></visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#scene"/></scene>
+</COLLADA>

@@ -28,6 +28,8 @@
 # M3-01：参考机器人导入核查（robots.import）。
 # M3-04a：动作文件（motion.file）、动作播放（motion.player）。
 # M3-04b：PD 控制层与快照的执行器状态（simulation.pd）；悬挂模式（physics.fixed_base）。
+# M4-08a：模型导入（import.analyze、import.execute、import.demos、import.cli_dry_run、import.cli_broken；
+#   graphics.viewer_import_selftest：查看器的导入向导）。
 # M4-07：传感器记录（record.sensors；record.file 扩充：版本 2 与读取版本 1；headless.record_sensors、headless.rerun_sensors；
 #   graphics.viewer_sensor_record_selftest：查看器记录传感器与相机图像、复现、回放时传感器面板跟随）。
 # M4-06a：ROS2 桥接。没有 ROS2 的构建：--ros2 提示安装并返回 3（headless.ros2_unavailable）。ROS2 构建（TERRA_ROS2_ENABLED，
@@ -337,6 +339,31 @@ target_compile_definitions(test_unitree_import PRIVATE TERRA_ASSETS_DIR="${PROJE
 terra_configure_target(test_unitree_import)
 add_test(NAME robots.unitree_import COMMAND test_unitree_import)
 set_tests_properties(robots.unitree_import PROPERTIES SKIP_RETURN_CODE 77)
+
+# 模型导入（M4-08a）：analyze 不需要 MuJoCo；execute 需要 MuJoCo 与 assimp（demo.urdf 中有 Collada 网格）；
+# demos 导入 ROBOTS/import_demos/ 中的公开示例（没有下载时跳过）；命令行程序的只分析模式与出错的模型
+add_executable(test_import_analyze import/test_import.cpp)
+target_link_libraries(test_import_analyze PRIVATE terra::import)
+target_compile_definitions(test_import_analyze PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_import_analyze)
+add_test(NAME import.analyze COMMAND test_import_analyze analyze)
+add_executable(test_import_execute import/test_import.cpp)
+target_link_libraries(test_import_execute PRIVATE terra::import terra::scene terra::physics_mujoco)
+target_compile_definitions(test_import_execute PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests" TERRA_IMPORT_EXECUTE=1)
+terra_configure_target(test_import_execute)
+add_test(NAME import.execute COMMAND test_import_execute execute "${CMAKE_CURRENT_BINARY_DIR}/import_execute")
+add_test(NAME import.demos COMMAND test_import_execute demos "${CMAKE_CURRENT_BINARY_DIR}/import_demos" "${PROJECT_SOURCE_DIR}/ROBOTS")
+set_tests_properties(import.demos PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME import.cli_dry_run
+    COMMAND "${CMAKE_COMMAND}" -DEXPECTED=0 -DCOMMAND=$<TARGET_FILE:terra_import_cli>
+            "-DSTDOUT_REGEX=[{].type.:.import.,.dry_run.:true,.ok.:true,.name.:.demo_robot."
+            "-DSTDERR_REGEX=10 个连杆、3 个活动关节、2 个网格、提议 3 个执行器与 3 个传感器"
+            -P "${_terra_check_exit}" "${PROJECT_SOURCE_DIR}/assets/tests/import/demo_robot/urdf/demo.urdf" --dry-run)
+add_test(NAME import.cli_broken
+    COMMAND "${CMAKE_COMMAND}" -DEXPECTED=4 -DCOMMAND=$<TARGET_FILE:terra_import_cli>
+            "-DSTDERR_REGEX=missing_mesh：[^\n]*no_such_mesh[^\n]*  → .*unknown_package：[^\n]*nonexistent_pkg[^\n]*  → "
+            -P "${_terra_check_exit}" "${PROJECT_SOURCE_DIR}/assets/tests/import/broken.urdf"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/import_cli_broken")
 
 # 宇树低层控制场景（M4-06b）：G1 的位置执行器改为力矩执行器（torqueActuators）；Go2 加机身 IMU、没有 PD 层
 add_executable(test_unitree_lowlevel robots/test_unitree_lowlevel.cpp)
@@ -660,6 +687,12 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)
     set_tests_properties(graphics.viewer_sensor_selftest PROPERTIES LABELS graphics)
+    # M4-08a：导入向导——第 12 帧分析 demo.urdf，第 14 帧导入并打开（需要 assimp）；资源库与导入目录在构建目录中
+    add_test(NAME graphics.viewer_import_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 40 --self-test --expect-renderer llvmpipe
+                --import-self-test "${PROJECT_SOURCE_DIR}/assets/tests/import/demo_robot/urdf/demo.urdf"
+                --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_import/library.sqlite3")
+    set_tests_properties(graphics.viewer_import_selftest PROPERTIES LABELS graphics)
     # M4-07：第 6 帧开始记录（保存相机图像），中间停止并回放到一帧有图像的时刻；资源库在构建目录中
     add_test(NAME graphics.viewer_sensor_record_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe

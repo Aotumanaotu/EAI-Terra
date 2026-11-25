@@ -163,8 +163,8 @@ mutations = {
         "    if (seenModel && seenScene) {",
         "    if (false) {"),
     "文件浏览不过滤后缀": (
-        "            if (!filter.empty() && !endsWith(name, filter)) continue;",
-        "            (void)endsWith;"),
+        "            if (!filter.empty() && !matches(name, filter)) continue;",  # M4-08a：支持 “|” 分隔的多个后缀
+        "            (void)matches;"),
     "隐藏文件被列出": (
         "        if (name.empty() || name[0] == '.') continue;",
         "        if (name.empty()) continue;"),

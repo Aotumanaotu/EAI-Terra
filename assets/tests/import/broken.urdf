@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<!-- Terra M4-08a 测试夹具（由 Terra 编写）：故意出错的 URDF——缺网格、未知的包、毫米单位的网格（没有写 scale）、
+     没有惯量的活动连杆、mimic 关节。导入应逐项给出原因与处理办法。 -->
+<robot name="broken">
+  <link name="base">
+    <inertial><mass value="1"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    <visual><geometry><mesh filename="package://demo_robot/meshes/body_mm.stl"/></geometry></visual>
+    <collision><geometry><mesh filename="package://demo_robot/meshes/no_such_mesh.stl"/></geometry></collision>
+  </link>
+  <link name="lid">
+    <visual><geometry><mesh filename="package://nonexistent_pkg/meshes/lid.stl"/></geometry></visual>
+  </link>
+  <joint name="lid_joint" type="revolute">
+    <parent link="base"/><child link="lid"/><axis xyz="1 0 0"/><limit lower="0" upper="1" effort="1" velocity="1"/>
+    <mimic joint="other"/>
+  </joint>
+</robot>

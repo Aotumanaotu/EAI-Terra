@@ -17,6 +17,8 @@
 //   --library    （M3-07c）资源库文件（实验记录的索引）；默认 $TERRA_LIBRARY 或 ~/.local/share/eai-terra/library.sqlite3
 //   --record-self-test （M3-07c）自检时测试记录与回放（与 --self-test、--motion 同用）
 //   --sensor-self-test （M4-04）自检时检查传感器采样与预览（与 --self-test、--scene 同用；场景需含 IMU、雷达与相机）
+//   --import-self-test <文件> （M4-08a）自检时经导入向导导入该模型（第 12 帧分析、第 14 帧导入并打开），检查打开的场景
+//                与导入目录（与 --self-test、--library 同用；导入目录在资源库目录下的 assets/ 中）
 //   --sensor-record-self-test （M4-07）自检时检查传感器的记录（含相机图像）、复现与回放（与 --self-test、--scene、--library 同用）
 //   --ros2       （M4-06a）打开场景后开启 ROS2 桥接，使用给出的通信配置（*.terra-ros2.json）；构建时没有 ROS2 时提示安装并返回 3
 //   --motion     （M3-04c）打开动作文件并从头播放；没有 --scene 时打开动作文件中的推荐场景。动作有错误时返回 4。
@@ -82,6 +84,7 @@
 #include "terra/view/camera.hpp"
 #include "terra/view/camera_controller.hpp"
 #include "camera_sensor.hpp"
+#include "import_wizard.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
 #ifdef TERRA_WITH_ROS2
@@ -115,6 +118,7 @@ struct Options {
     std::string libraryPath;  // M3-07c：资源库文件；空表示默认位置（$TERRA_LIBRARY 或 ~/.local/share/eai-terra/）
     bool recordSelfTest = false;  // M3-07c：自检时测试记录与回放（第 5 帧开始记录，中间停止并回放）
     bool sensorSelfTest = false;  // M4-04：自检时检查传感器采样与预览
+    std::string importSelfTestPath;     // M4-08a：自检时导入的模型
     bool sensorRecordSelfTest = false;  // M4-07：自检时检查传感器的记录、复现与回放（与 --self-test、--scene、--library 同用）
     std::string ros2Profile;      // M4-06a：开启 ROS2 桥接的通信配置
     bool demoDrive = false;
@@ -147,6 +151,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.recordSelfTest = true;
         } else if (a == "--sensor-self-test") {
             o.sensorSelfTest = true;
+        } else if (a == "--import-self-test" && hasValue) {
+            o.importSelfTestPath = argv[++i];
         } else if (a == "--sensor-record-self-test") {
             o.sensorRecordSelfTest = true;
         } else if (a == "--ros2" && hasValue) {
@@ -334,6 +340,8 @@ struct AppState {
     std::vector<terra::library::RecordEntry> recordList;
     std::optional<std::string> replayRequest;            // 请求回放的记录（帧末处理：可能需要切换场景）
     std::string ros2Profile;  // M4-06a：非空表示开启 ROS2 桥接（打开其他场景时以同一配置重新开启）
+    vw::ImportWizardState importWizard;  // M4-08a：导入向导
+    bool importWizardSeen = false;       // M4-08a 自检：向导窗口出现过
     bool recordCameraImages = false;  // M4-07：记录时同时保存相机图像（实际渲染的帧）到记录旁的 .frames 目录
     std::string lastRecordPath;                          // 最近一次保存的记录（自检用）
     bool closeRequest = false;
@@ -359,8 +367,9 @@ void buildDefaultLayout(ImGuiID dockspace) {
     ImGui::DockBuilderSetNodeSize(dockspace, ImGui::GetMainViewport()->WorkSize);
     ImGuiID center = dockspace;
     const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.17f, nullptr, &center);
-    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
-    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.24f, nullptr, &center);
+    // M4-08a（用户 2026-11-25）：右侧与底部稍宽（原 24%、24%）
+    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.28f, nullptr, &center);
+    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
     ImGui::DockBuilderDockWindow("###Outliner", left);
     ImGui::DockBuilderDockWindow("###Details", right);
     ImGui::DockBuilderDockWindow("###Actuators", right);
@@ -769,6 +778,11 @@ terra::library::Library* recordLibrary(Frame& f) {
 std::string recordsDirectory(Frame& f) {
     if (auto* lib = recordLibrary(f)) return (std::filesystem::path{lib->path()}.parent_path() / "records").string();
     return terra::library::defaultRecordsDirectory();
+}
+
+// M4-08a：导入目录的上级：资源库目录下的 assets/（与记录 records/ 并列）
+std::string importDirectory(const Frame& f) {
+    return (std::filesystem::path{libraryFilePath(f)}.parent_path() / "assets").string();
 }
 
 void refreshRecordList(Frame& f) {
@@ -1418,6 +1432,10 @@ void menuBar(Frame& f) {
         auto& recent = f.settings.current.ui.recentScenes;
         if (ImGui::MenuItem(tr(TextId::MenuFileOpenScene), "Ctrl+O")) {
             f.state.fileBrowser.open(f.simulated ? f.simulated->path : recent.empty() ? std::string{} : recent.front(), kSceneSuffix);
+        }
+        // M4-08a：导入 URDF / xacro / MJCF（也可以把文件拖进窗口）
+        if (ImGui::MenuItem(tr(TextId::MenuFileImport))) {
+            f.state.importWizard.browser.open(f.state.importWizard.options.input, vw::kImportFilter, "");
         }
         if (ImGui::BeginMenu(tr(TextId::MenuFileRecent))) {
             if (recent.empty()) ImGui::TextDisabled("%s", tr(TextId::MenuFileRecentEmpty));
@@ -3039,6 +3057,13 @@ void buildUi(Frame& f) {
                            f.state.log);
     if (auto chosen = f.state.fileBrowser.draw(label(TextId::FileBrowserTitle, "OpenScene").c_str())) f.state.openRequest = *chosen;
     if (auto chosen = f.state.motionBrowser.draw(label(TextId::MotionBrowserTitle, "OpenMotion").c_str())) f.state.motionRequest = *chosen;
+    // M4-08a：导入向导
+    auto& wizard = f.state.importWizard;
+    if (auto chosen = wizard.browser.draw(label(TextId::ImportBrowserTitle, "ImportBrowser").c_str())) vw::beginImport(wizard, *chosen, importDirectory(f));
+    if (auto imported = vw::drawImportWizard(wizard, terra::physics::mujoco::composeWorld)) f.state.openRequest = *imported;
+    if (wizard.open && ImGui::FindWindowByName("###ImportWizard") != nullptr) f.state.importWizardSeen = true;
+    for (auto& line : wizard.log) f.state.log.push_back(std::move(line));
+    wizard.log.clear();
     sceneErrorWindow(f);
 }
 
@@ -3446,6 +3471,38 @@ int recordSelfTest(Frame& f) {
 
 // 传感器自检（M4-04）：场景 assets/tests/sensors/sensor_suite.terra-scene.json（IMU 夹具、雷达房间、相机夹具）。
 // 采样次数与 Headless、terra_capture 的采样规则一致；雷达与相机的读数与 M4-03 的解析解一致；面板与执行器面板同组。
+// M4-08a：导入向导自检（--import-self-test）
+int importSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const auto& wizard = f.state.importWizard;
+    check(f.state.importWizardSeen, "导入向导窗口出现过（第 12 帧分析之后）");
+    check(wizard.result.has_value() && wizard.result->ok, "导入成功");
+    if (wizard.result) {
+        for (const auto& i : wizard.result->issues) {
+            std::printf("INFO [%s] %s：%s\n", terra::importer::severityName(i.severity), i.code.c_str(), i.message.c_str());
+        }
+        std::printf("INFO 导入目录：%s\n", wizard.result->directory.c_str());
+        check(!wizard.open, "导入后向导关闭");
+        const std::string expected = std::filesystem::absolute(wizard.result->scene).lexically_normal().string();
+        check(f.simulated && f.simulated->path == expected, "打开了生成的场景：" + expected);
+        check(wizard.result->directory.rfind(importDirectory(f), 0) == 0, "导入目录在资源库目录下的 assets/ 中");
+    }
+    if (f.simulated) {
+        const auto& d = f.simulated->instance.world->description();
+        std::printf("INFO 场景：%zu 个实体，%zu 个执行器，雷达 %zu、相机 %zu\n", d.entities.size(), d.actuators.size(), f.simulated->instance.lidars.size(),
+                    f.simulated->instance.cameras.size());
+        check(d.entities.size() > 5 && d.actuators.size() == 3 && f.simulated->instance.lidars.size() == 1 && f.simulated->instance.cameras.size() == 1,
+              "场景中有小车的连杆、3 个执行器、雷达与相机");
+    }
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "导入向导自检通过\n" : "导入向导自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 // M4-07：传感器记录自检。场景需含 IMU、雷达与相机（sensor_suite）
 int sensorRecordSelfTest(Frame& f) {
     int failures = 0;
@@ -3764,6 +3821,17 @@ int main(int argc, char** argv) {
     }
     auto& platform = *created.platform;
 
+    // M4-08a（用户 2026-11-25）：首次启动（没有设置文件）时，窗口取主显示器的 85%；已有设置的用户保持自己的大小
+    if (!options.selfTest && (!loaded || loaded->status == st::LoadStatus::Missing)) {
+        const auto screens = platform.monitors();
+        const auto primary = std::find_if(screens.begin(), screens.end(), [](const terra::platform::MonitorInfo& m) { return m.primary; });
+        const auto& screen = primary != screens.end() ? *primary : screens.empty() ? terra::platform::MonitorInfo{} : screens.front();
+        if (screen.current.width > 0 && screen.current.height > 0) {
+            const auto fit = [](int v) { return std::clamp(v, st::DisplaySettings::kMinWindowSize, st::DisplaySettings::kMaxWindowSize); };
+            settings.current.display.windowWidth = fit(static_cast<int>(screen.current.width * 0.85));
+            settings.current.display.windowHeight = fit(static_cast<int>(screen.current.height * 0.85));
+        }
+    }
     terra::platform::WindowDescription desc;
     desc.title = tr(TextId::AppName);
     // 自检时用较小的窗口，保证在 1280×720 的 Xvfb 屏幕内（窗口超出屏幕部分的像素不保证被绘制）。
@@ -3939,6 +4007,15 @@ int main(int argc, char** argv) {
     int result = 0;
     while (!window.closeRequested() && !state.quit) {
         platform.pollEvents();
+        // M4-08a：拖进窗口的文件：场景直接打开，动作打开并播放，其余（URDF、xacro、MJCF）进入导入向导
+        for (const auto& dropped : window.takeDroppedPaths()) {
+            const auto ends = [&](const std::string& suffix) {
+                return dropped.size() >= suffix.size() && dropped.compare(dropped.size() - suffix.size(), suffix.size(), suffix) == 0;
+            };
+            if (ends(kSceneSuffix)) state.openRequest = dropped;
+            else if (ends(".terra-motion.json")) state.motionRequest = dropped;
+            else vw::beginImport(state.importWizard, dropped, importDirectory(frame));
+        }
         const double now = platform.time();
         const double dt = now - last;
         last = now;
@@ -4004,6 +4081,14 @@ int main(int argc, char** argv) {
             }
             if (frames == 8) state.settingsWindow.capture.reset();
             if (frames == 9) openSettingsWindow(frame, false);
+            // M4-08a：导入向导自检
+            if (!options.importSelfTestPath.empty() && frames == 12) {
+                vw::beginImport(state.importWizard, options.importSelfTestPath, importDirectory(frame));
+                state.importWizard.options.overwrite = true;  // 重复运行自检时覆盖上一次的导入目录
+            }
+            if (!options.importSelfTestPath.empty() && frames == 14) {
+                if (auto imported = vw::runImport(state.importWizard, terra::physics::mujoco::composeWorld)) state.openRequest = *imported;
+            }
             if (frames == options.frames / 2) settings.current.ui.language = "en";
             // 前 3/4 的帧使用室外环境贴图（检查 IBL 管线；2026-11-24 起默认是半球光，这里显式切换），
             // 之后切到半球光，使结束时的视口像素可与 C++ 参考精确比较
@@ -4046,7 +4131,11 @@ int main(int argc, char** argv) {
         ++frames;
         const bool lastFrame = (options.frames > 0 && frames >= options.frames) ||
                                (options.seconds > 0.0 && now - start >= options.seconds);
-        if (lastFrame && options.selfTest) result = simulated ? sceneSelfTest(frame, options) : selfTest(frame, uiContext, options);
+        if (lastFrame && options.selfTest) {
+            result = !options.importSelfTestPath.empty() ? importSelfTest(frame)
+                     : simulated                        ? sceneSelfTest(frame, options)
+                                                        : selfTest(frame, uiContext, options);
+        }
         window.swapBuffers();
         persistSettings(frame, now, false);
         if (lastFrame) break;

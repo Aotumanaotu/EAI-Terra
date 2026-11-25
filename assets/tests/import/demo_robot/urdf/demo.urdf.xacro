@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<!-- Terra M4-08a 测试夹具（由 Terra 编写）：与 demo.urdf 结构相同的 xacro 版本（宏、属性、表达式、参数、$(find)）。 -->
+<robot name="demo_robot" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:arg name="wheel_effort" default="5"/>
+  <xacro:property name="wheel_radius" value="0.05"/>
+  <xacro:property name="wheel_y" value="${0.24 / 2}"/>
+  <xacro:include filename="$(find demo_robot)/urdf/wheel.xacro"/>
+
+  <material name="blue"><color rgba="0.2 0.4 0.8 1"/></material>
+  <material name="checker"><color rgba="1 1 1 1"/><texture filename="package://demo_robot/textures/checker.png"/></material>
+
+  <link name="base_footprint"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/><origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+  <link name="base_link">
+    <inertial><origin xyz="0 0 0.06"/><mass value="2.0"/><inertia ixx="0.0077" ixy="0" ixz="0" iyy="0.016" iyz="0" izz="0.0217"/></inertial>
+    <visual><geometry><mesh filename="package://demo_robot/meshes/body.stl"/></geometry><material name="blue"/></visual>
+    <collision><geometry><mesh filename="package://demo_robot/meshes/body.stl"/></geometry></collision>
+  </link>
+  <xacro:wheel side="left" y="${wheel_y}" effort="$(arg wheel_effort)"/>
+  <xacro:wheel side="right" y="${-wheel_y}" effort="$(arg wheel_effort)"/>
+  <link name="caster_link"><collision><geometry><sphere radius="0.025"/></geometry></collision></link>
+  <joint name="caster_joint" type="fixed"><parent link="base_link"/><child link="caster_link"/><origin xyz="-0.12 0 -0.025"/></joint>
+  <link name="laser_link"/>
+  <joint name="laser_joint" type="fixed"><parent link="base_link"/><child link="laser_link"/><origin xyz="0.08 0 0.12"/></joint>
+</robot>

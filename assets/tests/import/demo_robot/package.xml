@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- Terra M4-08a 测试夹具：一个最小的 ROS 包（只为 package:// 与 $(find) 的查找）。由 Terra 编写。 -->
+<package format="3">
+  <name>demo_robot</name>
+  <version>0.0.1</version>
+  <description>Terra 导入测试用的差速小车</description>
+  <maintainer email="none@example.com">Terra</maintainer>
+  <license>BSD-3-Clause</license>
+</package>

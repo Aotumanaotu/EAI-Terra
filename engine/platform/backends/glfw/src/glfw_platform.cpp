@@ -111,6 +111,13 @@ public:
         glfwSetScrollCallback(handle_, &GlfwWindow::onScroll);
         glfwSetWindowFocusCallback(handle_, &GlfwWindow::onFocus);
         glfwSetCharCallback(handle_, &GlfwWindow::onChar);
+        glfwSetDropCallback(handle_, &GlfwWindow::onDrop);
+    }
+
+    std::vector<std::string> takeDroppedPaths() override {
+        std::vector<std::string> out;
+        out.swap(dropped_);
+        return out;
     }
 
     ~GlfwWindow() override {
@@ -273,6 +280,14 @@ private:
         b->sink->addDelta(b->mouse, in::mouse(in::MouseControl::ScrollY), static_cast<float>(dy), t);
     }
 
+    static void onDrop(GLFWwindow* handle, int count, const char** paths) {
+        auto* self = static_cast<GlfwWindow*>(glfwGetWindowUserPointer(handle));
+        if (self == nullptr) return;
+        for (int i = 0; i < count; ++i) {
+            if (paths[i] != nullptr) self->dropped_.emplace_back(paths[i]);
+        }
+    }
+
     static void onChar(GLFWwindow* handle, unsigned int codepoint) {
         if (InputBridge* b = bridgeOf(handle)) b->sink->addText(static_cast<char32_t>(codepoint));
     }
@@ -294,6 +309,7 @@ private:
     int savedY_ = 0;
     int savedWidth_ = 0;
     int savedHeight_ = 0;
+    std::vector<std::string> dropped_;  // M4-08a：拖进窗口的文件
 };
 
 class GlfwPlatform final : public Platform {

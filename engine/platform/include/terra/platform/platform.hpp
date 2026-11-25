@@ -115,6 +115,9 @@ public:
     virtual int glMajor() const = 0;
     virtual int glMinor() const = 0;
 
+    // M4-08a：取出自上次调用以来拖进窗口的文件（绝对路径，UTF-8）；在 pollEvents 之后调用
+    virtual std::vector<std::string> takeDroppedPaths() { return {}; }
+
 protected:
     Window() = default;
 };

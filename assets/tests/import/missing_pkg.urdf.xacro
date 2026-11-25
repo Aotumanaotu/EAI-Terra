@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Terra M4-08a 测试夹具（由 Terra 编写）：引用不存在的包，xacro 展开应报“找不到包”并提示用命令行参数 package 指定包目录。 -->
+<robot name="missing" xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:include filename="$(find nonexistent_pkg)/urdf/parts.xacro"/>
+  <link name="base"/>
+</robot>

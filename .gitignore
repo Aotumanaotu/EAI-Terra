@@ -27,3 +27,5 @@ compile_commands.json
 # 参考机器人（M3）：用户下载的 MuJoCo Menagerie 等原件；仓库内的锁定记录与复制由 M3-01 的脚本管理
 /ROBOTS/
 /assets/robots/*/
+# 用户训练产物与策略（M4-10）：检查点、ONNX、TorchScript、训练日志等，体积大且属于用户数据
+/others/

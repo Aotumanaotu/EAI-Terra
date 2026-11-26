@@ -205,7 +205,7 @@ PY
             summary+=("  变异 $name：未被发现")
         else
             detected=$((detected + 1))
-            n=$(awk -v head="---- 变异：$name" '$0 == head {found = 1} found' "$log" | grep -cE 'FAILED: |FAILED |不匹配|退出码不符')
+            n=$(awk -v head="---- 变异：$name" '$0 == head {found = 1} found' "$log" | grep -cE 'FAILED: |FAILED |不匹配|退出码不符|CMake Error')  # TerraCheckCapture 以 CMake Error 报告
             summary+=("  变异 $name：已发现（$n 项检查失败）")
         fi
     done <<'LIST'

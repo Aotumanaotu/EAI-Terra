@@ -231,8 +231,9 @@ mutations = {
         "            if (!std::isfinite(value) || (range && (value < range->first || value > range->second))) {",
         "            if (!std::isfinite(value)) {"),
     "tf_static 不保留给后来的订阅者": (
-        "rclcpp::QoS(1).reliable().transient_local()",
-        "rclcpp::QoS(1).reliable()"),
+        # M4-11：M4-09 的分割对照表也用 transient local，锚点带上话题名以保持唯一
+        "\"/tf_static\", rclcpp::QoS(1).reliable().transient_local()",
+        "\"/tf_static\", rclcpp::QoS(1).reliable()"),
     "Headless 暂停时单步无效": (
         "                if (!paused || stepOnce) break;",
         "                if (!paused) break;"),

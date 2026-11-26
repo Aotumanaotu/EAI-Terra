@@ -169,10 +169,10 @@ mutations = {
         "        if (preview.pendingRecorded && sim.recorder && f.state.recordCameraImages) saveRecordedImage(f, camera, *preview.frame);  // M4-07",
         "        (void)0;"),
     "记录开始时漏记雷达与相机": (
-        "        terra::simulation::recordSceneSensors(*sim.recorder, *sim.instance.world, sim.instance, *start);",
+        "        terra::simulation::recordSceneSensors(*sim.recorder, *sim.instance.world, sim.instance, *start, &sim.noise);",  # M4-09 加了噪声参数
         "        (void)start;"),
     "Headless 不记录雷达与相机": (
-        "        if (recorder && sceneInstance) terra::simulation::recordSceneSensors(*recorder, world, *sceneInstance, *world.snapshot());",
+        "        if (recorder && sceneInstance) terra::simulation::recordSceneSensors(*recorder, world, *sceneInstance, *world.snapshot(), &noise);",  # M4-09
         "        (void)0;"),
 }
 old, new = mutations[name]

@@ -159,8 +159,9 @@ mutations = {
         "            depth[row * w + col] = v > 0.0f ? v : std::numeric_limits<float>::infinity();",
         "            depth[row * w + col] = v;"),
     "深度图行序没有翻转": (
-        "            const float v = bottomUp[(h - 1 - row) * w + col];",
-        "            const float v = bottomUp[row * w + col];"),
+        # M4-11：M4-09 的分割图通道也有同样一行，锚点带上下一行以保持唯一
+        "            const float v = bottomUp[(h - 1 - row) * w + col];\n            depth[row * w + col]",
+        "            const float v = bottomUp[row * w + col];\n            depth[row * w + col]"),
     "主点取宽度的一半": (
         "    k.cx = 0.5 * static_cast<double>(width - 1);",
         "    k.cx = 0.5 * static_cast<double>(width);"),
@@ -183,8 +184,8 @@ mutations = {
         "            camera.mount = spec.pose;",
         "            (void)0;"),
     "深度渲染器不清除": (
-        "    d.ctx.clear(Color{0.0f, 0.0f, 0.0f, 0.0f}, true);",
-        "    (void)0;"),
+        "    d.ctx.clear(Color{0.0f, 0.0f, 0.0f, 0.0f}, true);\n",
+        "    (void)0;\n"),
 }
 old, new = mutations[name]
 text = open(path, encoding="utf-8").read()

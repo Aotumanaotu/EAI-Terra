@@ -10,7 +10,8 @@ target_compile_options(terra_miniz PRIVATE -w)  # 第三方源码，不显示警
 
 add_library(terra_library STATIC
     src/library.cpp
-    src/pack.cpp)
+    src/pack.cpp
+    src/components.cpp)
 add_library(terra::library ALIAS terra_library)
 target_include_directories(terra_library PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(terra_library PUBLIC terra::simulation PRIVATE terra::sqlite terra::core terra::scene terra::json terra_miniz terra::viz)

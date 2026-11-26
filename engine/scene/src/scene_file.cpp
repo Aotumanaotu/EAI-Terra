@@ -704,6 +704,44 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     return result;
 }
 
+std::string sceneLabel(const SceneDocument& document, const std::string& entityName, const std::string& instanceName) {
+    std::string best;
+    std::size_t bestLength = 0;
+    int bestRank = 0;  // 3：实体全名，2：实例名，1：前缀
+    for (const auto& [pattern, label] : document.labels) {
+        int rank = 0;
+        std::size_t length = pattern.size();
+        if (pattern == entityName) rank = 3;
+        else if (pattern == instanceName) rank = 2;
+        else if (!pattern.empty() && pattern.back() == '*' && entityName.compare(0, pattern.size() - 1, pattern, 0, pattern.size() - 1) == 0) {
+            rank = 1;
+            length = pattern.size() - 1;
+        }
+        if (rank > bestRank || (rank == bestRank && rank == 1 && length > bestLength)) {
+            best = label;
+            bestRank = rank;
+            bestLength = length;
+        }
+    }
+    return best;
+}
+
+std::string segmentationLabelsJson(const SceneInstance& scene) {
+    const auto& d = scene.world->description();
+    nlohmann::ordered_json j;
+    j["format"] = "terra.segmentation-labels";
+    j["version"] = 1;
+    j["background"] = 0;
+    nlohmann::ordered_json labels = nlohmann::ordered_json::array();
+    for (const auto& e : d.entities) {
+        std::string instance;
+        if (e.modelInstance.valid() && e.modelInstance.value <= d.modelInstances.size()) instance = d.modelInstances[e.modelInstance.value - 1].name;
+        labels.push_back({{"id", e.id.value}, {"entity", e.name}, {"instance", instance}, {"label", sceneLabel(scene.document, e.name, instance)}});
+    }
+    j["labels"] = std::move(labels);
+    return j.dump() + "\n";
+}
+
 ParseResult readSceneFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {

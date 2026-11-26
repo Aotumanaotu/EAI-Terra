@@ -104,6 +104,14 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             options.listRecords = true;
             continue;
         }
+        if (arg == "--no-noise") {
+            if (options.noNoise) {
+                result.error = "重复的参数 --no-noise";
+                return result;
+            }
+            options.noNoise = true;
+            continue;
+        }
         if (arg == "--list-assets") {
             if (options.listAssets) {
                 result.error = "重复的参数 --list-assets";
@@ -299,7 +307,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (options.listAssets) {
         // 列出资产（M4-08c）：只能配合 --library 与 --kind
         if (options.listRecords || seenModel || seenScene || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps ||
-            options.durationSeconds || options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime) {
+            options.durationSeconds || options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime ||
+            options.noNoise) {
             result.error = "--list-assets 只能与 --library、--kind 同用";
         }
         return result;
@@ -311,7 +320,7 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (options.listRecords) {
         // 列出库中的记录：只能配合 --library 与（作为筛选条件的）--scene
         if (seenModel || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps || options.durationSeconds ||
-            options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime) {
+            options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime || options.noNoise) {
             result.error = "--list-records 只能与 --library、--scene（按场景筛选）同用";
         }
         return result;
@@ -323,8 +332,9 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     if (seenRerun) {
         // 复现：一切由记录给出，不能再指定运行参数
         if (seenModel || seenScene || seenMotion || seenRecord || options.steps || options.durationSeconds || options.dryRun ||
-            seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime) {
-            result.error = "--rerun 不能与 --model、--scene、--motion、--record、--steps、--duration、--sample-every、--dry-run 同用";
+            seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime || options.noNoise) {
+            result.error = "--rerun 不能与 --model、--scene、--motion、--record、--steps、--duration、--sample-every、--dry-run、--no-noise 同用"
+                           "（复现按记录中的噪声设置）";
         }
         return result;
     }
@@ -391,6 +401,7 @@ std::string usageText() {
            "  --realtime           按墙钟节奏推进（1 秒仿真时间 = 1 秒）\n"
            "  --sensors            输出传感器读数（M4-02）：model 之后一行 sensor_list（清单与频率），之后按各传感器的频率\n"
            "                       输出 sensor 行（第 0 步总是输出）；频率来自场景文件的 sensors，默认等于物理频率\n"
+           "  --no-noise           不加传感器噪声（M4-09）：IMU 与雷达输出真值；实验记录中写明没有加噪声\n"
            "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"
            "  -h, --help           显示本帮助\n"
            "      --version        显示版本与构建信息\n"

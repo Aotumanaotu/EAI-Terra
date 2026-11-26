@@ -1,0 +1,14 @@
+# ONNX Runtime（MIT）：M4-10 策略推理的后端（CPU）。仓库只带 C API 头文件（编译用）；运行库由客户端按需下载（组件管理器，带进度、校验）。
+# 来源：NuGet 上 Microsoft 签名发布的 Microsoft.ML.OnnxRuntime 1.32.0（2026-11-13 发布；构建提交 fab30a46491a40f5e4c968b80e8a59acbbb91b53）。
+# 2026-11-26 核查：github.com/microsoft/onnxruntime/releases 返回 404，GitHub 上第三方“镜像”的同名文件 sha256 互不一致，因此只用 NuGet。
+ORT_VERSION=1.32.0
+ORT_NUPKG_URL=https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.32.0/microsoft.ml.onnxruntime.1.32.0.nupkg
+ORT_NUPKG_SIZE=184391411
+ORT_NUPKG_SHA512_BASE64=fj2P9s5o2s5MvwwdDiCF4frwXUJed1gLh1wb0igCUnonbrvfoHMmAFtaj9atgYbBflcQtE3FQ6zGv/s75FQEsQ==
+ORT_NUPKG_SHA256=a9150bc2992cbbb6722070da9910e1ffa989a8bfc67bdd5bb8e745ca755641db
+ORT_LIB_SHA256=4213d6d8c42ac4754865849cb139d31fc39127db6a326babf90bbc81a6eb52fc
+ORT_PROVIDERS_SHARED_SHA256=8ef51f6bf2c621fc129f625b22241fa6f9a5870bc08eaf2fdd279169ec40d09a
+ORT_C_API_H_SHA256=46b146f79b611682cff95e000a3f9b58983e7a915687159e12d0e9a29f0d948c
+ORT_EP_C_API_H_SHA256=2e6c2de471dedfda120e8579c4a5e23052a4883d45ce8848c40dd0f5b7f896a1
+ORT_ERROR_CODE_H_SHA256=6690bf0df3f7a7a9c4f38597dc3232042e432b48ea166cb5672f72a49d32b742
+ORT_LICENSE_SHA256=c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674

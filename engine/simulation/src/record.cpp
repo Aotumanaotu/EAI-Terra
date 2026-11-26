@@ -1,6 +1,7 @@
 // 实验记录的写入、读取与复现（M3-07a；M4-07 传感器，版本 2）。nlohmann/json 只在本文件中使用，不进入公共头。
 
 #include "terra/simulation/record.hpp"
+#include "terra/simulation/sensor_noise.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -185,7 +186,7 @@ Json headerJson(const RecordHeader& h) {
     for (const auto& l : h.lidars) lidars.push_back({{"name", l.name}, {"rate_hz", l.rateHz}, {"samples", l.samples}});
     Json cameras = Json::array();
     for (const auto& c : h.cameras) cameras.push_back({{"name", c.name}, {"rate_hz", c.rateHz}, {"width", c.width}, {"height", c.height}});
-    j["sensors"] = {{"imus", h.imus}, {"lidars", std::move(lidars)}, {"cameras", std::move(cameras)}};
+    j["sensors"] = {{"imus", h.imus}, {"lidars", std::move(lidars)}, {"cameras", std::move(cameras)}, {"noise", h.sensorNoise}};
     return j;
 }
 
@@ -219,6 +220,7 @@ RecordHeader readHeader(const Json& j) {
         const auto& s = j.at("sensors");
         h.imus = s.at("imus").get<std::vector<std::string>>();
         for (const auto& l : s.at("lidars")) h.lidars.push_back({l.at("name").get<std::string>(), l.at("rate_hz").get<double>(), l.at("samples").get<int>()});
+        if (s.contains("noise")) h.sensorNoise = s.at("noise").get<bool>();  // M4-09
         for (const auto& c : s.at("cameras")) {
             h.cameras.push_back({c.at("name").get<std::string>(), c.at("rate_hz").get<double>(), c.at("width").get<int>(), c.at("height").get<int>()});
         }
@@ -394,10 +396,14 @@ void RecordWriter::cameraImage(std::uint64_t step, const std::string& name, cons
 }
 
 void recordSceneSensors(RecordWriter& writer, const tp::PhysicsWorld& world, const terra::scene::SceneInstance& scene,
-                        const td::PhysicsSnapshot& snapshot) {
+                        const td::PhysicsSnapshot& snapshot, const SensorNoise* noise) {
     const double dt = snapshot.fixedTimestep;
-    for (const auto& l : scene.lidars) {
-        if (sensorSampleDue(snapshot.stepIndex, dt, l.rateHz)) writer.lidar(scanLidar(world, l));
+    for (std::size_t k = 0; k < scene.lidars.size(); ++k) {
+        const auto& l = scene.lidars[k];
+        if (!sensorSampleDue(snapshot.stepIndex, dt, l.rateHz)) continue;
+        auto scan = scanLidar(world, l);
+        if (noise != nullptr) noise->lidar(k, scan);  // M4-09
+        writer.lidar(scan);
     }
     for (const auto& c : scene.cameras) {
         if (!sensorSampleDue(snapshot.stepIndex, dt, c.rateHz)) continue;
@@ -624,6 +630,7 @@ RerunResult rerunRecord(const Record& record, const terra::scene::WorldFactory& 
     }
     tp::PhysicsWorld& world = *loaded.scene->world;
     const td::ModelDescription& d = world.description();
+    SensorNoise noise(*loaded.scene, h.sensorNoise);  // M4-09：按记录时的设置加噪声，与记录中的读数逐位比较
     // 模型必须与记录时相同（名字与顺序）
     std::vector<std::string> entities, joints, actuators;
     for (const auto& e : d.entities) entities.push_back(e.name);
@@ -687,8 +694,9 @@ RerunResult rerunRecord(const Record& record, const terra::scene::WorldFactory& 
         // M4-07：IMU 读数（每份状态都记）逐位比较
         if (!expected.sensors.empty()) {
             ++out.sensorSamples;
-            bool same = expected.sensors.size() == actual->sensors.size();
-            for (std::size_t k = 0; same && k < expected.sensors.size(); ++k) same = expected.sensors[k].values == actual->sensors[k].values;
+            const auto noisy = noise.withNoise(*actual);
+            bool same = expected.sensors.size() == noisy.sensors.size();
+            for (std::size_t k = 0; same && k < expected.sensors.size(); ++k) same = expected.sensors[k].values == noisy.sensors[k].values;
             if (!same) sensorDiffers(expected.stepIndex, "IMU 读数");
         }
     };
@@ -707,7 +715,8 @@ RerunResult rerunRecord(const Record& record, const terra::scene::WorldFactory& 
                 sensorDiffers(step, "场景中没有雷达 " + expected.name);
                 continue;
             }
-            const auto scan = scanLidar(world, *it);
+            auto scan = scanLidar(world, *it);
+            noise.lidar(static_cast<std::size_t>(it - loaded.scene->lidars.begin()), scan);  // M4-09
             bool same = scan.ranges.size() == expected.ranges.size();
             for (std::size_t i = 0; same && i < scan.ranges.size(); ++i) same = sameFloat(scan.ranges[i], expected.ranges[i]);
             if (!same) sensorDiffers(step, "雷达 " + expected.name + " 的距离");

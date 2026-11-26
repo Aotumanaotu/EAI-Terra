@@ -499,6 +499,12 @@ enum class TextId : int {
     LogVizExported,
     LogVizFailed,
     MenuWindowDisplay,
+    // M4-09：传感器噪声与分割图
+    SensorsNoise,
+    SensorsNoiseHint,
+    SensorsNoiseNone,
+    SensorsNoiseSeed,
+    SensorsSegmentation,
     Count,
 };
 

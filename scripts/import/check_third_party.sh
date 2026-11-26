@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 复核模型导入与资源库用到的第三方源码：third_party/tinyxml2、third_party/xacro（M4-08a）与 third_party/miniz（M4-08c），
+# 复核模型导入、资源库与策略推理用到的第三方源码：third_party/tinyxml2、third_party/xacro（M4-08a）、third_party/miniz（M4-08c）
+# 与 third_party/onnxruntime 的 C API 头文件（M4-10），
 # 按 *.lock 校验 sha256。
 # 用法：scripts/import/check_third_party.sh [--online]
 #   --online  另外从官方下载（tinyxml2 的固定提交、xacro 的 wheel、miniz 的发布包），确认与锁定的 sha256 一致（显式联网步骤）。
@@ -12,6 +13,8 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 . "$root/third_party/xacro/xacro.lock"
 # shellcheck source=/dev/null
 . "$root/third_party/miniz/miniz.lock"
+# shellcheck source=/dev/null
+. "$root/third_party/onnxruntime/onnxruntime.lock"
 
 status=0
 verify() {  # verify <文件> <sha256>
@@ -38,6 +41,11 @@ m="$root/third_party/miniz"
 verify "$m/miniz.c" "$MINIZ_C_SHA256"
 verify "$m/miniz.h" "$MINIZ_H_SHA256"
 verify "$m/LICENSE" "$MINIZ_LICENSE_SHA256"
+o="$root/third_party/onnxruntime"
+verify "$o/include/onnxruntime_c_api.h" "$ORT_C_API_H_SHA256"
+verify "$o/include/onnxruntime_ep_c_api.h" "$ORT_EP_C_API_H_SHA256"
+verify "$o/include/onnxruntime_error_code.h" "$ORT_ERROR_CODE_H_SHA256"
+verify "$o/LICENSE" "$ORT_LICENSE_SHA256"
 
 if [ "${1:-}" = "--online" ]; then
     tmp=$(mktemp -d)

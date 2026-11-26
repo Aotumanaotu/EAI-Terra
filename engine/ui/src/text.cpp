@@ -527,6 +527,11 @@ constexpr Entry kEntries[] = {
     {TextId::LogVizExported, "已导出：", "Exported: "},
     {TextId::LogVizFailed, "显示配置失败：", "Display failed: "},
     {TextId::MenuWindowDisplay, "显示配置", "Display"},
+    {TextId::SensorsNoise, "噪声", "Noise"},
+    {TextId::SensorsNoiseHint, "按场景文件给传感器加噪声；关闭后输出真值。只影响本次运行，实验记录中写明是否加了噪声；记录中途不能切换", "Adds sensor noise as configured in the scene file; turn off for ground truth. Affects this run only; records state whether noise was added; cannot change while recording"},
+    {TextId::SensorsNoiseNone, "场景文件没有给传感器配置噪声（sensors 中的 noise）", "The scene file configures no sensor noise (noise in sensors)"},
+    {TextId::SensorsNoiseSeed, "种子", "seed"},
+    {TextId::SensorsSegmentation, "分割图", "Segmentation"},
 };
 
 constexpr bool entriesInOrder() {

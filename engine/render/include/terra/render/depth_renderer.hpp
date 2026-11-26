@@ -6,6 +6,7 @@
 // 只画不透明的渲染项（opacity < 1 的半透明叠加不进入深度）；不做多重采样（每个像素只取像素中心）。没有命中、或命中点
 // 在近、远平面之外时为 +inf（ROS REP-117 的约定）。行序为图像约定：行 0 为图像顶部。需要当前 OpenGL 上下文。
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,6 +27,10 @@ public:
 
     // 渲染并读回 width × height 个深度值（米）。尺寸变化时重建内部目标；结束时恢复默认帧缓冲。
     std::vector<float> render(int width, int height, const ViewParams& view, const std::vector<RenderItem>& items);
+
+    // M4-09：分割图——每个像素为命中的渲染项的 id（RenderItem::id），没有命中为 0；与深度相同的规则（只画不透明的项、
+    // 像素中心取值、行 0 为图像顶部）。id 以单精度浮点写入同一个离屏目标，2²⁴ 以内精确
+    std::vector<std::uint32_t> renderIds(int width, int height, const ViewParams& view, const std::vector<RenderItem>& items);
 
     // 已创建的离屏目标数（0 或 1）；用于检查“不启用相机时不创建任何离屏目标”
     int targetCount() const noexcept;

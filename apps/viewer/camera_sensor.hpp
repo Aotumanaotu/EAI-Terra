@@ -33,6 +33,7 @@ struct CameraFrame {
     terra::scene::CameraIntrinsics intrinsics;
     std::vector<std::uint8_t> rgb;         // width × height × 3；相机不输出彩色时为空
     std::vector<float> depth;              // width × height；相机不输出深度时为空
+    std::vector<std::uint32_t> segmentation;  // M4-09：width × height 的实体 ID（0 为背景）；相机不输出分割图时为空
 };
 
 // 相机的观察与投影矩阵（列主序，单精度）
@@ -57,6 +58,13 @@ private:
 
 // 深度的伪彩色预览：近处红、经橙、绿、青、蓝到远处深蓝（线性映射到 [near, maxDepth]），没有命中为黑色
 terra::render::ImageRgba8 depthPreview(const std::vector<float>& depth, int width, int height, float nearDepth, float maxDepth);
+// M4-09：分割图的预览：按 ID 着色（固定的配色，相同 ID 颜色不变），背景为黑色
+terra::render::ImageRgba8 segmentationPreview(const std::vector<std::uint32_t>& ids, int width, int height);
+// M4-09：分割图的对照表（JSON）：{"format": "terra.segmentation-labels", "version": 1, "background": 0,
+//   "labels": [{"id": 实体编号, "entity": 全名, "instance": 模型实例名, "label": 语义类别（场景文件 labels；没有时为空）}]}
+std::string segmentationLabelsJson(const terra::scene::SceneInstance& scene);
+// 分割图写为 NumPy 文件（uint16，形状 (height, width)）；ID 超过 65535 时返回 false
+bool writeSegmentationNpy(const std::string& path, const std::vector<std::uint32_t>& ids, int width, int height);
 // 彩色图转为 RGBA8 图像（便于写 PNG 与界面显示）
 terra::render::ImageRgba8 colorImage(const CameraFrame& frame);
 

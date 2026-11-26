@@ -119,6 +119,7 @@ struct CameraImage {
     double fx = 0.0, fy = 0.0, cx = 0.0, cy = 0.0;
     std::vector<std::uint8_t> rgb;  // width × height × 3；空表示不输出彩色
     std::vector<float> depth;       // width × height，米；空表示不输出深度
+    std::vector<std::uint32_t> segmentation;  // M4-09：width × height 的实体 ID；发布为 16UC1（超过 65535 的记为 0）
 };
 
 class Bridge {
@@ -138,6 +139,8 @@ public:
     std::vector<terra::physics::ActuatorCommand> directCommands();
     // 每步之后与初始状态（仿真线程）：按频率发布；snapshot 必须是当前状态（雷达在这里做射线检测）
     void publish(const terra::data::PhysicsSnapshot& snapshot);
+    // M4-09：传感器噪声的运行时开关（--no-noise、查看器面板）；默认按场景文件加噪声
+    void setSensorNoise(bool enabled);
     // 查看器渲染出相机画面后调用（camera 为 SceneInstance::cameras 的下标）
     void publishCamera(std::size_t camera, const CameraImage& image);
     // 主线程：取出服务请求

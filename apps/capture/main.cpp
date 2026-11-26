@@ -8,10 +8,14 @@
 //   cameras/<相机名>/frames.jsonl       每帧的步序号、时间、相机位姿（Terra 相机坐标系）与文件名
 //   cameras/<相机名>/rgb/<步序号>.png   彩色（8 位，sRGB）
 //   cameras/<相机名>/depth/<步序号>.npy 深度（float32，米，沿光轴；无命中为 +inf；NumPy 格式，行 0 为图像顶部）
+//   cameras/<相机名>/seg/<步序号>.npy   分割图（M4-09，uint16 实体 ID，0 为背景；相机写了 "segmentation": true 时）
+//   cameras/<相机名>/seg_labels.json    分割图的对照表（ID → 实体全名、模型实例、语义类别）
+// 传感器噪声（M4-09）按场景文件加在 IMU、雷达、彩色与深度上；分割图不加噪声。
 // 相机名中的 “/” 换成 “_”。
 //
 // 用法：terra_capture (--scene <场景> | --motion <动作> [--scene <场景>]) (--steps N | --duration 秒) --output <目录>
-//                     [--no-cameras] [--force] [--expect-renderer 子串]
+//                     [--no-cameras] [--no-noise] [--force] [--expect-renderer 子串]
+//   --no-noise  不加传感器噪声（M4-09）：输出真值；capture.json 中写明是否加了噪声
 //   --force  输出目录中已有采集结果时先删除（只删除本程序写的 capture.json、sensors.jsonl 与 cameras/）
 // 退出码：0 成功；2 参数错误；4 场景或动作错误；5 仿真错误；1 其他错误（写文件、图形上下文）。
 
@@ -41,6 +45,7 @@
 #include "terra/simulation/lidar.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/pd_layer.hpp"
+#include "terra/simulation/sensor_noise.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
 
 namespace {
@@ -59,6 +64,7 @@ struct Options {
     std::optional<double> duration;
     std::string output;
     bool noCameras = false;
+    bool noNoise = false;  // M4-09
     bool force = false;
     std::string expectRenderer;
 };
@@ -67,7 +73,7 @@ void diagnose(const std::string& text) { std::fprintf(stderr, "%s\n", text.c_str
 
 const char* kUsage =
     "用法：terra_capture (--scene <场景> | --motion <动作> [--scene <场景>]) (--steps N | --duration 秒) --output <目录>\n"
-    "                    [--no-cameras] [--force] [--expect-renderer 子串]\n";
+    "                    [--no-cameras] [--no-noise] [--force] [--expect-renderer 子串]\n";
 
 std::optional<Options> parse(int argc, char** argv) {
     Options o;
@@ -100,6 +106,8 @@ std::optional<Options> parse(int argc, char** argv) {
             o.output = argv[++i];
         } else if (a == "--no-cameras") {
             o.noCameras = true;
+        } else if (a == "--no-noise") {
+            o.noNoise = true;
         } else if (a == "--force") {
             o.force = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -184,6 +192,8 @@ int run(const Options& options) {
     }
     if (!loaded.ok()) return 4;
     sc::SceneInstance& scene = *loaded.scene;
+    sim::SensorNoise noise(scene, !options.noNoise);  // M4-09：传感器噪声（各出口读数逐位相同）
+    if (noise.active()) std::printf("INFO 传感器噪声：开启（种子 %llu；--no-noise 可关闭）\n", static_cast<unsigned long long>(noise.seed()));
     auto& world = *scene.world;
     const auto& d = world.description();
     sim::PdLayer pd(d, scene.pd);
@@ -287,7 +297,8 @@ int run(const Options& options) {
                            ",\"scene\":" + jsonString(fs::absolute(scenePath, ec).lexically_normal().string()) +
                            ",\"motion\":" + (motionDocument ? jsonString(motionDocument->path) : std::string{"null"}) +
                            ",\"timestep\":" + hl::formatNumber(dt) + ",\"steps\":" + std::to_string(total) +
-                           ",\"renderer\":" + (cameras ? jsonString(rendererName) : std::string{"null"}) + ",\"imus\":[";
+                           ",\"renderer\":" + (cameras ? jsonString(rendererName) : std::string{"null"}) +
+                           ",\"noise\":" + (noise.active() ? "true" : "false") + ",\"noise_seed\":" + std::to_string(noise.seed()) + ",\"imus\":[";
         for (std::size_t k = 0; k < d.sensors.size(); ++k) {
             const double rate = k < scene.sensors.size() ? scene.sensors[k].rateHz : 1.0 / dt;
             json += std::string{k > 0 ? "," : ""} + "{\"name\":" + jsonString(d.sensors[k].name) + ",\"rate_hz\":" + hl::formatNumber(rate) + "}";
@@ -309,7 +320,7 @@ int run(const Options& options) {
                     ",\"fy\":" + hl::formatNumber(in.fy) + ",\"cx\":" + hl::formatNumber(in.cx) + ",\"cy\":" + hl::formatNumber(in.cy) +
                     ",\"near\":" + hl::formatNumber(c.nearClip) + ",\"far\":" + hl::formatNumber(c.farClip) + ",\"rate_hz\":" +
                     hl::formatNumber(c.rateHz) + ",\"rgb\":" + (c.rgb ? "true" : "false") + ",\"depth\":" + (c.depth ? "true" : "false") +
-                    ",\"display_rotation_deg\":" + std::to_string(c.displayRotation) + "}";
+                    ",\"display_rotation_deg\":" + std::to_string(c.displayRotation) + ",\"segmentation\":" + (c.segmentation ? "true" : "false") + "}";
         }
         json += "]}\n";
         std::ofstream file(out / "capture.json", std::ios::binary);
@@ -328,6 +339,10 @@ int run(const Options& options) {
             const fs::path dir = out / "cameras" / safeName(c.name);
             fs::create_directories(dir / "rgb", ec);
             fs::create_directories(dir / "depth", ec);
+            if (c.segmentation) {  // M4-09：分割图与对照表（对照表只写一次）
+                fs::create_directories(dir / "seg", ec);
+                std::ofstream(dir / "seg_labels.json", std::ios::binary) << vw::segmentationLabelsJson(scene);
+            }
             cameraDirs.push_back(dir);
             frameLogs.emplace_back(dir / "frames.jsonl", std::ios::binary);
         }
@@ -344,12 +359,16 @@ int run(const Options& options) {
         for (std::size_t k = 0; k < d.sensors.size() && k < snap->sensors.size(); ++k) {
             const double rate = k < scene.sensors.size() ? scene.sensors[k].rateHz : 1.0 / dt;
             if (!sim::sensorSampleDue(step, dt, rate)) continue;
-            sensors << hl::sensorToJson(d.sensors[k], snap->sensors[k], step, snap->simulationTime) << '\n';
+            auto reading = snap->sensors[k];
+            noise.imu(k, step, reading.values);  // M4-09
+            sensors << hl::sensorToJson(d.sensors[k], reading, step, snap->simulationTime) << '\n';
             ++imuLines;
         }
-        for (const auto& lidar : scene.lidars) {
+        for (std::size_t k = 0; k < scene.lidars.size(); ++k) {
+            const auto& lidar = scene.lidars[k];
             if (!sim::sensorSampleDue(step, dt, lidar.rateHz)) continue;
-            const auto scan = sim::scanLidar(world, lidar);
+            auto scan = sim::scanLidar(world, lidar);
+            noise.lidar(k, scan);  // M4-09
             hl::LidarJson meta;
             meta.name = scan.sensor;
             meta.step = scan.step;
@@ -365,7 +384,9 @@ int run(const Options& options) {
         for (std::size_t k = 0; k < cameraDirs.size(); ++k) {
             const auto& c = scene.cameras[k];
             if (!sim::sensorSampleDue(step, dt, c.rateHz)) continue;
-            const vw::CameraFrame frame = renderer->capture(scene, *view, c, *snap, lighting);
+            vw::CameraFrame frame = renderer->capture(scene, *view, c, *snap, lighting);
+            noise.color(k, step, frame.rgb, 3);  // M4-09
+            noise.depth(k, step, frame.depth);
             const std::string name = stepName(step);
             std::string line = "{\"step\":" + std::to_string(step) + ",\"time\":" + hl::formatNumber(frame.time) + ",\"position\":" +
                                vec3(frame.pose.position) + ",\"orientation\":[" + hl::formatNumber(frame.pose.orientation.w) + "," +
@@ -381,6 +402,13 @@ int run(const Options& options) {
             if (!frame.depth.empty()) {
                 written = written && writeNpy(cameraDirs[k] / "depth" / (name + ".npy"), frame.depth, c.width, c.height);
                 line += ",\"depth\":\"depth/" + name + ".npy\"";
+            }
+            if (!frame.segmentation.empty()) {  // M4-09
+                if (!vw::writeSegmentationNpy((cameraDirs[k] / "seg" / (name + ".npy")).string(), frame.segmentation, c.width, c.height)) {
+                    diagnose("写分割图失败（实体 ID 超过 65535，或无法写文件）：" + c.name);
+                    written = false;
+                }
+                line += ",\"segmentation\":\"seg/" + name + ".npy\"";
             }
             frameLogs[k] << line << "}\n";
             ++frames;

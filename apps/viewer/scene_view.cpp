@@ -219,6 +219,7 @@ std::vector<r::RenderItem> SceneView::items(const sc::SceneInstance& scene, cons
             item.model = as::multiply(poseMatrix(pose.pose), g.shape);
             item.material = g.material;
             item.castsShadow = g.castsShadow;
+            item.id = part.entity.valid() ? part.entity.value : 0u;  // M4-09：分割图中的实体 ID
             if (selected) highlight(item);
             if (shown) out.push_back(item);
             // 碰撞几何体的叠加显示（M3-06）：半透明橙色，不投影；与可见几何体重合时（基本形状的模型常见）呈橙色调
@@ -237,6 +238,7 @@ std::vector<r::RenderItem> SceneView::items(const sc::SceneInstance& scene, cons
             const BindingDraw& b = bindings_[static_cast<std::size_t>(part.binding)];
             if (b.asset == nullptr) continue;
             auto parts = b.asset->subtreeItems(poseMatrix(pose.pose, pose.scale), b.node, b.frame, options.armOcclusion);
+            for (auto& item : parts) item.id = part.entity.valid() ? part.entity.value : 0u;  // M4-09
             if (selected) {
                 for (auto& item : parts) highlight(item);
             }

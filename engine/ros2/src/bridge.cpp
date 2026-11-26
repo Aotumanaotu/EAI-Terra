@@ -21,6 +21,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rosgraph_msgs/msg/clock.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -33,6 +34,7 @@
 #include "terra/scene/pose_math.hpp"
 #include "terra/simulation/lidar.hpp"
 #include "terra/simulation/motion.hpp"
+#include "terra/simulation/sensor_noise.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
 #ifdef TERRA_ROS2_UNITREE_ENABLED
 #include "unitree_link.hpp"
@@ -92,6 +94,8 @@ struct Bridge::Impl {
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr color;
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth;
         rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info;
+        rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr segmentation;  // M4-09：16UC1 实体 ID
+        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr labels;          // M4-09：对照表（JSON，transient local，只发一次）
     };
     std::vector<CameraTopics> cameras;  // 与 SceneInstance::cameras 一一对应
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr commandSub;
@@ -112,7 +116,9 @@ struct Bridge::Impl {
     Stats stats;
     std::atomic<std::uint64_t> published{0};
 
-    Impl(const terra::scene::SceneInstance& s, const terra::simulation::PdLayer& p, Profile pr) : scene(s), pd(p), profile(std::move(pr)) {}
+    Impl(const terra::scene::SceneInstance& s, const terra::simulation::PdLayer& p, Profile pr) : scene(s), pd(p), profile(std::move(pr)), noise(s) {}
+    // M4-09：传感器噪声（与其他出口各自持有，读数逐位相同）
+    terra::simulation::SensorNoise noise;
 
     std::string topic(const std::string& name) const { return profile.topicPrefix + "/" + topicName(name); }
 
@@ -294,6 +300,15 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
                 if (c.rgb) t.color = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/image_raw"), rclcpp::SensorDataQoS());
                 if (c.depth) t.depth = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/depth/image_raw"), rclcpp::SensorDataQoS());
                 t.info = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.mapped(b.topic(c.name) + "/camera_info"), rclcpp::SensorDataQoS());
+                if (c.segmentation) {  // M4-09
+                    t.segmentation = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/segmentation/image_raw"),
+                                                                                      rclcpp::SensorDataQoS());
+                    t.labels = b.node->create_publisher<std_msgs::msg::String>(b.mapped(b.topic(c.name) + "/segmentation/labels"),
+                                                                               rclcpp::QoS(1).reliable().transient_local());
+                    std_msgs::msg::String labels;
+                    labels.data = terra::scene::segmentationLabelsJson(b.scene);
+                    t.labels->publish(labels);
+                }
                 b.cameras.push_back(t);
             }
         }
@@ -466,8 +481,14 @@ std::vector<terra::physics::ActuatorCommand> Bridge::directCommands() {
     return {};
 }
 
-void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
+void Bridge::setSensorNoise(bool enabled) { impl_->noise.setEnabled(enabled); }
+
+void Bridge::publish(const td::PhysicsSnapshot& truth) {
     Impl& b = *impl_;
+    // M4-09：IMU 加噪声（宇树 LowState 的 IMU 也用它）；没有噪声时不复制快照
+    td::PhysicsSnapshot noisy;
+    if (b.noise.active()) noisy = b.noise.withNoise(truth);
+    const td::PhysicsSnapshot& snapshot = b.noise.active() ? noisy : truth;
     const auto& d = b.scene.world->description();
     const double dt = snapshot.fixedTimestep;
     const auto stamp = stampOf(snapshot.simulationTime);
@@ -590,7 +611,8 @@ void Bridge::publish(const td::PhysicsSnapshot& snapshot) {
     for (std::size_t k = 0; k < b.scans.size(); ++k) {
         const auto& lidar = b.scene.lidars[k];
         if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz)) continue;
-        const auto scan = terra::simulation::scanLidar(*b.scene.world, lidar);
+        auto scan = terra::simulation::scanLidar(*b.scene.world, lidar);
+        b.noise.lidar(k, scan);  // M4-09
         sensor_msgs::msg::LaserScan msg;
         msg.header.stamp = stamp;
         msg.header.frame_id = b.sensorFrame(lidar.name, lidar.entity, lidar.mount);
@@ -654,6 +676,24 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
             std::memcpy(msg.data.data(), image.depth.data(), msg.data.size());
         }
         topics.depth->publish(msg);
+        ++b.published;
+    }
+    if (topics.segmentation && !image.segmentation.empty()) {  // M4-09
+        sensor_msgs::msg::Image msg;
+        msg.header.stamp = stamp;
+        msg.header.frame_id = frame;
+        msg.width = w;
+        msg.height = h;
+        msg.is_bigendian = 0;
+        msg.encoding = "16UC1";
+        msg.step = w * 2;
+        msg.data.resize(image.segmentation.size() * 2);
+        for (std::size_t i = 0; i < image.segmentation.size(); ++i) {
+            const std::uint32_t id = image.segmentation[i] > 0xFFFFu ? 0u : image.segmentation[i];
+            msg.data[2 * i] = static_cast<std::uint8_t>(id & 0xFFu);
+            msg.data[2 * i + 1] = static_cast<std::uint8_t>(id >> 8);
+        }
+        topics.segmentation->publish(msg);
         ++b.published;
     }
     sensor_msgs::msg::CameraInfo info;

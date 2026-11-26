@@ -79,6 +79,8 @@ struct RecordHeader {
     std::vector<std::string> imus;
     std::vector<RecordLidarInfo> lidars;
     std::vector<RecordCameraInfo> cameras;
+    // M4-09：记录时是否加了传感器噪声（场景文件的配置与种子随场景文件的摘要核对）；复现时按此设置。旧记录没有此项，视为没有噪声
+    bool sensorNoise = false;
 };
 
 // 由模型描述与场景信息填写物理设置与名字清单（运行环境、文件摘要由调用方补充）
@@ -170,8 +172,10 @@ struct RecordReadResult {
 RecordReadResult readRecord(const std::string& path);
 
 // M4-07：按场景的频率记录这一步的雷达扫描与相机元数据（Headless 用；查看器自己算过雷达，直接调用 lidar / camera）
+class SensorNoise;  // terra/simulation/sensor_noise.hpp
+// M4-09：noise 非空时雷达扫描加噪声（与其他出口相同的读数）
 void recordSceneSensors(RecordWriter& writer, const terra::physics::PhysicsWorld& world, const terra::scene::SceneInstance& scene,
-                        const terra::data::PhysicsSnapshot& snapshot);
+                        const terra::data::PhysicsSnapshot& snapshot, const SensorNoise* noise = nullptr);
 
 // 只读记录头与摘要（第一行与最后一个非空行），用于建立索引（M3-07b）：不解析中间的状态，大文件也很快。
 // 失败时返回空，error 为原因；没有 summary 时 summary 为空（记录没有正常结束）。

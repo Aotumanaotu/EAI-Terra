@@ -224,6 +224,10 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath);
 // 读取并解析场景文件。
 ParseResult readSceneFile(const std::string& path);
 
+// M4-09：实体的语义类别（分割图的对照表）：实体全名完全匹配优先，其次模型实例名，其次以 * 结尾的前缀（最长的优先）；
+// 都不匹配时为空
+std::string sceneLabel(const SceneDocument& document, const std::string& entityName, const std::string& instanceName);
+
 // 视觉部件（M2-01 设计第 4 节）：先排 MJCF 几何体（按 GeomId），再排 glTF 绑定（按场景文件顺序）。
 struct VisualPart {
     enum class Kind { Geom, Gltf };
@@ -268,6 +272,10 @@ struct SceneLoadResult {
 SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory);
 // readSceneFile + instantiate
 SceneLoadResult loadScene(const std::string& path, const WorldFactory& factory);
+
+// M4-09：分割图的对照表（JSON 文本，一行）：{"format": "terra.segmentation-labels", "version": 1, "background": 0,
+//   "labels": [{"id": 实体编号, "entity": 全名, "instance": 模型实例名, "label": 语义类别（场景文件 labels；没有时为空）}]}
+std::string segmentationLabelsJson(const SceneInstance& scene);
 
 struct VisualPose {
     terra::data::VisualId id;

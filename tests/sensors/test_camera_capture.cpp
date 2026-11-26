@@ -7,6 +7,7 @@
 //   - 两种写法（MJCF 相机 eye、装在实体上的 side）的深度图一致（1e-5）；side 只输出深度，彩色为空；
 //   - 确定性：同一快照渲染两次，彩色逐字节、深度逐位相同；
 //   - 离屏目标只在第一次渲染深度时创建；
+//   - M4-09 分割图：方块正面的像素 ID 为 bench/target 的实体编号，墙（worldbody）为背景 0，两次渲染逐位相同，对照表与预览；
 //   - 参考机器人（有时）：Stretch 3 的头部相机 d435i_camera_rgb，深度有有限值、彩色不是单一颜色。
 // 输出目录中写出 PNG（彩色 | 深度伪彩色），供查看。
 //
@@ -156,6 +157,40 @@ void bench(r::RenderContext& ctx, vw::CameraRenderer& renderer, vw::EnvironmentL
         check(std::abs(int{wallPx[0]} - int{wallPx[1]}) < 12 && std::abs(int{wallPx[1]} - int{wallPx[2]}) < 12, "墙为灰色");
     }
     check(again.rgb == frame.rgb && again.depth == frame.depth, "同一快照渲染两次：彩色逐字节、深度逐位相同");
+
+    // M4-09：分割图。方块 bench/target 是实体，像素 ID 为它的实体编号，与深度 0.95 m 的方块正面像素一一对应；
+    // 墙在 worldbody 上（没有实体）为背景 0；两次渲染逐位相同；没有要求分割图时为空
+    check(frame.segmentation.empty(), "没有要求分割图时不输出");
+    {
+        sc::CameraSensor segCam = eye;
+        segCam.segmentation = true;
+        const vw::CameraFrame seg = renderer.capture(scene, *view, segCam, *snap, lit);
+        const vw::CameraFrame segAgain = renderer.capture(scene, *view, segCam, *snap, lit);
+        const auto* target = scene.world->description().findEntity("bench/target");
+        check(target != nullptr && seg.segmentation.size() == w * h, "分割图 160 × 120");
+        if (target != nullptr && seg.segmentation.size() == w * h) {
+            std::size_t targetPixels = 0, mismatched = 0, background = 0;
+            for (std::size_t i = 0; i < w * h; ++i) {
+                const bool face = std::fabs(static_cast<double>(seg.depth[i]) - 0.95) < 1e-4;
+                const bool isTarget = seg.segmentation[i] == target->id.value;
+                targetPixels += isTarget ? 1u : 0u;
+                background += seg.segmentation[i] == 0 ? 1u : 0u;
+                // 方块的侧面也可能露出几个像素（深度不是 0.95），只要求正面像素都是方块
+                if (face && !isTarget) ++mismatched;
+            }
+            std::printf("INFO 分割图：方块 %zu 像素（正面 %zu），背景 %zu 像素\n", targetPixels, faceCount, background);
+            check(targetPixels >= faceCount && faceCount > 50 && mismatched == 0, "方块正面的像素 ID 都是 bench/target 的实体编号");
+            check(seg.segmentation[5 * w + 150] == 0 && background + targetPixels == w * h, "墙（worldbody 上的几何体）为背景 0，没有其他 ID");
+            check(segAgain.segmentation == seg.segmentation, "分割图两次渲染逐位相同");
+            const std::string labels = vw::segmentationLabelsJson(scene);
+            check(labels.find("\"entity\":\"bench/target\"") != std::string::npos && labels.find("\"background\":0") != std::string::npos,
+                  "对照表列出实体与背景");
+            const auto preview = vw::segmentationPreview(seg.segmentation, 160, 120);
+            const std::uint8_t* bg = preview.pixels.data() + (5 * w + 150) * 4;
+            check(bg[0] == 0 && bg[1] == 0 && bg[2] == 0 && bg[3] == 255, "预览：背景为黑色");
+            (void)r::savePng((outDir / "camera_bench_segmentation.png").string(), preview);
+        }
+    }
 
     // 远平面之外为 +inf
     sc::CameraSensor shortRange = eye;

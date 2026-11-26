@@ -157,6 +157,13 @@ void testRecord() {
         check(all.ok() && all.options.listAssets && all.options.assetKind.empty(), "--list-assets：" + all.error);
     }
     expectError({"--list-assets", "--kind", "mesh"}, "--kind 应为");
+    // M4-09：--no-noise
+    {
+        const ParseResult r = parse({"--scene", "s.json", "--steps", "1", "--sensors", "--no-noise"});
+        check(r.ok() && r.options.noNoise, "--no-noise：" + r.error);
+    }
+    expectError({"--rerun", "a.jsonl", "--no-noise"}, "--rerun 不能与");
+    expectError({"--scene", "s.json", "--steps", "1", "--no-noise", "--no-noise"}, "重复的参数 --no-noise");
     expectError({"--list-assets", "--scene", "s.json"}, "--list-assets 只能与");
     expectError({"--list-assets", "--list-records"}, "--list-assets 只能与");
     expectError({"--scene", "s.json", "--steps", "1", "--kind", "scene"}, "--kind 只用于");

@@ -225,7 +225,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
     // 传感器的采样频率（M4-02）：场景文件写了的按场景，否则等于物理频率；不高于物理频率
     const double physicsRate = d.timestep > 0 ? 1.0 / d.timestep : 0.0;
     for (const td::SensorDescription& s : d.sensors) {
-        SensorConfig config{s.id, physicsRate};
+        SensorConfig config{s.id, physicsRate, {}};
         for (const SensorSpec& spec : document.sensors) {
             if (spec.name == s.name && spec.type == "imu") config.noise = spec.imuNoise;  // M4-09
             if (spec.name != s.name || !spec.rateHz) continue;

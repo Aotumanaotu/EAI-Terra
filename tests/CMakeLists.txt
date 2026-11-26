@@ -456,6 +456,12 @@ add_executable(test_pack library/test_pack.cpp)
 target_link_libraries(test_pack PRIVATE terra::library terra::core terra_miniz)
 terra_configure_target(test_pack)
 add_test(NAME library.pack COMMAND test_pack "${CMAKE_CURRENT_BINARY_DIR}/pack_tmp")
+# M4-10a：可下载的运行组件（file:// 地址与本地文件，不需要网络）
+add_executable(test_components library/test_components.cpp)
+target_link_libraries(test_components PRIVATE terra::library terra::core terra_miniz)
+target_compile_definitions(test_components PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_components)
+add_test(NAME library.components COMMAND test_components "${CMAKE_CURRENT_BINARY_DIR}/components_tmp")
 # M4-08d：显示配置（.terviz 往返、保留不认识的内容、导出器注册表、.rviz 导出）；不需要 ROS2
 add_executable(test_viz viz/test_viz.cpp)
 target_link_libraries(test_viz PRIVATE terra::viz)
@@ -498,6 +504,17 @@ add_executable(test_sensor_sampling simulation/test_sensor_sampling.cpp)
 target_link_libraries(test_sensor_sampling PRIVATE terra::simulation)
 terra_configure_target(test_sensor_sampling)
 add_test(NAME simulation.sensor_sampling COMMAND test_sensor_sampling)
+# M4-09：传感器噪声（随机数、统计性质、可复现、关闭、雷达预设）；夹具 assets/tests/sensors/noise_suite.*
+add_executable(test_sensor_noise sensors/test_sensor_noise.cpp)
+target_link_libraries(test_sensor_noise PRIVATE terra::simulation terra::scene terra::physics_mujoco)
+target_compile_definitions(test_sensor_noise PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_sensor_noise)
+add_test(NAME simulation.sensor_noise COMMAND test_sensor_noise)
+# M4-09：Headless 的噪声出口（两次逐字节相同、--no-noise、记录头与复现）
+find_program(TERRA_PYTHON3_EXE python3 REQUIRED)
+add_test(NAME headless.sensors_noise
+    COMMAND "${TERRA_PYTHON3_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/sensors/check_noise.py" headless --headless $<TARGET_FILE:terra_headless>
+            --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/noise_suite.terra-scene.json" --work "${CMAKE_CURRENT_BINARY_DIR}/sensors_noise")
 
 # 悬挂模式（M3-04b）：fixedBase 删掉根部自由关节，关键帧保留
 add_executable(test_fixed_base scene/test_fixed_base.cpp)
@@ -751,6 +768,12 @@ if(TERRA_BUILD_RENDER)
                 "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/capture_determinism" -DEXPECT_RENDERER=llvmpipe
                 -P "${PROJECT_SOURCE_DIR}/cmake/TerraCheckCapture.cmake")
     set_tests_properties(graphics.capture_determinism PROPERTIES LABELS graphics)
+    # M4-09：terra_capture 的噪声（两次逐字节相同、--no-noise）与分割图（uint16 .npy 与对照表）
+    add_test(NAME graphics.capture_noise
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${TERRA_PYTHON3_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/sensors/check_noise.py" capture
+                --capture $<TARGET_FILE:terra_capture> --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/noise_suite.terra-scene.json"
+                --work "${CMAKE_CURRENT_BINARY_DIR}/capture_noise")
+    set_tests_properties(graphics.capture_noise PROPERTIES LABELS graphics)
     add_test(NAME capture.no_cameras
         COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
                 "${CMAKE_COMMAND}" -DEXPECTED=0 -DCOMMAND=$<TARGET_FILE:terra_capture>

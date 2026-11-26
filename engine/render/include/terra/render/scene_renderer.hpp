@@ -32,6 +32,7 @@ struct RenderItem {
     Matrix4 model = identityMatrix();
     Material material;
     bool castsShadow = true;  // 地面等只接收阴影的物体设为 false，阴影图只覆盖投影物体，精度更高
+    std::uint32_t id = 0;     // M4-09：分割图中的 ID（实体编号；0 为背景）；只有 DepthRenderer::renderIds 使用
 };
 
 struct ViewParams {

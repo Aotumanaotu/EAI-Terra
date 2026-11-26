@@ -85,7 +85,55 @@ CameraFrame CameraRenderer::capture(const sc::SceneInstance& scene, const SceneV
         }
     }
     if (camera.depth) frame.depth = depth_->render(camera.width, camera.height, params, items);
+    if (camera.segmentation) frame.segmentation = depth_->renderIds(camera.width, camera.height, params, items);  // M4-09
     return frame;
+}
+
+// ---- 分割图（M4-09）----
+
+r::ImageRgba8 segmentationPreview(const std::vector<std::uint32_t>& ids, int width, int height) {
+    r::ImageRgba8 image;
+    image.width = width;
+    image.height = height;
+    image.pixels.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4, 0);
+    for (std::size_t i = 0; i < ids.size() && i * 4 < image.pixels.size(); ++i) {
+        std::uint8_t* px = image.pixels.data() + i * 4;
+        px[3] = 255;
+        if (ids[i] == 0) continue;
+        // 固定的配色：按 ID 散列取色相（黄金角），饱和、明亮，相邻 ID 颜色差别大
+        const double hue = std::fmod(static_cast<double>(ids[i]) * 137.508, 360.0) / 60.0;
+        const double c = 0.85, x = c * (1.0 - std::fabs(std::fmod(hue, 2.0) - 1.0)), m = 0.12;
+        double rgb[3] = {0, 0, 0};
+        const int sector = static_cast<int>(hue);
+        const double table[6][3] = {{c, x, 0}, {x, c, 0}, {0, c, x}, {0, x, c}, {x, 0, c}, {c, 0, x}};
+        for (int k = 0; k < 3; ++k) rgb[k] = table[std::clamp(sector, 0, 5)][k] + m;
+        for (int k = 0; k < 3; ++k) px[k] = static_cast<std::uint8_t>(std::lround(255.0 * std::clamp(rgb[k], 0.0, 1.0)));
+    }
+    return image;
+}
+
+std::string segmentationLabelsJson(const sc::SceneInstance& scene) { return sc::segmentationLabelsJson(scene); }
+
+bool writeSegmentationNpy(const std::string& path, const std::vector<std::uint32_t>& ids, int width, int height) {
+    std::vector<std::uint16_t> narrow(ids.size());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        if (ids[i] > 0xFFFFu) return false;
+        narrow[i] = static_cast<std::uint16_t>(ids[i]);
+    }
+    std::string header = "{'descr': '<u2', 'fortran_order': False, 'shape': (" + std::to_string(height) + ", " + std::to_string(width) + "), }";
+    const std::size_t prefix = 10;
+    while ((prefix + header.size() + 1) % 64 != 0) header += ' ';
+    header += '\n';
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    const unsigned char magic[8] = {0x93, 'N', 'U', 'M', 'P', 'Y', 1, 0};
+    out.write(reinterpret_cast<const char*>(magic), 8);
+    const auto length = static_cast<std::uint16_t>(header.size());
+    const char lengthBytes[2] = {static_cast<char>(length & 0xFFu), static_cast<char>((length >> 8) & 0xFFu)};
+    out.write(lengthBytes, 2);
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    out.write(reinterpret_cast<const char*>(narrow.data()), static_cast<std::streamsize>(narrow.size() * sizeof(std::uint16_t)));
+    return static_cast<bool>(out);
 }
 
 r::ImageRgba8 depthPreview(const std::vector<float>& depth, int width, int height, float nearDepth, float maxDepth) {

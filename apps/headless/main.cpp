@@ -31,6 +31,7 @@
 #include "terra/simulation/record.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/sensor_noise.hpp"
 #ifdef TERRA_WITH_ROS2
 #include "terra/ros2/bridge.hpp"
 #endif
@@ -286,6 +287,9 @@ int run(const RunOptions& requested) {
         owned = std::move(loaded.world);
     }
     physics::PhysicsWorld& world = sceneInstance ? *sceneInstance->world : *owned;
+    // M4-09：传感器噪声（场景文件的配置；--no-noise 关闭）
+    terra::simulation::SensorNoise noise = sceneInstance ? terra::simulation::SensorNoise(*sceneInstance, !options.noNoise) : terra::simulation::SensorNoise{};
+    if (noise.active()) diagnose("传感器噪声：开启（种子 " + std::to_string(noise.seed()) + "；--no-noise 可关闭）");
 
     // PD 层（M3-04b）与动作（M3-05）
     terra::simulation::PdLayer pd(world.description(), pdAssignments);
@@ -328,6 +332,7 @@ int run(const RunOptions& requested) {
     if (!options.recordPath.empty()) {
         auto header = terra::simulation::makeRecordHeader(world.description(), options.sampleEvery);
         if (sceneInstance) terra::simulation::describeSensors(header, *sceneInstance);  // M4-07
+        header.sensorNoise = noise.active();                                              // M4-09
         fillEnvironment(header);
         std::error_code ec;
         header.scenePath = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
@@ -361,12 +366,16 @@ int run(const RunOptions& requested) {
         bool written = true;
         for (std::size_t k = 0; k < sensors.size() && k < snap->sensors.size(); ++k) {
             if (!terra::simulation::sensorSampleDue(snap->stepIndex, dt, sensorRates[k])) continue;
-            written = written && emit(sensorToJson(sensors[k], snap->sensors[k], snap->stepIndex, snap->simulationTime));
+            auto reading = snap->sensors[k];
+            noise.imu(k, snap->stepIndex, reading.values);  // M4-09
+            written = written && emit(sensorToJson(sensors[k], reading, snap->stepIndex, snap->simulationTime));
         }
         // 2D 激光雷达（M4-03b）：只在采样步上做射线检测
-        for (const auto& lidar : lidars) {
+        for (std::size_t k = 0; k < lidars.size(); ++k) {
+            const auto& lidar = lidars[k];
             if (!terra::simulation::sensorSampleDue(snap->stepIndex, dt, lidar.rateHz)) continue;
-            const auto scan = terra::simulation::scanLidar(world, lidar);
+            auto scan = terra::simulation::scanLidar(world, lidar);
+            noise.lidar(k, scan);  // M4-09
             LidarJson meta;
             meta.name = scan.sensor;
             meta.step = scan.step;
@@ -398,6 +407,7 @@ int run(const RunOptions& requested) {
             diagnose(error);
             return kExitUnavailable;
         }
+        bridge->setSensorNoise(!options.noNoise);  // M4-09
         diagnose("ROS2 桥接已开启：" + profile.profile->name + "（" + options.ros2Profile + "）");
     }
 #else
@@ -427,10 +437,10 @@ int run(const RunOptions& requested) {
     ok = ok && emit(sampleState(world));  // 第 0 步：初始状态
     ok = ok && emitSensors();
     publishBridge();
-    if (recorder) recorder->state(*world.snapshot());
+    if (recorder) recorder->state(noise.withNoise(*world.snapshot()));  // M4-09：记录带噪声的读数
     // M4-07：记录中的雷达扫描与相机元数据（各自的频率；IMU 随 state 记录）
     const auto recordSensors = [&] {
-        if (recorder && sceneInstance) terra::simulation::recordSceneSensors(*recorder, world, *sceneInstance, *world.snapshot());
+        if (recorder && sceneInstance) terra::simulation::recordSceneSensors(*recorder, world, *sceneInstance, *world.snapshot(), &noise);
     };
     recordSensors();
     for (std::uint64_t i = 0; ok && i < resolved.totalSteps; ++i) {
@@ -503,7 +513,7 @@ int run(const RunOptions& requested) {
         }
         if (schedule.shouldSample(world.stepIndex())) {
             ok = emit(sampleState(world));
-            if (recorder) recorder->state(*world.snapshot());
+            if (recorder) recorder->state(noise.withNoise(*world.snapshot()));  // M4-09
         }
         recordSensors();
         ok = ok && emitSensors();

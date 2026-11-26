@@ -1,0 +1,27 @@
+{
+  "format": "terra.components",
+  "version": 1,
+  "note": "M4-10a：查看器与 Headless 按需下载安装的运行组件（装在资源库目录下的 components/）。下载地址与校验值逐项核对过（见 third_party/onnxruntime/onnxruntime.lock）。",
+  "components": [
+    {
+      "id": "onnxruntime-cpu",
+      "name": {"zh": "ONNX Runtime（CPU）", "en": "ONNX Runtime (CPU)"},
+      "purpose": {"zh": "运行 ONNX 格式的策略（.onnx；TorchScript 的 .pt 转换后也用它）", "en": "Runs ONNX policies (.onnx; TorchScript .pt after conversion)"},
+      "version": "1.32.0",
+      "license": "MIT",
+      "source": "NuGet：Microsoft.ML.OnnxRuntime 1.32.0（Microsoft 签名；包的 SHA-512 与 NuGet 目录一致）",
+      "download": {
+        "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.32.0/microsoft.ml.onnxruntime.1.32.0.nupkg",
+        "size": 184391411,
+        "sha256": "a9150bc2992cbbb6722070da9910e1ffa989a8bfc67bdd5bb8e745ca755641db"
+      },
+      "files": [
+        {"from": "runtimes/linux-x64/native/libonnxruntime.so", "to": "lib/libonnxruntime.so", "sha256": "4213d6d8c42ac4754865849cb139d31fc39127db6a326babf90bbc81a6eb52fc"},
+        {"from": "runtimes/linux-x64/native/libonnxruntime_providers_shared.so", "to": "lib/libonnxruntime_providers_shared.so", "sha256": "8ef51f6bf2c621fc129f625b22241fa6f9a5870bc08eaf2fdd279169ec40d09a"},
+        {"from": "LICENSE", "to": "LICENSE", "sha256": "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674"},
+        {"from": "ThirdPartyNotices.txt", "to": "ThirdPartyNotices.txt", "sha256": "bf8073fd6a112ac2a656bb60799652127e881689e51d37ad20df446cd5188b2d"}
+      ],
+      "library": "lib/libonnxruntime.so"
+    }
+  ]
+}

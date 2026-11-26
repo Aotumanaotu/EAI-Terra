@@ -63,6 +63,7 @@
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/record.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/sensor_noise.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
 #include "terra/library/library.hpp"
 #include "terra/core/build_info.hpp"
@@ -349,6 +350,7 @@ struct AppState {
     bool recordListStale = true;   // 切换场景、保存记录后在下一次绘制时刷新
     std::array<char, 64> actuatorFilter{};  // 执行器面板的名字过滤
     bool showSensors = true;  // M4-04：传感器面板
+    bool sensorNoise = true;  // M4-09：传感器噪声的运行时开关（只影响本次运行；场景文件中没有配置噪声时无效）
     int sensorImu = 0;        // 传感器面板中显示曲线的 IMU
     // 执行器面板本帧显示的实测与目标（自检用：回放时应等于记录中的值）
     std::map<std::uint32_t, std::pair<double, std::optional<double>>> actuatorShown;
@@ -479,6 +481,7 @@ struct SimulatedScene {
         std::optional<vw::CameraFrame> frame;
         terra::render::Texture2D color;
         terra::render::Texture2D depth;
+        terra::render::Texture2D segmentation;  // M4-09
         std::uint64_t rendered = 0;
         bool pendingRecorded = false;  // M4-07：pending 这一步的元数据已写入记录（图像可以随后写入）
         std::string shownImage;        // M4-07：回放时显示的图像文件（避免每帧重读）
@@ -490,6 +493,7 @@ struct SimulatedScene {
     std::vector<std::uint64_t> lidarSamples;
     std::vector<CameraPreview> cameraPreviews;
     std::unique_ptr<vw::CameraRenderer> cameraRenderer;  // 场景中有相机时才创建
+    terra::simulation::SensorNoise noise;                // M4-09：传感器噪声（按场景文件；面板中的开关可关闭）
     // M4-07：回放时传感器面板显示记录中的读数（回放时间变化时更新）
     double replaySensorTime = std::numeric_limits<double>::quiet_NaN();
     bool replaySensorsShown = false;
@@ -511,15 +515,15 @@ struct SimulatedScene {
     }
     // 每完成一步（以及打开、重置之后的初始状态）：记录与传感器采样
     void observe(const terra::data::PhysicsSnapshot& snapshot) {
-        if (recorder && snapshot.stepIndex % recordSampleEvery == 0) recorder->state(snapshot);
+        if (recorder && snapshot.stepIndex % recordSampleEvery == 0) recorder->state(noise.withNoise(snapshot));  // M4-09：带噪声的读数
         const double dt = snapshot.fixedTimestep;
         for (std::size_t k = 0; k < imuHistory.size() && k < snapshot.sensors.size(); ++k) {
             if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, imuRate(k))) continue;
             ImuSample sample;
             sample.time = snapshot.simulationTime;
-            for (std::size_t c = 0; c < 6 && c < snapshot.sensors[k].values.size(); ++c) {
-                sample.values[c] = static_cast<float>(snapshot.sensors[k].values[c]);
-            }
+            auto values = snapshot.sensors[k].values;
+            noise.imu(k, snapshot.stepIndex, values);  // M4-09
+            for (std::size_t c = 0; c < 6 && c < values.size(); ++c) sample.values[c] = static_cast<float>(values[c]);
             imuHistory[k].push_back(sample);
             if (imuHistory[k].size() > kImuHistory) imuHistory[k].pop_front();
             ++imuSamples[k];
@@ -527,6 +531,7 @@ struct SimulatedScene {
         for (std::size_t k = 0; k < lidarScans.size(); ++k) {
             if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.lidars[k].rateHz)) continue;
             lidarScans[k] = terra::simulation::scanLidar(*instance.world, instance.lidars[k]);
+            noise.lidar(k, *lidarScans[k]);  // M4-09
             ++lidarSamples[k];
             if (recorder) recorder->lidar(*lidarScans[k]);  // M4-07
         }
@@ -762,6 +767,7 @@ bool openScene(Frame& f, const std::string& requested) {
     sim.instance = std::move(*result.scene);
     sim.path = path;
     f.state.recordListStale = true;  // 时间轴默认只列当前场景的记录
+    sim.noise = terra::simulation::SensorNoise(sim.instance, f.state.sensorNoise);  // M4-09
     sim.runner = std::make_unique<terra::simulation::SimulationRunner>(*sim.instance.world);
     sim.runner->setHomeKeyframe(sim.instance.homeKeyframe);
     sim.pd = terra::simulation::PdLayer(sim.instance.world->description(), sim.instance.pd);
@@ -1326,6 +1332,7 @@ void startRos2(Frame& f) {
     std::string error;
     for (const auto& e : profile.errors) error += (error.empty() ? "" : "；") + e;
     if (profile.profile) sim.ros2 = terra::ros2::Bridge::create(sim.instance, sim.pd, *profile.profile, error);
+    if (sim.ros2) sim.ros2->setSensorNoise(f.state.sensorNoise);  // M4-09
     if (!sim.ros2) {
         std::printf("INFO ROS2 桥接无法开启：%s\n", error.c_str());
         f.state.log.push_back(std::string{tr(TextId::LogRos2Failed)} + error);
@@ -1468,6 +1475,7 @@ void startRecording(Frame& f) {
     sim.recordSampleEvery = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::llround(1.0 / (hz * d.timestep))));
     auto header = terra::simulation::makeRecordHeader(d, sim.recordSampleEvery);
     terra::simulation::describeSensors(header, sim.instance);  // M4-07
+    header.sensorNoise = sim.noise.active();                    // M4-09
     const terra::BuildInfo& info = terra::buildInfo();
     header.terraVersion = std::string{info.version};
     header.compiler = std::string{info.compilerId} + " " + std::string{info.compilerVersion};
@@ -1499,11 +1507,11 @@ void startRecording(Frame& f) {
         f.state.log.push_back(std::string{tr(TextId::LogRecordIndexFailed)} + error);
         return;
     }
-    sim.recorder->state(*sim.instance.world->snapshot());
+    sim.recorder->state(sim.noise.withNoise(*sim.instance.world->snapshot()));  // M4-09
     // M4-07：起始状态的雷达与相机（restartSensors 在记录开始之前已采过这一步）
     {
         const auto start = sim.instance.world->snapshot();
-        terra::simulation::recordSceneSensors(*sim.recorder, *sim.instance.world, sim.instance, *start);
+        terra::simulation::recordSceneSensors(*sim.recorder, *sim.instance.world, sim.instance, *start, &sim.noise);
         for (auto& c : sim.cameraPreviews) {
             if (c.pending && c.pending->stepIndex == start->stepIndex) c.pendingRecorded = true;
         }
@@ -3212,6 +3220,9 @@ void updateCameraPreviews(Frame& f) {
         if (!preview.pending) continue;
         const auto& camera = sim.instance.cameras[k];
         preview.frame = sim.cameraRenderer->capture(sim.instance, *sim.view, camera, *preview.pending, lit);
+        // M4-09：渲染后加一次噪声，之后的预览、记录与 ROS2 都用这一份
+        sim.noise.color(k, preview.frame->step, preview.frame->rgb, 3);
+        sim.noise.depth(k, preview.frame->step, preview.frame->depth);
         preview.pending.reset();
         if (preview.pendingRecorded && sim.recorder && f.state.recordCameraImages) saveRecordedImage(f, camera, *preview.frame);  // M4-07
         ++preview.rendered;
@@ -3230,6 +3241,7 @@ void updateCameraPreviews(Frame& f) {
             image.cy = frame.intrinsics.cy;
             image.rgb = frame.rgb;
             image.depth = frame.depth;
+            image.segmentation = frame.segmentation;  // M4-09
             sim.ros2->publishCamera(k, image);
         }
 #endif
@@ -3244,6 +3256,10 @@ void updateCameraPreviews(Frame& f) {
             }
             const auto image = vw::depthPreview(frame.depth, camera.width, camera.height, 0.0f, std::max(farthest, 0.1f));
             preview.depth = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
+        }
+        if (!frame.segmentation.empty()) {  // M4-09：分割图按 ID 着色
+            const auto image = vw::segmentationPreview(frame.segmentation, camera.width, camera.height);
+            preview.segmentation = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
         }
     }
 }
@@ -3339,6 +3355,29 @@ void sensorsPanel(Frame& f) {
                 ImGui::TextWrapped("%s", tr(TextId::SensorsNone));
             }
             const float font = ImGui::GetFontSize();
+            // M4-09：噪声开关（只影响本次运行；记录中途不能切换）
+            {
+                terra::simulation::SensorNoise probe(sim.instance, true);
+                const bool configured = probe.active();
+                ImGui::BeginDisabled(!configured || sim.recorder != nullptr);
+                bool on = f.state.sensorNoise;
+                if (ImGui::Checkbox(tr(TextId::SensorsNoise), &on)) {
+                    f.state.sensorNoise = on;
+                    sim.noise.setEnabled(on);
+#ifdef TERRA_WITH_ROS2
+                    if (sim.ros2) sim.ros2->setSensorNoise(on);
+#endif
+                    f.state.log.push_back(std::string{tr(TextId::SensorsNoise)} + (on ? "：开" : "：关"));
+                }
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip("%s", tr(configured ? TextId::SensorsNoiseHint : TextId::SensorsNoiseNone));
+                }
+                if (configured) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s %llu", tr(TextId::SensorsNoiseSeed), static_cast<unsigned long long>(probe.seed()));
+                }
+            }
             if (!d.sensors.empty()) {
                 const std::string header = std::string{tr(TextId::SensorsImu)} + "  (" + std::to_string(d.sensors.size()) + ")###imu";
                 if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -3411,7 +3450,8 @@ void sensorsPanel(Frame& f) {
                             const vw::CameraFrame& frame = *preview.frame;
                             ImGui::TextDisabled("t = %.3f s  ·  %s %llu", frame.time, tr(TextId::SensorsStep),
                                                 static_cast<unsigned long long>(frame.step));
-                            const int shown = (preview.color.name() != 0 ? 1 : 0) + (preview.depth.name() != 0 ? 1 : 0);
+                            const int shown = (preview.color.name() != 0 ? 1 : 0) + (preview.depth.name() != 0 ? 1 : 0) +
+                                              (preview.segmentation.name() != 0 ? 1 : 0);
                             const float gap = ImGui::GetStyle().ItemSpacing.x;
                             const float w = (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(std::max(shown - 1, 0))) /
                                             static_cast<float>(std::max(shown, 1));
@@ -3424,7 +3464,7 @@ void sensorsPanel(Frame& f) {
                                 return ImVec2(static_cast<float>(t[0]), static_cast<float>(t[1]));
                             };
                             int index = 0;
-                            for (const auto* texture : {&preview.color, &preview.depth}) {
+                            for (const auto* texture : {&preview.color, &preview.depth, &preview.segmentation}) {
                                 if (texture->name() == 0) continue;
                                 if (index > 0) ImGui::SameLine();
                                 ImGui::PushID(index++);
@@ -3433,8 +3473,17 @@ void sensorsPanel(Frame& f) {
                                 const ImVec2 b = ImGui::GetItemRectMax();
                                 ImGui::GetWindowDrawList()->AddImageQuad(static_cast<ImTextureID>(texture->name()), a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y),
                                                                          uvAt(0, 0), uvAt(1, 0), uvAt(1, 1), uvAt(0, 1));
-                                // 悬停时显示该像素的深度（两张图都可以）
-                                if (ImGui::IsItemHovered() && !frame.depth.empty()) {
+                                // M4-09：分割图上悬停显示该像素的实体
+                                if (texture == &preview.segmentation && ImGui::IsItemHovered() && !frame.segmentation.empty()) {
+                                    const ImVec2 at = ImGui::GetIO().MousePos;
+                                    const auto t = terra::scene::displayToImage(rotation, static_cast<double>((at.x - a.x) / size.x),
+                                                                                static_cast<double>((at.y - a.y) / size.y));
+                                    const int px = std::clamp(static_cast<int>(t[0] * camera.width), 0, camera.width - 1);
+                                    const int py = std::clamp(static_cast<int>(t[1] * camera.height), 0, camera.height - 1);
+                                    const std::uint32_t id = frame.segmentation[static_cast<std::size_t>(py) * static_cast<std::size_t>(camera.width) + static_cast<std::size_t>(px)];
+                                    const auto* entity = id > 0 ? sim.instance.world->description().entity(terra::data::EntityId{id}) : nullptr;
+                                    ImGui::SetTooltip("(%d, %d)  %s %u  %s", px, py, tr(TextId::SensorsSegmentation), id, entity ? entity->name.c_str() : "—");
+                                } else if (ImGui::IsItemHovered() && !frame.depth.empty()) {  // 悬停时显示该像素的深度
                                     const ImVec2 at = ImGui::GetIO().MousePos;
                                     const auto t = terra::scene::displayToImage(rotation, static_cast<double>((at.x - a.x) / size.x),
                                                                                 static_cast<double>((at.y - a.y) / size.y));

@@ -25,10 +25,10 @@ constexpr int kSchemaVersion = 2;
 
 // ---- 资产（M4-08c）----
 
-enum class AssetKind { Scene, Motion, Robot, Environment, Display };  // Display：显示配置 .terviz（M4-08d）
+enum class AssetKind { Scene, Motion, Robot, Environment, Display, Policy };  // Display：显示配置 .terviz（M4-08d）；Policy：策略说明文件（M4-10b）
 enum class AssetSource { Builtin, Imported, User };
 
-const char* assetKindName(AssetKind kind);  // "scene"、"motion"、"robot"、"environment"、"display"
+const char* assetKindName(AssetKind kind);  // "scene"、"motion"、"robot"、"environment"、"display"、"policy"
 std::optional<AssetKind> assetKindFromName(const std::string& name);
 const char* assetSourceName(AssetSource source);  // "builtin"、"imported"、"user"
 
@@ -42,7 +42,7 @@ struct AssetEntry {
     std::string sha256;
     std::uint64_t bytes = 0;
     std::int64_t modifiedNs = 0;  // 文件修改时间（增量扫描用）
-    // 关联：场景 → 用到的机器人 MJCF；动作 → 推荐场景；机器人 → 用到它的场景；显示配置 → 场景
+    // 关联：场景 → 用到的机器人 MJCF；动作 → 推荐场景；机器人 → 用到它的场景；显示配置 → 场景；策略 → 推荐场景、模型文件
     std::vector<std::string> related;
     // 标签：场景为 "imu"、"camera"、"lidar2d"、"pd"、"fixed-base"、"models-missing"（有 MJCF 文件不存在，参考机器人未下载）、
     // "invalid"（场景文件有错误）；动作为 "scene-missing"、"invalid"
@@ -70,7 +70,7 @@ struct ScanResult {
 };
 
 // 默认的扫描范围：assetsDir 下的 scenes/、robots/、motions/、hdri/（内置）与库文件所在目录下的 assets/（导入）、
-// displays/（显示配置，M4-08d，来源为用户）。
+// displays/（显示配置，M4-08d，来源为用户）、policies/（导入的策略，M4-10b，来源为导入）。
 // 不含测试夹具（assets/tests/）。
 std::vector<ScanRoot> defaultScanRoots(const std::string& assetsDir, const std::string& libraryFile);
 

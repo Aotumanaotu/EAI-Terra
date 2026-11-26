@@ -7,7 +7,7 @@
 //   - 世界重置后从头开始；指令截断到范围；不匹配的策略（没有的关节、只有位置执行器、控制周期不是步长的整数倍）给出原因；
 //   - overrideCommands；
 //   - 自动配置（bench_supermimic.onnx + task_config.json，与用户 Go2 策略相同的元数据写法）：关节对应、IMU、PD 增益、指令范围、
-//     步长差别的警告；保存后可以读回；模型实例不存在时报错。
+//     步长差别与多出关节的警告；保存后可以读回；模型实例不存在时报错；matchRobotJoints、policyJointNames（M4-10b）。
 // 用法：test_policy_controller <临时目录>
 
 #include <cmath>
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
     {
         const std::string model = (kDir / "bench_supermimic.onnx").string();
         const std::string scenePath = (kDir / "policy_bench.terra-scene.json").string();
-        const auto r = pol::autoconfigure({model, scenePath, ""}, d);
+        const auto r = pol::autoconfigure({model, scenePath, "", ""}, d);
         for (const auto& e : r.errors) std::fprintf(stderr, "自动配置：%s\n", e.c_str());
         check(r.policy && r.format == "supermimic_moe_velocity_policy_v1" && !r.notes.empty(), "自动配置：识别格式并生成说明文件");
         if (r.policy) {
@@ -215,10 +215,20 @@ int main(int argc, char** argv) {
                       p.observation[6].kind == pol::TermKind::Phase && near(p.observation[6].period, 0.04) && near(p.observation[6].standingThreshold, 0.1),
                   "观测：角速度与重力取 IMU；相位周期与阈值");
             check(p.commandRange[0][0] == -0.5 && p.commandRange[0][1] == 0.8, "指令范围取自训练配置");
-            check(p.modelSha256.size() == 64 && p.scene == scenePath && p.source.at("specHash") == "fixture", "sha256、推荐场景、来源");
+            check(p.modelSha256.size() == 64 && p.scene == scenePath && p.source.at("specHash") == "e117647d1c05ee855f6b388cd5e686d052c5bd61a7e9512e128db93a32c26be4", "sha256、推荐场景、来源");
             bool warned = false;
             for (const auto& w : r.warnings) warned = warned || w.find("0.005") != std::string::npos;
             check(warned, "训练步长 0.005 s 与场景 0.002 s 不同：警告");
+            bool extra = false;
+            for (const auto& w : r.warnings) extra = extra || (w.find("bench/j3") != std::string::npos && w.find("1 个关节") != std::string::npos);
+            check(extra, "机器人上还有不由策略控制的关节（bench/j3）：警告（M4-10b）");
+            const auto m = pol::matchRobotJoints({"j1", "j2"}, d);
+            check(m.complete() && m.instance == "bench" && m.instances == 1 && m.extra == std::vector<std::string>{"bench/j3"}, "matchRobotJoints");
+            const auto partial = pol::matchRobotJoints({"j1", "j9"}, d);
+            check(!partial.complete() && partial.matched == 1, "matchRobotJoints：部分对应");
+            check(pol::policyJointNames(model) == std::vector<std::string>{"j1", "j2"} &&
+                      pol::policyJointNames((kDir / "bench.terra-policy.json").string()) == std::vector<std::string>{"j1", "j2"},
+                  "policyJointNames：ONNX 元数据与说明文件（去掉实例前缀）");
             const fs::path out = tmp / "autoconfig.terra-policy.json";
             check(!pol::savePolicy(p, out.string()), "保存");
             const auto back = pol::readPolicyFile(out.string());
@@ -230,7 +240,7 @@ int main(int argc, char** argv) {
             viaLinear.modelSha256.clear();
             check(makeController(viaLinear, scene, true, error) != nullptr, "自动配置的说明文件可以创建控制器：" + error);
         }
-        const auto wrong = pol::autoconfigure({model, scenePath, "nope"}, d);
+        const auto wrong = pol::autoconfigure({model, scenePath, "nope", ""}, d);
         check(!wrong.policy && !wrong.errors.empty() && wrong.errors[0].find("nope") != std::string::npos, "模型实例不存在：报错");
     }
 

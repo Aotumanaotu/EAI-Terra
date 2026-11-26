@@ -141,6 +141,8 @@ struct Options {
     std::string policyPath;               // M4-10a：打开场景后运行的策略（.terra-policy.json 或 .onnx）
     std::optional<std::array<float, 3>> policyCommand;  // M4-10a：策略的速度指令
     bool policySelfTest = false;          // M4-10a：自检策略的运行、速度指令面板与停止
+    std::string policyImportSelfTest;     // M4-10b：自检导入向导（给出要导入的文件）
+    std::string importPolicy;             // M4-10b：启动后打开导入向导并选好这个文件
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -188,6 +190,10 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.policyCommand = c;
         } else if (a == "--policy-self-test") {
             o.policySelfTest = true;
+        } else if (a == "--import-policy" && hasValue) {
+            o.importPolicy = argv[++i];
+        } else if (a == "--policy-import-self-test" && hasValue) {
+            o.policyImportSelfTest = argv[++i];
         } else if (a == "--demo-drive") {
             o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -396,6 +402,14 @@ struct AppState {
         std::uint64_t inferences = 0;
         double forward = 0.0;
     } policyTest;
+    std::optional<std::string> pendingPolicy;  // M4-10b：打开场景后运行的策略（资源库中的策略卡片、导入并运行）
+    struct PolicyImportTest {
+        bool opened = false, scanned = false, bestFull = false, extraWarned = false, imported = false, registered = false, componentAsked = false;
+        bool sceneOpened = false;
+        int stage = 0;
+        int imports = 0, importsBeforeEmpty = -1;  // 导入完成的次数；菜单重开（未选文件）前的次数
+        std::string policyFile;
+    } policyImportTest;
     ui::FileBrowser vizBrowser;
     std::optional<std::pair<terra::viz::VizConfig, std::string>> pendingDisplay;  // 打开场景后应用：配置（导入）或文件（以某一份打开）
     struct VizTest {
@@ -641,6 +655,7 @@ struct SimulatedScene {
     bool collision = false;
     // M4-10a：正在运行的策略（接管对应的执行器；同一执行器以策略为准）
     std::unique_ptr<terra::policy::PolicyController> policy;
+    bool velocitySubscribed = false;  // M4-10b：已向桥接订阅 /cmd_vel（策略的速度指令）
 #ifdef TERRA_WITH_ROS2
     // M4-06a：ROS2 桥接（开启时非空）。引用 instance 与 pd，放在最后，最先析构
     std::unique_ptr<terra::ros2::Bridge> ros2;
@@ -764,6 +779,7 @@ void closeScene(Frame& f) {
 void startRos2(Frame& f);
 void restoreDisplay(Frame& f);  // M4-08d
 void stopPolicy(Frame& f);      // M4-10a
+void runPolicyFile(Frame& f, const std::string& policyFile, const std::string& scene);  // M4-10b
 
 bool openScene(Frame& f, const std::string& requested) {
     std::error_code ec;
@@ -1235,8 +1251,17 @@ void handleLibraryAction(Frame& f, const vw::LibraryAction& a) {
     namespace lib = terra::library;
     switch (a.type) {
         case T::Open:
-            if (a.kind == lib::AssetKind::Motion) f.state.motionRequest = a.path;
-            else f.state.openRequest = a.path;
+            if (a.kind == lib::AssetKind::Motion) {
+                f.state.motionRequest = a.path;
+            } else if (a.kind == lib::AssetKind::Policy) {  // M4-10b：打开推荐场景并运行
+                std::string scene;
+                for (const auto& asset : f.state.assetList) {
+                    if (asset.kind == lib::AssetKind::Policy && asset.path == a.path && !asset.related.empty()) scene = asset.related[0];
+                }
+                runPolicyFile(f, a.path, scene);
+            } else {
+                f.state.openRequest = a.path;
+            }
             break;
         case T::ToggleFavorite:
         case T::Hide:
@@ -1992,13 +2017,6 @@ void menuBar(Frame& f) {
         }
         if (ImGui::MenuItem(tr(TextId::SimStep), key(st::Command::SimStep), false, sim.runner->paused())) sim.runner->stepOnce();
         if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
-        // M4-10a：策略
-        ImGui::Separator();
-        if (ImGui::MenuItem(tr(TextId::SimRunPolicy))) {
-            f.state.policy.dialogOpen = true;
-            f.state.policy.preparedKey.clear();
-        }
-        if (ImGui::MenuItem(tr(TextId::SimStopPolicy), nullptr, false, sim.policy != nullptr)) stopPolicy(f);
         // M4-06a：ROS2 桥接（默认通用配置）；构建时没有 ROS2 时禁用，悬停提示安装
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::SimRos2), nullptr, ros2Running(f), ros2Available())) {
@@ -2045,6 +2063,20 @@ void menuBar(Frame& f) {
                 if (ImGui::MenuItem(option, nullptr, i == sim.speedIndex)) sim.setSpeed(i);
             }
             ImGui::EndMenu();
+        }
+        ImGui::EndMenu();
+    }
+    // M4-10b：策略菜单（导入、运行、停止、组件）
+    if (ImGui::BeginMenu(tr(TextId::MenuPolicy))) {
+        if (ImGui::MenuItem(tr(TextId::MenuPolicyImport))) vw::requestPolicyImport(f.state.policy, {});
+        if (ImGui::MenuItem(tr(TextId::SimRunPolicy), nullptr, false, f.simulated.has_value())) {
+            f.state.policy.dialogOpen = true;
+            f.state.policy.preparedKey.clear();
+        }
+        if (ImGui::MenuItem(tr(TextId::SimStopPolicy), nullptr, false, f.simulated && f.simulated->policy)) stopPolicy(f);
+        ImGui::Separator();
+        if (ImGui::MenuItem(tr(TextId::MenuSettingsComponents), nullptr, f.state.policy.componentsOpen)) {
+            f.state.policy.componentsOpen = !f.state.policy.componentsOpen;
         }
         ImGui::EndMenu();
     }
@@ -3701,11 +3733,49 @@ vw::PolicyContext policyContext(const Frame& f) {
     ctx.viewportMax = f.state.viewportImageMax;
     ctx.viewportHovered = f.state.viewportHovered;
     ctx.keyboardFree = !f.uiCtx.wantsTextInput() && !f.state.settingsWindow.capturingKey();
+    // M4-10b：导入向导
+    for (const auto& a : f.state.assetList) {
+        const auto has = [&](const char* t) { return std::find(a.tags.begin(), a.tags.end(), t) != a.tags.end(); };
+        if (a.kind == terra::library::AssetKind::Scene && !a.hidden && !a.missing && !has("invalid") && !has("models-missing")) {
+            ctx.scenes.emplace_back(a.path, a.title);
+        }
+    }
+    ctx.policiesDirectory = (std::filesystem::path{libraryFilePath(f)}.parent_path() / "policies").string();
+    ctx.converter = TERRA_SOURCE_DIR "/scripts/policy/torchscript_to_onnx.py";
     return ctx;
 }
 
+// M4-10b：运行说明文件；场景不是当前场景时先打开它（帧末），打开后再运行
+void runPolicyFile(Frame& f, const std::string& policyFile, const std::string& scene) {
+    if (!scene.empty() && (!f.simulated || f.simulated->path != scene)) {
+        f.state.openRequest = scene;
+        f.state.pendingPolicy = policyFile;
+        return;
+    }
+    if (!f.simulated) return;
+    vw::requestPolicy(f.state.policy, policyFile);
+    f.state.policy.dialogOpen = false;
+    f.state.policy.startRequested = true;
+    f.simulated->runner->resume();
+}
+
 void policyPanels(Frame& f) {
-    auto action = vw::drawPolicyUi(f.state.policy, policyContext(f));
+    auto ctx = policyContext(f);
+#ifdef TERRA_WITH_ROS2
+    // M4-10b：开启 ROS2 时，策略的速度指令也可以来自 /cmd_vel（最近一条；0.5 s 没有消息时归零）
+    if (f.simulated && f.simulated->policy && f.simulated->ros2) {
+        auto& sim = *f.simulated;
+        if (!sim.velocitySubscribed) {
+            sim.velocitySubscribed = true;
+            if (!sim.ros2->enableVelocityCommand()) f.state.log.push_back("/cmd_vel 已用于差速底盘，策略的速度指令只取面板");
+        }
+        if (const auto v = sim.ros2->velocityCommand()) {
+            for (std::size_t i = 0; i < 3; ++i) f.state.policy.command[i] = static_cast<float>((*v)[i]);
+            ctx.velocityFromRos2 = true;
+        }
+    }
+#endif
+    auto action = vw::drawPolicyUi(f.state.policy, ctx);
     for (auto& line : f.state.policy.log) {
         std::printf("INFO 策略：%s\n", line.c_str());
         f.state.log.push_back(std::move(line));
@@ -3717,6 +3787,13 @@ void policyPanels(Frame& f) {
         f.state.log.push_back(std::string{tr(TextId::LogPolicyStarted)} + action.name);
         std::printf("INFO 策略开始运行：%s（%s；降频 %d；接管 %zu 个执行器）\n", action.name.c_str(), c.model().describe().c_str(), c.decimation(),
                     c.actuators().size());
+    }
+    if (action.type == vw::PolicyAction::Type::Imported || action.type == vw::PolicyAction::Type::OpenAndRun) {
+        f.state.assetsStale = true;  // 下一帧重新扫描，策略卡片出现在资源库中
+        f.state.policyImportTest.imported = true;
+        ++f.state.policyImportTest.imports;
+        f.state.policyImportTest.policyFile = action.policyFile;
+        if (action.type == vw::PolicyAction::Type::OpenAndRun) runPolicyFile(f, action.policyFile, action.scene);
     }
     if (f.simulated && f.simulated->policy && f.simulated->policy->failed()) {
         f.state.log.push_back(std::string{tr(TextId::LogPolicyStopped)} + f.simulated->policy->error());
@@ -3739,6 +3816,64 @@ void policySelfTestScript(Frame& f, int frames, int total) {
     if (frames == 22 && sim.policy) t.commanded = std::fabs(sim.policy->command()[0] - 0.4) < 1e-6;
     if (frames == total - 5) stopPolicy(f);
     if (frames == total - 3) t.stopped = sim.policy == nullptr && t.started;
+}
+
+// M4-10b 自检：导入向导。第 3 帧打开向导（夹具 bench_supermimic.onnx）；检查完场景后按“导入并运行”；
+// 导入后场景打开、资源库登记了策略；运行时需要的组件不在（自检的资源库没有装 ONNX Runtime）→ 弹出“需要下载组件”
+void policyImportSelfTestScript(Frame& f, int frames, const std::string& file) {
+    auto& t = f.state.policyImportTest;
+    auto& w = f.state.policy.importer;
+    if (frames == 3) {
+        vw::requestPolicyImport(f.state.policy, file);
+        t.opened = true;
+    }
+    if (t.stage == 0 && t.opened && w.open && !w.file.empty() && w.file == w.inspected && w.scanned() && !w.candidates.empty()) {
+        t.scanned = true;
+        if (w.selected >= 0) {
+            const auto& best = w.candidates[static_cast<std::size_t>(w.selected)];
+            t.bestFull = best.scene.find("policy_bench.terra-scene.json") != std::string::npos && best.match.complete();
+            t.extraWarned = best.match.extra == std::vector<std::string>{"bench/j3"};
+        }
+        w.selfTestImport = true;  // 导入并运行
+        t.stage = 1;
+    }
+    if (t.stage == 1 && t.imported) t.stage = 2;
+    if (t.stage >= 2) {
+        if (f.simulated && f.simulated->path.find("policy_bench.terra-scene.json") != std::string::npos) t.sceneOpened = true;
+        if (f.state.policy.neededComponent == "onnxruntime-cpu") t.componentAsked = true;
+        for (const auto& a : f.state.assetList) {
+            if (a.kind == terra::library::AssetKind::Policy && a.path == t.policyFile) t.registered = true;
+        }
+    }
+    // 2026-11-25 展示中发现：菜单重开向导（未选文件）后沿用了上一个文件的结果，按“导入”得到“文件不存在：”。重开后按导入应无效
+    if (t.stage == 2 && t.sceneOpened && t.componentAsked) {
+        f.state.policy.neededComponent.clear();
+        vw::requestPolicyImport(f.state.policy, {});
+        w.selfTestImport = true;
+        t.importsBeforeEmpty = t.imports;
+        t.stage = 3;
+    }
+}
+
+int policyImportSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const auto& t = f.state.policyImportTest;
+    std::printf("INFO 导入向导自检：导入 %s\n", t.policyFile.c_str());
+    check(t.opened && t.scanned, "导入向导：打开并检查资源库中的场景");
+    check(t.bestFull, "按关节名推荐：policy_bench 完全包含策略的关节");
+    check(t.extraWarned, "列出机器人多出的关节（bench/j3）");
+    check(t.imported && !t.policyFile.empty(), "导入并运行：生成说明文件");
+    check(t.registered, "资源库登记为策略（策略分页、场景卡片的标签）");
+    check(t.sceneOpened, "打开推荐场景");
+    check(t.componentAsked, "需要的组件不在：弹出“需要下载组件”");
+    check(t.stage == 3 && t.imports == t.importsBeforeEmpty, "菜单重开向导、还没选文件时不能导入（不沿用上一次的结果）");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "导入向导自检通过\n" : "导入向导自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
 }
 
 int policySelfTest(Frame& f) {
@@ -4897,6 +5032,10 @@ int main(int argc, char** argv) {
         state.extraScanRoots = {{std::string{TERRA_ASSETS_DIR} + "/tests/scene", terra::library::AssetSource::User},
                                 {std::string{TERRA_ASSETS_DIR} + "/tests/motion", terra::library::AssetSource::User}};
     }
+    if (!options.importPolicy.empty()) vw::requestPolicyImport(state.policy, options.importPolicy);  // M4-10b
+    if (!options.policyImportSelfTest.empty()) {  // M4-10b：策略夹具的场景（policy_bench）也列为可选的机器人
+        state.extraScanRoots = {{std::string{TERRA_ASSETS_DIR} + "/tests/policy", terra::library::AssetSource::User}};
+    }
     state.autoUiScale = autoUiScale;
     state.monitors = monitors;
     state.log.push_back(tr(TextId::LogStarted));
@@ -5008,7 +5147,8 @@ int main(int argc, char** argv) {
             else if (ends(".terra-motion.json")) state.motionRequest = dropped;
             else if (ends(terra::library::kPackSuffix)) importPackFile(frame, dropped);  // M4-08c
             else if (ends(terra::viz::kVizSuffix)) importDisplay(frame, dropped);    // M4-08d
-            else if (ends(terra::policy::kPolicySuffix) || ends(".onnx") || ends(".pt") || ends(".pth")) vw::requestPolicy(state.policy, dropped);  // M4-10a
+            else if (ends(terra::policy::kPolicySuffix)) vw::requestPolicy(state.policy, dropped);  // M4-10a
+            else if (ends(".onnx") || ends(".pt") || ends(".pth")) vw::requestPolicyImport(state.policy, dropped);  // M4-10b：导入向导
             else vw::beginImport(state.importWizard, dropped, importDirectory(frame));
         }
         const double now = platform.time();
@@ -5064,6 +5204,7 @@ int main(int argc, char** argv) {
         if (options.selfTest && options.librarySelfTest) librarySelfTestScript(frame, frames);  // M4-08c
         if (options.selfTest && options.vizSelfTest) vizSelfTestScript(frame, frames);          // M4-08d
         if (options.selfTest && options.policySelfTest) policySelfTestScript(frame, frames, options.frames);  // M4-10a
+        if (options.selfTest && !options.policyImportSelfTest.empty()) policyImportSelfTestScript(frame, frames, options.policyImportSelfTest);  // M4-10b
         if (options.selfTest && options.frames > 0) {
             // 自检脚本：第 4–7 帧依次打开偏好设置的四个页面，第 7 帧打开按键录制弹窗，第 8 帧取消录制、第 9 帧关闭窗口；
             // 中间帧切换为英文（经由设置）。
@@ -5113,7 +5254,13 @@ int main(int argc, char** argv) {
         if (state.openRequest) {
             const std::string path = *state.openRequest;
             state.openRequest.reset();
-            openScene(frame, path);
+            const bool opened = openScene(frame, path);
+            // M4-10b：打开后运行等待中的策略
+            if (state.pendingPolicy) {
+                const std::string policyFile = *state.pendingPolicy;
+                state.pendingPolicy.reset();
+                if (opened) runPolicyFile(frame, policyFile, path);
+            }
         }
         if (state.closeRequest) {
             state.closeRequest = false;
@@ -5136,7 +5283,8 @@ int main(int argc, char** argv) {
         const bool lastFrame = (options.frames > 0 && frames >= options.frames && !vizWaiting) ||
                                (options.seconds > 0.0 && now - start >= options.seconds);
         if (lastFrame && options.selfTest) {
-            result = options.policySelfTest                ? policySelfTest(frame)
+            result = !options.policyImportSelfTest.empty() ? policyImportSelfTest(frame)
+                     : options.policySelfTest              ? policySelfTest(frame)
                      : options.vizSelfTest                 ? vizSelfTest(frame)
                      : options.librarySelfTest             ? librarySelfTest(frame)
                      : !options.importSelfTestPath.empty() ? importSelfTest(frame)

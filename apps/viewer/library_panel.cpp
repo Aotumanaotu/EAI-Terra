@@ -38,13 +38,16 @@ ImU32 kindColor(lib::AssetKind kind) {
         case lib::AssetKind::Robot: return rgba(70, 140, 230);
         case lib::AssetKind::Environment: return rgba(220, 110, 170);
         case lib::AssetKind::Display: return rgba(60, 150, 200);
+        case lib::AssetKind::Policy: return rgba(226, 132, 52);  // M4-10b
     }
     return rgba(130, 130, 140);
 }
 
 bool hasTag(const lib::AssetEntry& a, const char* tag) { return std::find(a.tags.begin(), a.tags.end(), tag) != a.tags.end(); }
 
-bool unusable(const lib::AssetEntry& a) { return hasTag(a, "models-missing") || hasTag(a, "invalid") || hasTag(a, "scene-missing"); }
+bool unusable(const lib::AssetEntry& a) {
+    return hasTag(a, "models-missing") || hasTag(a, "invalid") || hasTag(a, "scene-missing") || hasTag(a, "model-missing");
+}
 
 // 按宽度截断（UTF-8 按字符），超出时加省略号
 std::string ellipsize(const std::string& text, float size, float width) {
@@ -102,6 +105,19 @@ void drawAssetIcon(ImDrawList* dl, ImVec2 a, float s, lib::AssetKind kind, bool 
         case lib::AssetKind::Display: {  // 两个窗口
             dl->AddRectFilled(at(2.5f, 3.5f), at(9.5f, 9.5f), w, 0.8f * u);
             dl->AddRectFilled(at(6.5f, 7.0f), at(13.5f, 13.0f), rgba(255, 255, 255, 170), 0.8f * u);
+            break;
+        }
+        case lib::AssetKind::Policy: {  // M4-10b：三层的小网络
+            const ImVec2 in[] = {at(3.5f, 5.0f), at(3.5f, 11.0f)};
+            const ImVec2 mid[] = {at(8.0f, 3.5f), at(8.0f, 8.0f), at(8.0f, 12.5f)};
+            const ImVec2 out = at(12.5f, 8.0f);
+            for (const auto& a0 : in) {
+                for (const auto& m : mid) dl->AddLine(a0, m, rgba(255, 255, 255, 150), 0.7f * u);
+            }
+            for (const auto& m : mid) dl->AddLine(m, out, rgba(255, 255, 255, 150), 0.7f * u);
+            for (const auto& a0 : in) dl->AddCircleFilled(a0, 1.4f * u, w);
+            for (const auto& m : mid) dl->AddCircleFilled(m, 1.4f * u, w);
+            dl->AddCircleFilled(out, 1.6f * u, w);
             break;
         }
     }
@@ -177,6 +193,7 @@ CardInfo describe(const lib::AssetEntry& a, const std::map<std::string, int>& mo
     CardInfo info;
     info.subtitle = a.description == a.title ? std::string{} : a.description;
     if (a.kind == lib::AssetKind::Motion && !a.related.empty()) info.subtitle = fs::path{a.related[0]}.filename().string();
+    if (a.kind == lib::AssetKind::Policy && !a.related.empty()) info.subtitle = fs::path{a.related[0]}.filename().string() + " · " + a.description;
     info.chips.emplace_back(tr(a.source == lib::AssetSource::Builtin ? TextId::LibrarySourceBuiltin
                                : a.source == lib::AssetSource::Imported ? TextId::LibrarySourceImported
                                                                         : TextId::LibrarySourceUser),
@@ -195,12 +212,18 @@ CardInfo describe(const lib::AssetEntry& a, const std::map<std::string, int>& mo
         if (const auto it = motionCounts.find("display:" + a.path); it != motionCounts.end()) {  // M4-08d：显示配置的份数
             info.chips.emplace_back(std::to_string(it->second) + tr(TextId::LibraryTagDisplays), rgba(50, 120, 160));
         }
+        if (const auto it = motionCounts.find("policy:" + a.path); it != motionCounts.end()) {  // M4-10b：策略的个数
+            info.chips.emplace_back(std::to_string(it->second) + tr(TextId::LibraryTagPolicies), rgba(196, 110, 40));
+        }
     }
     if (a.kind == lib::AssetKind::Robot) info.chips.emplace_back(std::to_string(a.related.size()) + tr(TextId::LibraryTagScenes), rgba(70, 104, 150));
     if (hasTag(a, "models-missing")) info.hint = tr(TextId::LibraryModelsMissing);
     else if (hasTag(a, "invalid")) info.hint = std::string{tr(TextId::LibraryInvalid)} + a.description;
     else if (hasTag(a, "scene-missing")) info.hint = tr(TextId::LibrarySceneMissing);
-    else info.hint = tr(a.kind == lib::AssetKind::Motion ? TextId::LibraryClickToPlay : TextId::LibraryClickToOpen);
+    else if (hasTag(a, "model-missing")) info.hint = tr(TextId::LibraryModelMissing);
+    else info.hint = tr(a.kind == lib::AssetKind::Motion   ? TextId::LibraryClickToPlay
+                        : a.kind == lib::AssetKind::Policy ? TextId::LibraryClickToRunPolicy
+                                                           : TextId::LibraryClickToOpen);
     return info;
 }
 
@@ -297,6 +320,16 @@ std::optional<LibraryAction> card(LibraryPanelState& st, const LibraryContext& c
         if (ImGui::MenuItem(tr(a.favorite ? TextId::LibraryUnfavorite : TextId::LibraryFavorite))) {
             action = LibraryAction{LibraryAction::Type::ToggleFavorite, a.kind, a.path, a.importDirectory, !a.favorite};
         }
+        if (a.kind == lib::AssetKind::Scene) {  // M4-10b：运行与本场景关联的策略
+            bool first = true;
+            for (const auto& d : *ctx.assets) {
+                if (d.kind != lib::AssetKind::Policy || d.hidden || d.related.empty() || d.related[0] != a.path) continue;
+                if (first) ImGui::Separator();
+                first = false;
+                const std::string text = std::string{tr(TextId::LibraryRunPolicy)} + d.title + "##" + d.path;
+                if (ImGui::MenuItem(text.c_str())) action = LibraryAction{LibraryAction::Type::Open, lib::AssetKind::Policy, d.path, {}, false};
+            }
+        }
         if (a.kind == lib::AssetKind::Scene) {  // M4-08d：直接以某一份显示配置打开
             bool first = true;
             for (const auto& d : *ctx.assets) {
@@ -339,6 +372,7 @@ std::map<std::string, int> motionCountsOf(const LibraryContext& ctx) {
     for (const auto& a : *ctx.assets) {
         if (a.kind == lib::AssetKind::Motion && !a.hidden && !a.related.empty()) ++counts[a.related[0]];
         if (a.kind == lib::AssetKind::Display && !a.hidden && !a.related.empty()) ++counts["display:" + a.related[0]];
+        if (a.kind == lib::AssetKind::Policy && !a.hidden && !a.related.empty()) ++counts["policy:" + a.related[0]];  // M4-10b
     }
     return counts;
 }
@@ -378,6 +412,7 @@ lib::AssetKind kindOfTab(LibraryTab tab) {
         case LibraryTab::Scenes: return lib::AssetKind::Scene;
         case LibraryTab::Motions: return lib::AssetKind::Motion;
         case LibraryTab::Robots: return lib::AssetKind::Robot;
+        case LibraryTab::Policies: return lib::AssetKind::Policy;
     }
     return lib::AssetKind::Scene;
 }
@@ -425,7 +460,7 @@ std::optional<LibraryAction> drawLibraryPanel(LibraryPanelState& st, const Libra
     if (ImGui::BeginTabBar("##libraryTabs")) {
         using Tab = std::pair<LibraryTab, TextId>;
         for (const auto& [tab, text] : {Tab{LibraryTab::Scenes, TextId::LibraryTabScenes}, Tab{LibraryTab::Motions, TextId::LibraryTabMotions},
-                                        Tab{LibraryTab::Robots, TextId::LibraryTabRobots}}) {
+                                        Tab{LibraryTab::Robots, TextId::LibraryTabRobots}, Tab{LibraryTab::Policies, TextId::LibraryTabPolicies}}) {
             const std::size_t n = visibleAssets(ctx, kindOfTab(tab), LibraryFilter::All, {}, false).size();
             const std::string name = std::string{tr(text)} + " " + std::to_string(n) + "###tab" + std::to_string(static_cast<int>(tab));
             const bool select = st.selectTab && *st.selectTab == tab;

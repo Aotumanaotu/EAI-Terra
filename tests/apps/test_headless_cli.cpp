@@ -190,6 +190,16 @@ void testRecord() {
     expectError({"--install-component", "x", "--scene", "s.json"}, "--install-component 只能与");
     expectError({"--list-components", "--install-component", "x"}, "--install-component 只能与");
     expectError({"--scene", "s.json", "--steps", "1", "--from", "a.zip"}, "--from 只用于");
+    // M4-10b：--import-policy、--name、--kind policy
+    {
+        const ParseResult r = parse({"--import-policy", "p.onnx", "--scene", "s.json", "--name", "walk", "--library", "lib.db"});
+        check(r.ok() && r.options.importPolicy == "p.onnx" && r.options.policyName == "walk" && r.options.scenePath == "s.json",
+              "--import-policy + --scene + --name + --library：" + r.error);
+        check(parse({"--list-assets", "--kind", "policy"}).ok(), "--kind policy");
+    }
+    expectError({"--import-policy", "p.onnx"}, "--import-policy 需要 --scene");
+    expectError({"--import-policy", "p.onnx", "--scene", "s.json", "--steps", "1"}, "--import-policy 只能与");
+    expectError({"--scene", "s.json", "--steps", "1", "--name", "x"}, "--name 只用于");
 }
 
 void testUsageErrors() {

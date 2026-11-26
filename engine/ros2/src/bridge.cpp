@@ -114,6 +114,12 @@ struct Bridge::Impl {
     std::map<std::uint32_t, double> pendingCommands;  // 执行器 ID → 值（同一执行器以最后一条为准）
     std::vector<Request> requests;
     Stats stats;
+    // M4-10b：策略的速度指令（受 mutex 保护）
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocitySub;
+    std::array<double, 3> velocity{0.0, 0.0, 0.0};
+    std::chrono::steady_clock::time_point velocityAt;
+    bool haveVelocity = false;
+    double velocityTimeout = 0.5;
     std::atomic<std::uint64_t> published{0};
 
     Impl(const terra::scene::SceneInstance& s, const terra::simulation::PdLayer& p, Profile pr) : scene(s), pd(p), profile(std::move(pr)), noise(s) {}
@@ -708,6 +714,32 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
     info.p = {image.fx, 0.0, image.cx, 0.0, 0.0, image.fy, image.cy, 0.0, 0.0, 0.0, 1.0, 0.0};
     topics.info->publish(info);
     ++b.published;
+}
+
+bool Bridge::enableVelocityCommand(const std::string& topic, double timeout) {
+    Impl* self = impl_.get();
+    const std::string name = self->profile.topicPrefix + topic;
+    if (self->profile.diffDrive && self->profile.topicPrefix + self->profile.diffDrive->cmdVel == name) return false;
+    std::lock_guard<std::mutex> lock(self->mutex);
+    self->velocityTimeout = timeout;
+    if (self->velocitySub) return true;
+    self->velocitySub = self->node->create_subscription<geometry_msgs::msg::Twist>(
+        name, rclcpp::QoS(10), [self](const geometry_msgs::msg::Twist::SharedPtr msg) {
+            std::lock_guard<std::mutex> guard(self->mutex);
+            self->velocity = {msg->linear.x, msg->linear.y, msg->angular.z};
+            self->velocityAt = std::chrono::steady_clock::now();
+            self->haveVelocity = true;
+            ++self->stats.commandsAccepted;
+        });
+    return true;
+}
+
+std::optional<std::array<double, 3>> Bridge::velocityCommand() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (!impl_->haveVelocity) return std::nullopt;
+    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - impl_->velocityAt).count();
+    if (age > impl_->velocityTimeout) return std::array<double, 3>{0.0, 0.0, 0.0};
+    return impl_->velocity;
 }
 
 std::vector<Request> Bridge::takeRequests() {

@@ -10,7 +10,7 @@
 #   stb_    只允许在 engine/render/src/ 与 tests/（M1-08b）
 #   cgltf   只允许在 engine/asset/src/ 与 tests/（M1-09）
 #   sqlite3 只允许在 engine/library/src/ 与 tests/（M3-07b，D-112）
-#   miniz   只允许在 engine/library/src/ 与 tests/（M4-08c：资产包）
+#   miniz   只允许在 engine/library/src/、engine/policy/src/ 与 tests/（M4-08c：资产包；M4-10b：读 .pt）
 #   onnxruntime_ 只允许在 engine/policy/src/ 与 tests/（M4-10a：推理库在运行时加载，头文件不进入公共头）
 #   mujoco/ 在 engine/ 中只允许在 MuJoCo 后端 engine/physics/backends/mujoco/src/（M2-04：terra_scene 等不得直接使用 MuJoCo）
 # 另外，engine/input/ 与 engine/platform/include/（接口层）不得包含任何上述头文件。
@@ -30,7 +30,7 @@ set(stb_allowed "/engine/render/src/|/tests/")
 set(cgltf_allowed "/engine/asset/src/|/tests/")
 set(mujoco_allowed "/engine/physics/backends/mujoco/src/")
 set(sqlite_allowed "/engine/library/src/|/tests/")
-set(miniz_allowed "/engine/library/src/|/tests/")
+set(miniz_allowed "/engine/library/src/|/engine/policy/src/|/tests/")
 set(onnxruntime_allowed "/engine/policy/src/|/tests/")
 
 set(violations "")

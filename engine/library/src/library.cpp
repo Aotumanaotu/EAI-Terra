@@ -16,6 +16,7 @@
 #include <system_error>
 #include <utility>
 
+#include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
 #include "terra/core/sha256.hpp"
@@ -367,6 +368,7 @@ RebuildResult Library::rebuild(const std::vector<std::string>& directories) {
 namespace {
 
 constexpr const char* kSceneSuffix = ".terra-scene.json";
+constexpr const char* kPolicySuffix = ".terra-policy.json";  // M4-10b（与 terra/policy/policy.hpp 相同；资源库不依赖策略模块）
 constexpr const char* kMotionSuffix = ".terra-motion.json";
 constexpr const char* kRecipeFile = "import.terra-import.json";
 
@@ -411,12 +413,13 @@ std::optional<AssetKind> kindOfFile(const std::string& name) {
     if (endsWith(name, kMotionSuffix)) return AssetKind::Motion;
     if (endsWith(name, ".hdr")) return AssetKind::Environment;
     if (endsWith(name, terra::viz::kVizSuffix)) return AssetKind::Display;
+    if (endsWith(name, kPolicySuffix)) return AssetKind::Policy;
     return std::nullopt;
 }
 
 std::string stemOf(const fs::path& p) {
     std::string name = p.filename().string();
-    for (const char* suffix : {kSceneSuffix, kMotionSuffix, ".hdr", ".xml", terra::viz::kVizSuffix}) {
+    for (const char* suffix : {kSceneSuffix, kMotionSuffix, ".hdr", ".xml", terra::viz::kVizSuffix, kPolicySuffix}) {
         if (endsWith(name, suffix)) return name.substr(0, name.size() - std::string{suffix}.size());
     }
     return p.stem().string();
@@ -525,6 +528,33 @@ std::optional<std::string> describeFile(AssetEntry& e) {
             e.related.push_back(r.config->scene);
             if (!fs::is_regular_file(r.config->scene, ec)) addTag(e.tags, "scene-missing");
         }
+    } else if (e.kind == AssetKind::Policy) {  // M4-10b：策略说明文件，关联推荐场景与模型文件（直接读 JSON，不依赖策略模块）
+        std::ifstream in(e.path, std::ios::binary);
+        const nlohmann::json j = in ? nlohmann::json::parse(in, nullptr, false) : nlohmann::json{};
+        const auto text = [](const nlohmann::json& o, const char* key) {
+            return o.is_object() && o.contains(key) && o[key].is_string() ? o[key].get<std::string>() : std::string{};
+        };
+        if (j.is_discarded() || !j.is_object() || text(j, "format") != "terra.policy") {
+            addTag(e.tags, "invalid");
+            e.description = "不是策略说明文件";
+            return e.path + "：" + e.description;
+        }
+        const fs::path base = p.parent_path();
+        const auto resolve = [&](const std::string& rel) {
+            return rel.empty() ? std::string{} : (fs::path{rel}.is_absolute() ? fs::path{rel} : base / rel).lexically_normal().string();
+        };
+        if (!text(j, "name").empty()) e.title = text(j, "name");
+        const auto model = j.contains("model") ? j["model"] : nlohmann::json{};
+        const std::string backend = text(model, "backend");
+        const std::string format = j.contains("source") ? text(j["source"], "format") : std::string{};
+        e.description = (format.empty() ? std::string{"策略"} : format) + (backend.empty() ? "" : " · " + backend);
+        const std::string scene = resolve(text(j, "scene"));
+        const std::string modelFile = resolve(text(model, "file"));
+        e.related.push_back(scene);
+        e.related.push_back(modelFile);
+        if (!backend.empty()) addTag(e.tags, backend);
+        if (scene.empty() || !fs::is_regular_file(scene, ec)) addTag(e.tags, "scene-missing");
+        if (modelFile.empty() || !fs::is_regular_file(modelFile, ec)) addTag(e.tags, "model-missing");
     }
     return std::nullopt;
 }
@@ -595,12 +625,13 @@ const char* assetKindName(AssetKind kind) {
         case AssetKind::Robot: return "robot";
         case AssetKind::Environment: return "environment";
         case AssetKind::Display: return "display";
+        case AssetKind::Policy: return "policy";
     }
     return "scene";
 }
 
 std::optional<AssetKind> assetKindFromName(const std::string& name) {
-    for (const AssetKind k : {AssetKind::Scene, AssetKind::Motion, AssetKind::Robot, AssetKind::Environment, AssetKind::Display}) {
+    for (const AssetKind k : {AssetKind::Scene, AssetKind::Motion, AssetKind::Robot, AssetKind::Environment, AssetKind::Display, AssetKind::Policy}) {
         if (name == assetKindName(k)) return k;
     }
     return std::nullopt;
@@ -621,6 +652,7 @@ std::vector<ScanRoot> defaultScanRoots(const std::string& assetsDir, const std::
     if (!libraryFile.empty() && libraryFile != kMemory) {
         roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "assets").string(), AssetSource::Imported});
         roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "displays").string(), AssetSource::User});
+        roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "policies").string(), AssetSource::Imported});  // M4-10b
     }
     return roots;
 }

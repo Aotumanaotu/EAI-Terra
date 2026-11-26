@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 
+#include "terra/physics/mujoco/mujoco_backend.hpp"
 #include "terra/policy/backend.hpp"
 #include "terra/ui/text.hpp"
 
@@ -96,7 +97,244 @@ void drawInstallResult(const PolicyPanelState& state) {
     }
 }
 
+// ---- 导入向导（M4-10b）----
+
+// 推荐顺序：完全对应且没有多出关节 > 完全对应 > 部分对应（找到的多的在前）> 不对应 / 出错
+int score(const PolicyImportWizard::Candidate& c) {
+    if (!c.error.empty() || !c.checked) return -1;
+    if (c.match.complete()) return c.match.extra.empty() ? 3000 : 2000;
+    return static_cast<int>(c.match.matched);
+}
+
+void inspectImportFile(PolicyImportWizard& w, const PolicyContext& ctx) {
+    w.inspected = w.file;
+    w.info = pol::inspectModelFile(w.file);
+    w.linkedOnnx.clear();
+    w.linkMessage.clear();
+    w.log.clear();
+    w.error.clear();
+    w.draft.clear();
+    std::string jointsFrom = w.file;
+    if (w.info.kind == pol::ModelFileKind::Checkpoint) {
+        const auto link = pol::findOnnxForCheckpoint(w.file);
+        w.linkedOnnx = link.onnx;
+        w.linkMessage = link.onnx.empty() ? link.error : (link.notes.empty() ? link.onnx : link.notes.front());
+        jointsFrom = link.onnx;
+    }
+    w.joints = jointsFrom.empty() || w.info.kind == pol::ModelFileKind::TorchScript ? std::vector<std::string>{} : pol::policyJointNames(jointsFrom);
+    w.candidates.clear();
+    for (const auto& [path, title] : ctx.scenes) {
+        PolicyImportWizard::Candidate c;
+        c.scene = path;
+        c.title = title;
+        w.candidates.push_back(std::move(c));
+    }
+    w.nextToCheck = 0;
+    w.selected = -1;
+}
+
+// 每帧检查一个场景（加载模型描述，按关节名匹配）
+void checkNextCandidate(PolicyImportWizard& w, const PolicyContext& ctx) {
+    auto next = std::find_if(w.candidates.begin(), w.candidates.end(), [](const PolicyImportWizard::Candidate& k) { return !k.checked; });
+    if (next == w.candidates.end()) return;
+    auto& c = *next;
+    auto loaded = terra::scene::loadScene(c.scene, terra::physics::mujoco::composeWorld);
+    c.checked = true;
+    if (!loaded.scene) {
+        c.error = "场景无法加载";
+    } else {
+        c.robot = std::make_shared<terra::data::ModelDescription>(loaded.scene->world->description());
+        c.match = pol::matchRobotJoints(w.joints, *c.robot);
+    }
+    w.nextToCheck = static_cast<std::size_t>(std::count_if(w.candidates.begin(), w.candidates.end(), [](const PolicyImportWizard::Candidate& k) { return k.checked; }));
+    if (!w.scanned()) return;
+    std::stable_sort(w.candidates.begin(), w.candidates.end(),
+                     [](const PolicyImportWizard::Candidate& a, const PolicyImportWizard::Candidate& b) { return score(a) > score(b); });
+    w.selected = -1;
+    for (std::size_t i = 0; i < w.candidates.size(); ++i) {
+        const auto& k = w.candidates[i];
+        if (k.robot && (w.joints.empty() ? k.scene == ctx.scenePath : k.match.complete())) {
+            w.selected = static_cast<int>(i);
+            break;
+        }
+    }
+}
+
+void startImport(PolicyImportWizard& w, const PolicyContext& ctx, bool runAfter) {
+    if (w.job || w.selected < 0) return;
+    const auto& c = w.candidates[static_cast<std::size_t>(w.selected)];
+    if (!c.robot) return;
+    pol::ImportOptions o;
+    o.model = w.file;
+    o.scene = c.scene;
+    o.instance = c.match.instances > 1 ? std::string{} : c.match.instance;
+    o.name = w.name.data();  // 空：用自动配置给出的名字（如“实验名 / 运行名（迭代 N）”），没有时用文件名
+    o.destination = ctx.policiesDirectory;
+    o.converter = ctx.converter;
+    w.job = std::make_unique<PolicyImportWizard::Job>();
+    w.job->runAfter = runAfter;
+    w.log.clear();
+    w.error.clear();
+    w.draft.clear();
+    auto* job = w.job.get();
+    const auto robot = c.robot;
+    job->worker = std::thread([job, o, robot] {
+        job->result = pol::importPolicy(o, *robot);
+        job->finished = true;
+    });
+}
+
+PolicyAction drawImportWizard(PolicyPanelState& state, const PolicyContext& ctx) {
+    PolicyAction action;
+    auto& w = state.importer;
+    // 导入完成
+    if (w.job && w.job->finished) {
+        w.job->worker.join();
+        auto r = std::move(w.job->result);
+        const bool runAfter = w.job->runAfter;
+        const std::string scene = w.selected >= 0 ? w.candidates[static_cast<std::size_t>(w.selected)].scene : std::string{};
+        w.job.reset();
+        w.log = r.log;
+        w.error = r.error;
+        w.draft = r.draftFile;
+        if (!r.draftFile.empty()) state.log.push_back(std::string{tr(TextId::PolicyDraftWritten)} + r.draftFile);
+        if (r.policyFile) {
+            state.log.push_back(std::string{tr(TextId::PolicyImported)} + *r.policyFile);
+            for (const auto& warning : r.config.warnings) state.log.push_back(warning);
+            action.type = runAfter ? PolicyAction::Type::OpenAndRun : PolicyAction::Type::Imported;
+            action.policyFile = *r.policyFile;
+            action.scene = scene;
+            action.name = r.config.policy ? r.config.policy->name : *r.policyFile;
+            if (runAfter) w.open = false;
+        } else if (!r.error.empty()) {
+            state.log.push_back(std::string{tr(TextId::PolicyProblems)} + r.error);
+        }
+    }
+    if (!w.open) return action;
+    if (!w.file.empty() && w.file != w.inspected) inspectImportFile(w, ctx);
+    checkNextCandidate(w, ctx);
+
+    ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_Appearing);
+    if (ImGui::Begin((std::string{tr(TextId::PolicyImportTitle)} + "###PolicyImport").c_str(), &w.open, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize)) {
+        const ImVec4 good(0.45f, 0.85f, 0.45f, 1.0f), warn(0.95f, 0.8f, 0.35f, 1.0f), bad(0.95f, 0.45f, 0.4f, 1.0f);
+        ImGui::TextUnformatted(tr(TextId::PolicyImportStep1));
+        ImGui::TextDisabled("%s", w.file.empty() ? "—" : w.file.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr(TextId::PolicyChoose))) w.browser.open(w.file, ".onnx|.pt|.pth", "");
+        if (!w.file.empty()) {
+            switch (w.info.kind) {
+                case pol::ModelFileKind::Onnx:
+                    ImGui::Text("%s%s", tr(TextId::PolicyKindOnnx), w.info.format.empty() ? "" : ("（" + w.info.format + "）").c_str());
+                    break;
+                case pol::ModelFileKind::TorchScript: ImGui::TextUnformatted(tr(TextId::PolicyKindTorchScript)); break;
+                case pol::ModelFileKind::Checkpoint:
+                    ImGui::TextUnformatted(tr(TextId::PolicyKindCheckpoint));
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0f);
+                    ImGui::TextColored(w.linkedOnnx.empty() ? bad : good, "%s", w.linkMessage.c_str());
+                    ImGui::PopTextWrapPos();
+                    break;
+                case pol::ModelFileKind::PolicyFile:
+                case pol::ModelFileKind::Unknown:
+                    ImGui::TextColored(bad, "%s", w.info.error.empty() ? "这是说明文件：请用“策略 → 运行策略…”打开" : w.info.error.c_str());
+                    break;
+            }
+        }
+        ImGui::Separator();
+        ImGui::TextUnformatted(tr(TextId::PolicyImportStep2));
+        if (!w.scanned()) {
+            ImGui::ProgressBar(w.candidates.empty() ? 0.0f : static_cast<float>(w.nextToCheck) / static_cast<float>(w.candidates.size()), ImVec2(-1, 0),
+                               tr(TextId::PolicyImportScanning));
+        } else {
+            bool any = false;
+            if (ImGui::BeginChild("##candidates", ImVec2(0, ImGui::GetFontSize() * 11.0f), ImGuiChildFlags_Borders)) {
+                for (std::size_t i = 0; i < w.candidates.size(); ++i) {
+                    const auto& c = w.candidates[i];
+                    ImGui::PushID(static_cast<int>(i));
+                    if (ImGui::Selectable(c.title.c_str(), w.selected == static_cast<int>(i), ImGuiSelectableFlags_AllowOverlap)) w.selected = static_cast<int>(i);
+                    ImGui::SameLine(ImGui::GetFontSize() * 18.0f);
+                    if (!c.error.empty()) {
+                        ImGui::TextColored(bad, "%s", c.error.c_str());
+                    } else if (w.joints.empty()) {
+                        ImGui::TextDisabled("—");
+                    } else if (c.match.complete() && c.match.extra.empty()) {
+                        ImGui::TextColored(good, "%s", tr(TextId::PolicyMatchFull));
+                        any = true;
+                    } else if (c.match.complete()) {
+                        ImGui::TextColored(warn, "%s %zu", tr(TextId::PolicyMatchExtra), c.match.extra.size());
+                        if (ImGui::IsItemHovered()) {
+                            std::string list;
+                            for (const auto& e : c.match.extra) list += e + "\n";
+                            ImGui::SetTooltip("%s", list.c_str());
+                        }
+                        any = true;
+                    } else {
+                        ImGui::TextDisabled("%s %zu / %zu", tr(TextId::PolicyMatchPartial), c.match.matched, c.match.wanted);
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+            if (!any && !w.joints.empty()) ImGui::TextColored(warn, "%s", tr(TextId::PolicyNoScenes));
+            if (ImGui::SmallButton(tr(TextId::PolicyOtherScene))) w.sceneBrowser.open({}, ".terra-scene.json");
+        }
+        ImGui::Separator();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 20.0f);
+        if (ImGui::InputTextWithHint(tr(TextId::PolicyImportName), "auto", w.name.data(), w.name.size())) w.nameEdited = true;
+        const bool fileOk = w.info.kind == pol::ModelFileKind::Onnx || w.info.kind == pol::ModelFileKind::TorchScript ||
+                            (w.info.kind == pol::ModelFileKind::Checkpoint && !w.linkedOnnx.empty());
+        const bool ready = fileOk && !w.file.empty() && w.file == w.inspected && w.scanned() && w.selected >= 0 && !w.job;
+        ImGui::BeginDisabled(!ready);
+        bool runAfter = false, go = false;
+        if (ImGui::Button(tr(TextId::PolicyImportRun))) go = runAfter = true;
+        ImGui::SameLine();
+        if (ImGui::Button(tr(TextId::PolicyImportOnly))) go = true;
+        ImGui::EndDisabled();
+        if (w.selfTestImport && ready) {
+            go = true;
+            runAfter = *w.selfTestImport;
+            w.selfTestImport.reset();
+        }
+        if (go) startImport(w, ctx, runAfter);
+        ImGui::SameLine();
+        if (ImGui::Button(tr(TextId::PolicyCancel))) w.open = false;
+        if (w.job) ImGui::TextDisabled("%s", tr(TextId::PolicyImporting));
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0f);
+        for (const auto& line : w.log) ImGui::TextDisabled("%s", line.c_str());
+        if (!w.error.empty()) ImGui::TextColored(bad, "%s", w.error.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::End();
+    if (auto chosen = w.browser.draw((std::string{tr(TextId::PolicyBrowserTitle)} + "###PolicyImportBrowser").c_str())) requestPolicyImport(state, *chosen);
+    if (auto chosen = w.sceneBrowser.draw((std::string{tr(TextId::PolicyOtherScene)} + "###PolicyImportScene").c_str())) {
+        PolicyImportWizard::Candidate c;
+        c.scene = *chosen;
+        c.title = std::filesystem::path{*chosen}.filename().string();
+        w.candidates.insert(w.candidates.begin(), std::move(c));
+        w.nextToCheck = 0;  // 下一帧检查新加的场景（其余的已检查过），之后重新排序
+    }
+    return action;
+}
+
 }  // namespace
+
+void requestPolicyImport(PolicyPanelState& state, const std::string& file) {
+    std::error_code ec;
+    auto& w = state.importer;
+    w.file = file.empty() ? std::string{} : std::filesystem::absolute(file, ec).lexically_normal().string();
+    w.inspected.clear();
+    w.open = true;
+    // 清掉上一次的检查结果：没有选文件时（菜单打开）不能沿用上一个文件的结果去导入
+    w.info = {};
+    w.linkedOnnx.clear();
+    w.linkMessage.clear();
+    w.joints.clear();
+    w.candidates.clear();
+    w.nextToCheck = 0;
+    w.selected = -1;
+    w.log.clear();
+    w.error.clear();
+    w.draft.clear();
+}
 
 void requestPolicy(PolicyPanelState& state, const std::string& file) {
     std::error_code ec;
@@ -167,7 +405,7 @@ std::unique_ptr<pol::PolicyController> createController(PolicyPanelState& state,
 }
 
 PolicyAction drawPolicyUi(PolicyPanelState& state, const PolicyContext& context) {
-    PolicyAction action;
+    PolicyAction action = drawImportWizard(state, context);  // M4-10b
     const auto catalog = lib::readComponentCatalog(context.catalogPath);
 
     // 安装完成
@@ -386,6 +624,7 @@ PolicyAction drawPolicyUi(PolicyPanelState& state, const PolicyContext& context)
             ImGui::SameLine();
             ImGui::Checkbox(tr(TextId::PolicyKeyboard), &state.keyboard);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr(TextId::PolicyKeyboardHint));
+            if (context.velocityFromRos2) ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.95f, 1.0f), "%s", tr(TextId::PolicyFromRos2));  // M4-10b
             ImGui::TextDisabled("%s %llu · %s %.2f ms · %s", tr(TextId::PolicyInferences), static_cast<unsigned long long>(c.inferences()),
                                 tr(TextId::PolicyLastInference), c.lastInferenceSeconds() * 1e3, c.model().describe().c_str());
             if (c.failed()) ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.4f, 1.0f), "%s", c.error().c_str());

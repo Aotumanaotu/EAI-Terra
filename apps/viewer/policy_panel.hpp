@@ -22,6 +22,7 @@
 #include "terra/library/components.hpp"
 #include "terra/policy/autoconfig.hpp"
 #include "terra/policy/controller.hpp"
+#include "terra/policy/import.hpp"
 #include "terra/scene/scene.hpp"
 #include "terra/ui/file_browser.hpp"
 
@@ -37,13 +38,61 @@ struct PolicyContext {
     ImVec2 viewportMin{0, 0}, viewportMax{0, 0};          // 视口图像的位置（速度指令面板贴在其上方）
     bool viewportHovered = false;
     bool keyboardFree = true;  // 没有输入框占用键盘
+    // M4-10b：导入向导
+    std::vector<std::pair<std::string, std::string>> scenes;  // 资源库中可用的场景：路径、标题
+    std::string policiesDirectory;                            // 导入到这里（资源库目录下的 policies/）
+    std::string converter;                                    // TorchScript 转换脚本
+    bool velocityFromRos2 = false;                            // 本帧的速度指令来自 /cmd_vel
 };
 
 struct PolicyAction {
-    enum class Type { None, Start, Stop };
+    enum class Type { None, Start, Stop, Imported, OpenAndRun };  // Imported、OpenAndRun：M4-10b 导入向导
     Type type = Type::None;
     std::unique_ptr<terra::policy::PolicyController> controller;  // Start
     std::string name;                                              // Start、Stop：日志用
+    std::string scene;                                             // OpenAndRun：要打开的场景
+    std::string policyFile;                                        // Imported、OpenAndRun：导入得到的说明文件
+};
+
+// M4-10b：导入向导（选策略文件 → 按关节名推荐机器人 → 导入，可直接运行）。
+// 场景逐帧检查（每帧加载一个场景的模型描述，不在后台线程中用物理后端）；导入（可能调用 Python 转换）在后台线程中进行
+struct PolicyImportWizard {
+    bool open = false;
+    std::string file;
+    std::string inspected;  // 已检查过的文件
+    terra::policy::ModelFileInfo info;
+    std::string linkedOnnx;  // 训练检查点对应的 ONNX
+    std::string linkMessage;
+    std::vector<std::string> joints;  // 策略的关节名（不带前缀）；TorchScript 为空
+    struct Candidate {
+        std::string scene, title;
+        terra::policy::RobotMatch match;
+        std::shared_ptr<terra::data::ModelDescription> robot;
+        std::string error;
+        bool checked = false;
+    };
+    std::vector<Candidate> candidates;
+    std::size_t nextToCheck = 0;
+    int selected = -1;
+    std::array<char, 128> name{};
+    bool nameEdited = false;
+    // 导入
+    struct Job {
+        terra::policy::ImportResult result;
+        std::atomic<bool> finished{false};
+        std::thread worker;
+        bool runAfter = false;
+        ~Job() {
+            if (worker.joinable()) worker.join();
+        }
+    };
+    std::unique_ptr<Job> job;
+    std::vector<std::string> log;
+    std::string error, draft;
+    terra::ui::FileBrowser browser, sceneBrowser;
+    // 自检：下一帧按“导入并运行”或“只导入”
+    std::optional<bool> selfTestImport;
+    bool scanned() const noexcept { return nextToCheck >= candidates.size(); }  // nextToCheck：已检查的个数
 };
 
 struct PolicyPanelState {
@@ -86,7 +135,11 @@ struct PolicyPanelState {
     std::vector<std::string> log;                           // 本帧要写到日志面板的行
     // 自检
     int commandPanelFrames = 0;
+    PolicyImportWizard importer;  // M4-10b
 };
+
+// M4-10b：打开导入向导（菜单、拖放、自检）
+void requestPolicyImport(PolicyPanelState& state, const std::string& file);
 
 // 设置要运行的策略文件（菜单、拖放、命令行）；打开窗口
 void requestPolicy(PolicyPanelState& state, const std::string& file);

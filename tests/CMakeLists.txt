@@ -473,6 +473,12 @@ target_link_libraries(test_policy_controller PRIVATE terra::policy terra::scene 
 target_compile_definitions(test_policy_controller PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
 terra_configure_target(test_policy_controller)
 add_test(NAME policy.controller COMMAND test_policy_controller "${CMAKE_CURRENT_BINARY_DIR}/policy_controller_tmp")
+# M4-10b：导入（文件类型、训练检查点 → ONNX、导入目录、草稿、TorchScript 缺少 Python 时的提示）
+add_executable(test_policy_import policy/test_policy_import.cpp)
+target_link_libraries(test_policy_import PRIVATE terra::policy terra::scene terra::physics_mujoco terra::core terra::json terra_miniz)
+target_compile_definitions(test_policy_import PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets" TERRA_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+terra_configure_target(test_policy_import)
+add_test(NAME policy.import COMMAND test_policy_import "${CMAKE_CURRENT_BINARY_DIR}/policy_import_tmp")
 # ONNX Runtime 组件装在构建目录中的资源库（验证脚本用 terra_headless --install-component 安装，需要网络）；没有时跳过
 set(TERRA_POLICY_LIBRARY "${CMAKE_BINARY_DIR}/policy_library/library.db" CACHE FILEPATH "策略测试用的资源库（其 components/ 中装 ONNX Runtime）")
 get_filename_component(TERRA_POLICY_COMPONENTS "${TERRA_POLICY_LIBRARY}" DIRECTORY)
@@ -799,6 +805,12 @@ if(TERRA_BUILD_RENDER)
                 --policy "${PROJECT_SOURCE_DIR}/assets/tests/policy/bench.terra-policy.json"
                 --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_policy/library.sqlite3")
     set_tests_properties(graphics.viewer_policy_selftest PROPERTIES LABELS graphics)
+    # M4-10b：导入向导——按关节名推荐场景、多出关节、导入并运行、登记到资源库、打开场景、需要组件时的弹窗（自检的资源库没有装组件）
+    add_test(NAME graphics.viewer_policy_import_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 120 --self-test --expect-renderer llvmpipe
+                --policy-import-self-test "${PROJECT_SOURCE_DIR}/assets/tests/policy/bench_supermimic.onnx"
+                --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_policy_import/library.sqlite3")
+    set_tests_properties(graphics.viewer_policy_import_selftest PROPERTIES LABELS graphics)
     # M4-07：第 6 帧开始记录（保存相机图像），中间停止并回放到一帧有图像的时刻；资源库在构建目录中
     add_test(NAME graphics.viewer_sensor_record_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
@@ -924,6 +936,11 @@ else()
         COMMAND "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_turtlebot4.py" --headless $<TARGET_FILE:terra_headless>
                 --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_turtlebot4")
     set_tests_properties(ros2.turtlebot4 PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 180 SKIP_RETURN_CODE 77)
+    # M4-10b：策略的速度指令来自 /cmd_vel（线性夹具，不需要 ONNX Runtime）；停发 0.5 s 后归零
+    add_test(NAME ros2.policy_cmd_vel
+        COMMAND "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_policy_cmd_vel.py" --headless $<TARGET_FILE:terra_headless>
+                --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_policy_cmd_vel")
+    set_tests_properties(ros2.policy_cmd_vel PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 120)
 
     # ROS2 监视器（M4-08d）：Python 发布内容已知的消息（含宇树 LowState），逐项核对展开、曲线字段、图像、TF 与统计
     add_executable(test_ros2_monitor ros2/test_ros2_monitor.cpp)

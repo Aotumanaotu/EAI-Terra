@@ -17,6 +17,7 @@
 //   服务：/terra/reset（std_srvs/Trigger）、/terra/pause（std_srvs/SetBool：true 暂停，false 继续）、/terra/step（Trigger）。
 // 话题名中不允许的字符（如实例名中的 “-”）换成 “_”；坐标系名用全名。时间戳为仿真时间。
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -145,6 +146,11 @@ public:
     void publishCamera(std::size_t camera, const CameraImage& image);
     // 主线程：取出服务请求
     std::vector<Request> takeRequests();
+    // M4-10b：策略的速度指令。enableVelocityCommand 之后订阅 topic（geometry_msgs/Twist：linear.x、linear.y、angular.z，
+    // 机身坐标系）；差速底盘已经订阅同一话题时返回 false。velocityCommand：收到过消息时返回最近一条，
+    // 超过 timeout 秒（墙钟）没有新消息时返回 0（与真机的超时停止相同）；从未收到时返回空（保留界面或命令行的指令）
+    bool enableVelocityCommand(const std::string& topic = "/cmd_vel", double timeout = 0.5);
+    std::optional<std::array<double, 3>> velocityCommand();
 
     Stats stats() const;
     const Profile& profile() const noexcept;

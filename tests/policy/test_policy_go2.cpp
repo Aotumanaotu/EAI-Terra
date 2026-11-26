@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
         if (!loaded.scene) return 1;
         probe.scene = std::move(*loaded.scene);
     }
-    const auto ac = pol::autoconfigure({onnx, kScene, ""}, probe.scene.world->description());
+    const auto ac = pol::autoconfigure({onnx, kScene, "", ""}, probe.scene.world->description());
     std::printf("格式：%s\n", ac.format.c_str());
     for (const auto& n : ac.notes) std::printf("  自动配置：%s\n", n.c_str());
     for (const auto& w : ac.warnings) std::printf("  警告：%s\n", w.c_str());

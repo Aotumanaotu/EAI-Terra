@@ -42,6 +42,7 @@
 #include "terra/policy/autoconfig.hpp"
 #include "terra/policy/backend.hpp"
 #include "terra/policy/controller.hpp"
+#include "terra/policy/import.hpp"
 
 namespace {
 
@@ -295,7 +296,53 @@ int installComponent(const RunOptions& options) {
     return emit(componentJson(*info, status)) && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
 }
 
+// --import-policy（M4-10b）：导入到资源库目录下的 policies/<名字>/，并登记到资源库
+int importPolicyCommand(const RunOptions& options) {
+    namespace pol = terra::policy;
+    if (!backendUsable()) return kExitUnavailable;
+    auto scene = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
+    for (const auto& issue : scene.issues) {
+        if (issue.severity == terra::scene::SceneIssue::Severity::Error) diagnose("场景错误 " + issue.where + "：" + issue.message);
+    }
+    if (!scene.ok()) return kExitModel;
+    const std::string libraryFile = options.libraryPath.empty() ? terra::library::defaultLibraryPath() : options.libraryPath;
+    std::error_code ec;
+    pol::ImportOptions o;
+    o.model = options.importPolicy;
+    o.scene = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
+    o.name = options.policyName;
+    o.destination = (std::filesystem::absolute(libraryFile, ec).parent_path() / "policies").string();
+    o.converter = TERRA_SOURCE_DIR "/scripts/policy/torchscript_to_onnx.py";
+    const auto r = pol::importPolicy(o, scene.scene->world->description());
+    for (const auto& line : r.log) diagnose(line);
+    const auto list = [](const std::vector<std::string>& items) {
+        std::string out = "[";
+        for (std::size_t i = 0; i < items.size(); ++i) out += (i ? ",\"" : "\"") + jsonEscape(items[i]) + "\"";
+        return out + "]";
+    };
+    if (!r.error.empty()) diagnose("导入失败：" + r.error);
+    bool ok = emit("{\"type\":\"policy_import\",\"ok\":" + std::string{r.policyFile ? "true" : "false"} + ",\"source_kind\":\"" +
+                   pol::modelFileKindName(r.source.kind) + "\",\"format\":\"" + jsonEscape(r.config.format) + "\",\"policy\":\"" +
+                   jsonEscape(r.policyFile.value_or("")) + "\",\"model\":\"" + jsonEscape(r.model) + "\",\"directory\":\"" + jsonEscape(r.directory) +
+                   "\",\"draft\":\"" + jsonEscape(r.draftFile) + "\",\"warnings\":" + list(r.config.warnings) + ",\"errors\":" +
+                   list(r.config.errors) + ",\"error\":\"" + jsonEscape(r.error) + "\"}");
+    // 登记到资源库（失败只警告：说明文件已经写好）
+    if (r.policyFile) {
+        std::string error, warning;
+        auto library = terra::library::Library::open(libraryFile, error, &warning);
+        if (!library) {
+            diagnose("策略未登记到资源库（" + error + "）");
+        } else {
+            library->scanAssets(terra::library::defaultScanRoots(TERRA_ASSETS_DIR, library->path()));
+        }
+    }
+    if (!ok || std::fflush(stdout) != 0) return kExitInternal;
+    if (r.policyFile) return kExitOk;
+    return r.missingTorch ? kExitUnavailable : kExitModel;
+}
+
 int run(const RunOptions& requested) {
+    if (!requested.importPolicy.empty()) return importPolicyCommand(requested);
     if (!requested.installComponent.empty()) return installComponent(requested);
     if (requested.listComponents) return listComponents(requested);
     if (requested.listAssets) return listAssets(requested);
@@ -556,6 +603,11 @@ int run(const RunOptions& requested) {
             return kExitUnavailable;
         }
         bridge->setSensorNoise(!options.noNoise);  // M4-09
+        // M4-10b：策略的速度指令也可以来自 /cmd_vel
+        if (policy) {
+            if (bridge->enableVelocityCommand()) diagnose("策略的速度指令：订阅 /cmd_vel（0.5 s 没有消息时指令归零）");
+            else diagnose("/cmd_vel 已用于差速底盘，策略的速度指令只取 --command");
+        }
         diagnose("ROS2 桥接已开启：" + profile.profile->name + "（" + options.ros2Profile + "）");
     }
 #else
@@ -567,6 +619,7 @@ int run(const RunOptions& requested) {
     }
 #endif
     const bool bridged = !options.ros2Profile.empty();
+    [[maybe_unused]] std::optional<std::array<double, 3>> lastVelocity;  // M4-10b：最近一次从 /cmd_vel 取到的指令
     [[maybe_unused]] bool paused = false;  // ROS2 的 /terra/pause
     // 墙钟节奏：从锚点起，第 n 步不早于锚点 + 经过的仿真时间；暂停、重置后重新取锚点
     using Clock = std::chrono::steady_clock;
@@ -637,6 +690,16 @@ int run(const RunOptions& requested) {
 #endif
             // M4-10a：策略在最后，同一执行器以策略为准
             if (policy) {
+#ifdef TERRA_WITH_ROS2
+                if (bridge) {
+                    if (const auto v = bridge->velocityCommand(); v && v != lastVelocity) {
+                        lastVelocity = v;
+                        policy->setCommand(*v);
+                        const auto& c = policy->command();
+                        diagnose("策略指令来自 /cmd_vel：" + formatNumber(c[0]) + ", " + formatNumber(c[1]) + ", " + formatNumber(c[2]));
+                    }
+                }
+#endif
                 auto own = policy->commands(*world.snapshot());
                 if (policy->failed()) {
                     diagnose("第 " + std::to_string(world.stepIndex()) + " 步策略停止：" + policy->error());

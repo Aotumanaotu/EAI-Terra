@@ -165,9 +165,9 @@ int main(int argc, char** argv) {
 
     // ---- 自动配置的说明 ----
     terra::data::ModelDescription empty;
-    auto ac = pol::autoconfigure({(dir / "gemm_elu.onnx").string(), "", ""}, empty);
+    auto ac = pol::autoconfigure({(dir / "gemm_elu.onnx").string(), "", "", ""}, empty);
     check(!ac.policy && !ac.errors.empty() && ac.errors[0].find("terra_fixture_v1") != std::string::npos, "不认识的格式：说明");
-    ac = pol::autoconfigure({(tmp / "model_15000.pt").string(), "", ""}, empty);
+    ac = pol::autoconfigure({(tmp / "model_15000.pt").string(), "", "", ""}, empty);
     check(!ac.policy && !ac.errors.empty() && ac.errors[0].find("M4-10b") != std::string::npos, ".pt：说明在 M4-10b 中提供");
     check(!pol::policyFormats().empty() && pol::policyFormats()[0] == "supermimic_moe_velocity_policy_v1", "格式注册表");
 

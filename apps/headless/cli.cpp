@@ -179,7 +179,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         const bool takesValue = name == "--model" || name == "--scene" || name == "--motion" || name == "--steps" ||
                                 name == "--duration" || name == "--sample-every" || name == "--record" || name == "--rerun" ||
                                 name == "--tolerance" || name == "--library" || name == "--ros2" || name == "--kind" || name == "--policy" ||
-                                name == "--command" || name == "--install-component" || name == "--from";
+                                name == "--command" || name == "--install-component" || name == "--from" || name == "--import-policy" ||
+                                name == "--name";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
             return result;
@@ -211,8 +212,12 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             options.realtime = true;
             continue;
         }
-        if (name == "--policy" || name == "--install-component" || name == "--from") {
-            std::string& target = name == "--policy" ? options.policyPath : name == "--from" ? options.installFrom : options.installComponent;
+        if (name == "--policy" || name == "--install-component" || name == "--from" || name == "--import-policy" || name == "--name") {
+            std::string& target = name == "--policy"          ? options.policyPath
+                                  : name == "--from"          ? options.installFrom
+                                  : name == "--import-policy" ? options.importPolicy
+                                  : name == "--name"          ? options.policyName
+                                                              : options.installComponent;
             if (!target.empty()) {
                 result.error = "重复的参数 " + std::string{name};
                 return result;
@@ -256,8 +261,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
                 result.error = "重复的参数 --kind";
                 return result;
             }
-            if (*value != "scene" && *value != "motion" && *value != "robot" && *value != "environment" && *value != "display") {
-                result.error = "--kind 应为 scene、motion、robot、environment 或 display，实际为 " + quoted(*value);
+            if (*value != "scene" && *value != "motion" && *value != "robot" && *value != "environment" && *value != "display" && *value != "policy") {
+                result.error = "--kind 应为 scene、motion、robot、environment、display 或 policy，实际为 " + quoted(*value);
                 return result;
             }
             options.assetKind = std::string{*value};
@@ -369,6 +374,21 @@ ParseResult parseArguments(int argc, const char* const* argv) {
     }
 
     const bool policyGiven = !options.policyPath.empty();
+    if (!options.importPolicy.empty()) {
+        // 导入策略（M4-10b）：只能配合 --scene（机器人所在的场景）、--library、--name
+        if (!seenScene) {
+            result.error = "--import-policy 需要 --scene（与策略对应的机器人所在的场景）";
+        } else if (options.listRecords || options.listAssets || seenModel || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps ||
+                   options.durationSeconds || options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() || options.realtime ||
+                   options.noNoise || policyGiven || options.command || !options.installComponent.empty() || options.listComponents) {
+            result.error = "--import-policy 只能与 --scene、--library、--name 同用";
+        }
+        return result;
+    }
+    if (!options.policyName.empty()) {
+        result.error = "--name 只用于 --import-policy";
+        return result;
+    }
     if (!options.installComponent.empty() || options.listComponents) {
         // 组件（M4-10a）：只能配合 --library（与安装时的 --from）
         if (options.listRecords || options.listAssets || seenModel || seenScene || seenMotion || seenRecord || seenRerun || seenTolerance ||
@@ -460,6 +480,7 @@ std::string usageText() {
            "  terra_headless [--scene <场景文件>] --policy <策略> [--command vx,vy,yaw] (--steps N | --duration 秒) [--library <库文件>]\n"
            "  terra_headless --install-component <组件> [--from <压缩包>] [--library <库文件>]\n"
            "  terra_headless --list-components [--library <库文件>]\n"
+           "  terra_headless --import-policy <.onnx|.pt> --scene <场景文件> [--name <名字>] [--library <库文件>]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
@@ -500,6 +521,11 @@ std::string usageText() {
            "                       components/，校验 sha256；进度写 stderr，结果一行 {\"type\":\"component\",...}\n"
            "  --from <压缩包>      与 --install-component 同用：从本地文件安装（离线时在别处下载后拷来）\n"
            "  --list-components    列出组件清单与安装状态（每行一个 {\"type\":\"component\",...}）\n"
+           "  --import-policy <路径>  导入策略（M4-10b）到资源库目录下的 policies/<名字>/：ONNX 按元数据与训练配置自动配置；\n"
+           "                       训练检查点（.pt）使用 spec_hash 与迭代都相同的 ONNX；TorchScript（.pt）用 Python 与 PyTorch\n"
+           "                       转为 ONNX（$TERRA_PYTHON，默认 python3）。结果一行 {\"type\":\"policy_import\",...}；\n"
+           "                       自动配置无法完成时生成说明文件草稿，退出码 4；没有 PyTorch 时退出码 3\n"
+           "  --name <名字>        与 --import-policy 同用：导入后的名字（默认取自动配置给出的名字）\n"
            "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"
            "  -h, --help           显示本帮助\n"
            "      --version        显示版本与构建信息\n"

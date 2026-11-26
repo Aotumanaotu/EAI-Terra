@@ -33,9 +33,24 @@ struct AutoconfigInput {
     std::string model;     // 模型文件（绝对路径）
     std::string scene;     // 场景文件（写入说明文件的推荐场景）
     std::string instance;  // 模型实例名；为空时自动选择（只有一个匹配的机器人时）
+    std::string configDirectory;  // M4-10b：从哪个目录起找训练配置（空为模型所在目录；转换得到的 ONNX 用原文件的目录）
 };
 
 AutoconfigResult autoconfigure(const AutoconfigInput& input, const terra::data::ModelDescription& robot);
+
+// ---- 机器人匹配（M4-10b：导入向导按关节名推荐场景；机器人与训练时不同时警告）----
+// 策略控制的关节名（不带实例前缀）：ONNX 的元数据（已知格式）或说明文件的动作关节；读不出时为空
+std::vector<std::string> policyJointNames(const std::string& path);
+
+struct RobotMatch {
+    std::string instance;              // 匹配的模型实例（没有前缀时为空）
+    std::size_t matched = 0;           // 找到的策略关节数（取最多的实例）
+    std::size_t wanted = 0;            // 策略关节数
+    std::vector<std::string> extra;    // 该实例中不由策略控制的转动 / 滑动关节（全名）：多出时机器人可能与训练时不同
+    std::size_t instances = 0;         // 包含全部策略关节的实例数（> 1 时需要指定）
+    bool complete() const noexcept { return wanted > 0 && matched == wanted; }
+};
+RobotMatch matchRobotJoints(const std::vector<std::string>& names, const terra::data::ModelDescription& robot);
 
 // 格式解析器（与导出器相同的注册方式）：按 ONNX 元数据识别并填写说明文件
 struct FormatContext {

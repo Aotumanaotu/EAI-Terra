@@ -7,6 +7,7 @@
 //   - 复制资源库到新位置：路径改为新位置，目标已有时拒绝。
 // 用法：test_library_assets <临时目录>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -196,12 +197,31 @@ int main(int argc, char** argv) {
                   displays[0].description == "2 个窗口",
               "显示配置：登记、标题、关联场景");
     }
+    // 策略（M4-10b）：登记为 policy，标题取 name，关联推荐场景与模型；模型不在时带 model-missing
+    write(libDir / "policies" / "walk" / "walk.terra-policy.json",
+          R"({"format": "terra.policy", "version": 1, "name": "行走策略", "scene": "../../../builtin/scenes/a.terra-scene.json",
+              "model": {"file": "policy.onnx", "backend": "onnxruntime-cpu"}, "source": {"format": "supermimic_moe_velocity_policy_v1"},
+              "action": {"type": "positionPd", "joints": ["a/j"], "kp": 1, "kd": 0}, "observation": [{"term": "command"}]})");
+    {
+        auto withPolicies = roots;
+        withPolicies.push_back({(libDir / "policies").string(), lib::AssetSource::Imported});
+        library->scanAssets(withPolicies);
+        const auto policies = library->assets(lib::AssetKind::Policy);
+        check(policies.size() == 1 && policies[0].title == "行走策略" && policies[0].related.size() == 2 &&
+                  policies[0].related[0] == (scenes / "a.terra-scene.json").string() &&
+                  policies[0].related[1] == (libDir / "policies" / "walk" / "policy.onnx").string() &&
+                  policies[0].description == "supermimic_moe_velocity_policy_v1 · onnxruntime-cpu" &&
+                  std::find(policies[0].tags.begin(), policies[0].tags.end(), "model-missing") != policies[0].tags.end(),
+              "策略：登记、标题、关联场景与模型、模型不在时的标签");
+        check(lib::assetKindFromName("policy") == lib::AssetKind::Policy, "assetKindFromName(policy)");
+    }
 
     // 默认扫描范围
     const auto defaults = lib::defaultScanRoots("/a", "/x/library.sqlite3");
-    check(defaults.size() == 6 && defaults[0].directory == "/a/scenes" && defaults[4].directory == "/x/assets" &&
-              defaults[4].source == lib::AssetSource::Imported && defaults[5].directory == "/x/displays" && defaults[5].source == lib::AssetSource::User,
-          "默认扫描范围：内置 4 个目录与资源库目录下的 assets/、displays/");
+    check(defaults.size() == 7 && defaults[0].directory == "/a/scenes" && defaults[4].directory == "/x/assets" &&
+              defaults[4].source == lib::AssetSource::Imported && defaults[5].directory == "/x/displays" && defaults[5].source == lib::AssetSource::User &&
+              defaults[6].directory == "/x/policies" && defaults[6].source == lib::AssetSource::Imported,
+          "默认扫描范围：内置 4 个目录与资源库目录下的 assets/、displays/、policies/（M4-10b）");
     check(lib::defaultScanRoots("/a", ":memory:").size() == 4, "内存中的库：只扫描内置目录");
 
     // 内存中的库

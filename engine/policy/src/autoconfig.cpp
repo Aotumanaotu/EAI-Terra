@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -150,6 +151,15 @@ std::optional<Robot> matchRobot(const std::vector<std::string>& names, const td:
     }
     if (robot.imu.empty()) {
         r.warnings.push_back("场景中机器人身上没有 IMU：角速度与重力方向改用机身的真值（没有噪声）。可在场景文件的 sensors 中添加 IMU");
+    }
+    // M4-10b：机器人上还有不由策略控制的关节（如 Go2W 的轮子）：可能不是训练时的机器人
+    const auto match = matchRobotJoints(names, d);
+    if (!match.extra.empty()) {
+        std::string list;
+        for (std::size_t i = 0; i < match.extra.size() && i < 4; ++i) list += (i ? "、" : "") + match.extra[i];
+        if (match.extra.size() > 4) list += " 等";
+        r.warnings.push_back("机器人“" + robot.instance + "”上还有 " + std::to_string(match.extra.size()) + " 个关节不由策略控制（" + list +
+                             "）：可能与训练时的机器人不同，运行时这些关节不受控制");
     }
     return robot;
 }
@@ -415,7 +425,8 @@ AutoconfigResult autoconfigure(const AutoconfigInput& input, const td::ModelDesc
         return r;
     }
     r.format = format.id;
-    FormatContext ctx{*onnx, robot, input, findTrainingConfig(input.model), {}};
+    FormatContext ctx{*onnx, robot, input,
+                      findTrainingConfig(input.configDirectory.empty() ? input.model : (fs::path{input.configDirectory} / "x").string()), {}};
     if (!ctx.trainingConfig.empty()) {
         std::ifstream in(ctx.trainingConfig, std::ios::binary);
         ctx.trainingConfigText.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
@@ -429,6 +440,60 @@ AutoconfigResult autoconfigure(const AutoconfigInput& input, const td::ModelDesc
         if (!r.errors.empty()) r.policy.reset();
     }
     return r;
+}
+
+std::vector<std::string> policyJointNames(const std::string& path) {
+    if (path.size() >= std::string{kPolicySuffix}.size() && path.compare(path.size() - std::string{kPolicySuffix}.size(), std::string::npos, kPolicySuffix) == 0) {
+        const auto r = readPolicyFile(path);
+        std::vector<std::string> out;
+        if (!r.policy) return out;
+        for (const auto& j : r.policy->action.joints) {
+            const auto slash = j.rfind('/');
+            out.push_back(slash == std::string::npos ? j : j.substr(slash + 1));
+        }
+        return out;
+    }
+    std::string error;
+    const auto onnx = readOnnxInfo(path, error);
+    if (!onnx) return {};
+    return strings(parseMeta(*onnx, "action_joint_names"));
+}
+
+RobotMatch matchRobotJoints(const std::vector<std::string>& names, const td::ModelDescription& d) {
+    RobotMatch m;
+    m.wanted = names.size();
+    if (names.empty()) return m;
+    // 每个实例（全名前缀）中找到的策略关节数
+    std::map<std::string, std::size_t> found;
+    for (const auto& j : d.joints) {
+        for (const auto& n : names) {
+            if (j.name == n) ++found[""];
+            else if (j.name.size() > n.size() && j.name.compare(j.name.size() - n.size(), n.size(), n) == 0 && j.name[j.name.size() - n.size() - 1] == '/') {
+                ++found[j.name.substr(0, j.name.size() - n.size() - 1)];
+            }
+        }
+    }
+    for (const auto& [inst, count] : found) {
+        if (count == names.size()) ++m.instances;
+        if (count > m.matched) {
+            m.matched = count;
+            m.instance = inst;
+        }
+    }
+    if (m.matched == 0) return m;
+    // 该实例中其他的转动 / 滑动关节
+    const std::string prefix = m.instance.empty() ? "" : m.instance + "/";
+    std::set<std::string> mine;
+    for (const auto& n : names) mine.insert(prefix + n);
+    const td::JointDescription* any = d.findJoint(prefix + names.front());
+    const td::EntityDescription* e = any ? d.entity(any->entity) : nullptr;
+    for (const auto& j : d.joints) {
+        if (j.type != td::JointType::Hinge && j.type != td::JointType::Slide) continue;
+        const td::EntityDescription* je = d.entity(j.entity);
+        if (!e || !je || je->modelInstance.value != e->modelInstance.value || mine.count(j.name)) continue;
+        m.extra.push_back(j.name);
+    }
+    return m;
 }
 
 }  // namespace terra::policy

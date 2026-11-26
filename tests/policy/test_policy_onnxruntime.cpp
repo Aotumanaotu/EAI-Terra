@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     };
     auto sceneA = load();
     auto sceneB = load();
-    const auto ac = pol::autoconfigure({(dir / "bench_supermimic.onnx").string(), "", ""}, sceneA.world->description());
+    const auto ac = pol::autoconfigure({(dir / "bench_supermimic.onnx").string(), "", "", ""}, sceneA.world->description());
     check(ac.policy.has_value(), "自动配置");
     if (!ac.policy) return 1;
     std::string error;

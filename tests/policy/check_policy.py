@@ -10,6 +10,8 @@
   - 实验记录：头部有 policy（路径、sha256、后端）；复现逐位相同（不需要推理库）；
   - .onnx 加 --scene 自动配置：组件不在时退出码 3，并给出 --install-component 与手动安装的方法；
   - --list-components：列出 onnxruntime-cpu 与状态；--install-component 不存在的组件：退出码 2；
+  - --import-policy（M4-10b）：ONNX 导入到 policies/ 并登记；多出关节的警告；不认识的格式生成草稿；训练检查点按 spec_hash 与
+    迭代对应；有 PyTorch 时 TorchScript 转为 ONNX；
   - 给了 --library（ONNX Runtime 已安装）：.onnx 自动配置后运行，两次逐字节相同；给了 --go2：用户的策略在
     go2_policy 场景中运行 2 s 不出错，记录与复现逐位相同。
 测试不读写用户目录：资源库都在 --work 中（TERRA_LIBRARY 也指向那里）。
@@ -123,6 +125,70 @@ def main():
     ic = run([hl, "--install-component", "no-such-component", "--library", empty_library], env)
     check(ic.returncode == 2 and "onnxruntime-cpu" in ic.stderr, "安装不存在的组件：退出码 2，列出可用的组件")
 
+    # M4-10b：--import-policy（不需要 ONNX Runtime）
+    import_library = os.path.join(args.work, "import", "library.db")
+    import shutil
+    shutil.rmtree(os.path.dirname(import_library), ignore_errors=True)
+    os.makedirs(os.path.dirname(import_library))
+    ip = run([hl, "--import-policy", onnx, "--scene", scene, "--name", "bench walker", "--library", import_library], env)
+    res = json.loads(ip.stdout.splitlines()[-1]) if ip.stdout.strip() else {}
+    imported = res.get("policy", "")
+    check(ip.returncode == 0 and res.get("ok") is True and res.get("source_kind") == "onnx" and os.path.isfile(imported) and
+          imported.startswith(os.path.join(os.path.dirname(import_library), "policies", "bench_walker")),
+          "--import-policy ONNX：导入到资源库目录下的 policies/（退出码 %d）" % ip.returncode)
+    check(any("bench/j3" in w for w in res.get("warnings", [])), "导入结果列出机器人多出关节的警告")
+    la = run([hl, "--list-assets", "--kind", "policy", "--library", import_library], env)
+    assets = [json.loads(line) for line in la.stdout.splitlines() if '"type":"asset"' in line]
+    check(any(a.get("path") == imported and a.get("title") == "bench walker" and scene in a.get("related", []) for a in assets),
+          "资源库登记为 policy，关联推荐场景")
+    bad = run([hl, "--import-policy", os.path.join(policy_dir, "gemm_elu.onnx"), "--scene", scene, "--library", import_library], env)
+    bres = json.loads(bad.stdout.splitlines()[-1]) if bad.stdout.strip() else {}
+    check(bad.returncode == 4 and bres.get("draft", "").endswith(".terra-policy-draft.json") and os.path.isfile(bres.get("draft", "")),
+          "不认识的格式：退出码 4，生成说明文件草稿")
+    # 训练检查点：zip 中的 data.pkl 带 spec_hash 与迭代（与 torch.save 的写法相同的片段）
+    import struct
+    import zipfile
+    ck_dir = os.path.join(args.work, "checkpoint_run")
+    shutil.rmtree(ck_dir, ignore_errors=True)
+    os.makedirs(ck_dir)
+    shutil.copy(onnx, os.path.join(ck_dir, "policy.onnx"))
+    shutil.copy(os.path.join(policy_dir, "task_config.json"), ck_dir)
+    spec = "e117647d1c05ee855f6b388cd5e686d052c5bd61a7e9512e128db93a32c26be4"
+
+    def u(text):
+        b = text.encode()
+        return b"X" + struct.pack("<I", len(b)) + b
+
+    for it in (1, 7):
+        pkl = b"\x80\x02}q\x00(" + u("spec_hash") + b"q\x01" + u(spec) + b"q\x02" + u("iteration") + b"q\x03K" + bytes([it]) + b"u."
+        with zipfile.ZipFile(os.path.join(ck_dir, "model_%d.pt" % it), "w") as z:
+            z.writestr("model_%d/data.pkl" % it, pkl)
+    ck = run([hl, "--import-policy", os.path.join(ck_dir, "model_1.pt"), "--scene", scene, "--library", import_library], env)
+    cres = json.loads(ck.stdout.splitlines()[-1]) if ck.stdout.strip() else {}
+    check(ck.returncode == 0 and cres.get("source_kind") == "checkpoint", "训练检查点：使用 spec_hash 与迭代都相同的 ONNX")
+    ck7 = run([hl, "--import-policy", os.path.join(ck_dir, "model_7.pt"), "--scene", scene, "--library", import_library], env)
+    check(ck7.returncode == 4 and "不能代用" in ck7.stderr, "迭代不同的检查点：拒绝并说明（退出码 %d）" % ck7.returncode)
+    # TorchScript：有 PyTorch 时转换
+    python = os.environ.get("TERRA_PYTHON", "python3")
+    has_torch = subprocess.run([python, "-c", "import torch"], capture_output=True).returncode == 0
+    if has_torch:
+        ts = os.path.join(args.work, "scripted_mlp.pt")
+        subprocess.run([python, "-c", "import torch,sys\n"
+                        "m=torch.nn.Sequential(torch.nn.Linear(17,8),torch.nn.ELU(),torch.nn.Linear(8,2))\n"
+                        "torch.jit.script(m).save(sys.argv[1])", ts], check=True)
+        tr = run([hl, "--import-policy", ts, "--scene", scene, "--library", import_library], env)
+        tres = json.loads(tr.stdout.splitlines()[-1]) if tr.stdout.strip() else {}
+        model = tres.get("model", "")
+        onnx_ops = os.path.join(os.path.dirname(args.assets), "scripts", "policy", "onnx_ops.py")
+        info = subprocess.run([sys.executable, "-I", onnx_ops, model, "--json"], capture_output=True, text=True) if model else None
+        dims = json.loads(info.stdout) if info and info.returncode == 0 else {}
+        check(tres.get("source_kind") == "torchscript" and os.path.isfile(model) and
+              dims.get("inputs", [{}])[0].get("dims") == ["batch", 17] and dims.get("outputs", [{}])[0].get("dims") == ["batch", 2],
+              "TorchScript：用 PyTorch 转为 ONNX（输入 17、输出 2）")
+        check(tr.returncode == 4 and tres.get("draft", "").endswith(".terra-policy-draft.json"), "TorchScript 没有元数据：生成说明文件草稿")
+    else:
+        print("SKIP TorchScript 转换：%s 中没有 PyTorch（可用 TERRA_PYTHON 指定）" % python)
+
     # 装有 ONNX Runtime 时
     if args.library and os.path.exists(os.path.join(os.path.dirname(args.library), "components", "onnxruntime-cpu", "installed.json")):
         o = [hl, "--scene", scene, "--policy", onnx, "--steps", "200", "--library", args.library, "--command", "0.4,0,0"]
@@ -130,6 +196,8 @@ def main():
         if x.returncode != 0:
             show(x, o)
         check(x.returncode == 0 and x.stdout == y.stdout and "ONNX Runtime 1.32" in x.stderr, "ONNX Runtime：自动配置后运行，两次逐字节相同")
+        ri = run([hl, "--policy", imported, "--steps", "100", "--library", args.library], env)
+        check(ri.returncode == 0, "导入的策略（说明文件）可以直接运行（退出码 %d）" % ri.returncode)
         if args.go2 and os.path.exists(args.go2):
             go2_scene = os.path.join(args.assets, "scenes", "robots", "go2_policy.terra-scene.json")
             rec = os.path.join(args.work, "go2.terra-record.jsonl")

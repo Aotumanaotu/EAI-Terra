@@ -55,6 +55,8 @@ struct RunOptions {
     std::string installComponent;           // M4-10a：安装组件（如 onnxruntime-cpu）后退出
     std::string installFrom;                // M4-10a：--from 本地压缩包（离线安装）
     bool listComponents = false;            // M4-10a：列出组件与安装状态后退出
+    std::string importPolicy;               // M4-10b：导入策略（.onnx / .pt）到资源库，需要 --scene（机器人）
+    std::string policyName;                 // M4-10b：--name 导入后的名字
 };
 
 struct ParseResult {

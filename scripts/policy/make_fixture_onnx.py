@@ -6,6 +6,7 @@
 #                          机器人为 policy_bench（关节 j1、j2），每帧 17 维 × 2 帧；网络只有一个 Gemm：
 #                          输出 0 = 最新一帧的重力方向 y（下标 17 + 4），输出 1 = 0
 # 用法：python3 -I scripts/policy/make_fixture_onnx.py <输出目录>
+import hashlib
 import json
 import struct
 import sys
@@ -76,7 +77,7 @@ graph2 = (blob(1, node(["obs_history", "W", "B"], ["actions"], "Gemm", "gemm", t
 j = lambda v: json.dumps(v)
 meta = [
     ("format", j("supermimic_moe_velocity_policy_v1")),
-    ("spec_hash", j("fixture")),
+    ("spec_hash", j(hashlib.sha256(b"bench_supermimic").hexdigest())),  # 64 位十六进制，与训练检查点对应（M4-10b）
     ("iteration", "1"),
     ("input_name", j("obs_history")),
     ("output_name", j("actions")),

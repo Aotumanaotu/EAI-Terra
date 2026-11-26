@@ -202,6 +202,7 @@ CardInfo describe(const lib::AssetEntry& a, const std::map<std::string, int>& mo
         if (t == "imu") info.chips.emplace_back("IMU", rgba(52, 110, 150));
         else if (t == "camera") info.chips.emplace_back(tr(TextId::LibraryTagCamera), rgba(52, 110, 150));
         else if (t == "lidar2d") info.chips.emplace_back(tr(TextId::LibraryTagLidar), rgba(52, 110, 150));
+        else if (t == "lidar3d") info.chips.emplace_back(tr(TextId::SensorsLidar3d), rgba(52, 110, 150));  // M5-11
         else if (t == "pd") info.chips.emplace_back("PD", rgba(96, 96, 140));
         else if (t == "fixed-base") info.chips.emplace_back(tr(TextId::LibraryTagFixedBase), rgba(96, 96, 140));
     }

@@ -1,0 +1,25 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "3D 激光雷达夹具（M5-11）：封闭房间、固定支架与匀速移动的刚体；扫描图案用测试用的网格（15 × 36 = 540 个方向，每帧一个完整网格）",
+  "title": "3D 雷达夹具",
+  "noise": {"seed": 11},
+  "initialKeyframe": "room/moving",
+  "models": [
+    {"name": "room", "mjcf": "lidar3d_room.xml"}
+  ],
+  "sensors": [
+    {"type": "lidar3d", "name": "room/scan3d", "entity": "room/rig", "preset": "livox_mid360", "pattern": "lidar3d_grid.csv",
+     "pointsPerSecond": 5400, "rangeMax": 40, "noise": {"enabled": false}, "imu": true},
+    {"type": "lidar3d", "name": "room/range_noise", "entity": "room/rig", "preset": "livox_mid360", "pattern": "lidar3d_grid.csv",
+     "pointsPerSecond": 5400, "noise": {"angleStdDeg": 0}},
+    {"type": "lidar3d", "name": "room/angle_noise", "entity": "room/rig", "preset": "livox_mid360", "pattern": "lidar3d_grid.csv",
+     "pointsPerSecond": 5400, "noise": {"rangeStdNear": 0, "rangeStdFar": 0, "angleStdDeg": 0.5}},
+    {"type": "lidar3d", "name": "room/moving", "entity": "room/mover", "preset": "livox_mid360", "pattern": "lidar3d_grid.csv",
+     "pointsPerSecond": 5400, "noise": {"enabled": false}},
+    {"type": "lidar3d", "name": "room/half", "entity": "room/rig", "preset": "livox_mid360", "pattern": "lidar3d_grid.csv",
+     "pointsPerSecond": 2700, "noise": {"enabled": false}},
+    {"type": "lidar3d", "name": "room/still", "entity": "room/mover", "preset": "livox_mid360", "pattern": "lidar3d_grid.csv",
+     "pointsPerSecond": 5400, "noise": {"enabled": false}, "motionDistortion": false}
+  ]
+}

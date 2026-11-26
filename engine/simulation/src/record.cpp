@@ -187,6 +187,11 @@ Json headerJson(const RecordHeader& h) {
     Json cameras = Json::array();
     for (const auto& c : h.cameras) cameras.push_back({{"name", c.name}, {"rate_hz", c.rateHz}, {"width", c.width}, {"height", c.height}});
     j["sensors"] = {{"imus", h.imus}, {"lidars", std::move(lidars)}, {"cameras", std::move(cameras)}, {"noise", h.sensorNoise}};
+    if (!h.lidars3d.empty()) {  // M5-11
+        Json l3 = Json::array();
+        for (const auto& l : h.lidars3d) l3.push_back({{"name", l.name}, {"rate_hz", l.rateHz}, {"points_per_frame", l.pointsPerFrame}});
+        j["sensors"]["lidars3d"] = std::move(l3);
+    }
     if (!h.policyPath.empty()) {  // M4-10a
         j["policy"] = {{"path", h.policyPath}, {"sha256", h.policySha256}, {"model_sha256", h.policyModelSha256}, {"backend", h.policyBackend}};
     }
@@ -224,6 +229,11 @@ RecordHeader readHeader(const Json& j) {
         h.imus = s.at("imus").get<std::vector<std::string>>();
         for (const auto& l : s.at("lidars")) h.lidars.push_back({l.at("name").get<std::string>(), l.at("rate_hz").get<double>(), l.at("samples").get<int>()});
         if (s.contains("noise")) h.sensorNoise = s.at("noise").get<bool>();  // M4-09
+        if (s.contains("lidars3d")) {  // M5-11
+            for (const auto& l : s.at("lidars3d")) {
+                h.lidars3d.push_back({l.at("name").get<std::string>(), l.at("rate_hz").get<double>(), l.at("points_per_frame").get<std::size_t>()});
+            }
+        }
         for (const auto& c : s.at("cameras")) {
             h.cameras.push_back({c.at("name").get<std::string>(), c.at("rate_hz").get<double>(), c.at("width").get<int>(), c.at("height").get<int>()});
         }
@@ -272,6 +282,8 @@ void describeSensors(RecordHeader& header, const terra::scene::SceneInstance& sc
     header.lidars.clear();
     header.cameras.clear();
     for (const auto& l : scene.lidars) header.lidars.push_back({l.name, l.rateHz, l.samples});
+    header.lidars3d.clear();
+    for (const auto& l : scene.lidars3d) header.lidars3d.push_back({l.name, l.rateHz, l.pointsPerFrame()});  // M5-11
     for (const auto& c : scene.cameras) header.cameras.push_back({c.name, c.rateHz, c.width, c.height});
 }
 
@@ -383,6 +395,19 @@ void RecordWriter::lidar(const LidarScan& scan) {
     impl_->line(j);
 }
 
+void RecordWriter::lidar3d(const Lidar3dScan& scan) {
+    impl_->flush();
+    Json j;
+    j["type"] = "lidar3d";
+    j["step"] = scan.step;
+    j["time"] = scan.time;
+    j["name"] = scan.sensor;
+    j["frame"] = scan.frame;
+    j["points"] = scan.points.size();
+    j["sha256"] = lidar3dDigest(scan);
+    impl_->line(j);
+}
+
 void RecordWriter::camera(const RecordCameraFrame& frame) {
     impl_->flush();
     Json j;
@@ -415,6 +440,13 @@ void recordSceneSensors(RecordWriter& writer, const tp::PhysicsWorld& world, con
         auto scan = scanLidar(world, l);
         if (noise != nullptr) noise->lidar(k, scan);  // M4-09
         writer.lidar(scan);
+    }
+    for (std::size_t k = 0; k < scene.lidars3d.size(); ++k) {  // M5-11
+        const auto& l = scene.lidars3d[k];
+        if (!sensorSampleDue(snapshot.stepIndex, dt, l.rateHz)) continue;
+        auto scan = scanLidar3d(world, l);
+        if (noise != nullptr) noise->lidar3d(k, scan);
+        writer.lidar3d(scan);
     }
     for (const auto& c : scene.cameras) {
         if (!sensorSampleDue(snapshot.stepIndex, dt, c.rateHz)) continue;
@@ -524,6 +556,15 @@ RecordReadResult readRecord(const std::string& path) {
                 l.name = j.at("name").get<std::string>();
                 for (const auto& r : j.at("ranges")) l.ranges.push_back(readRange(r));
                 record.lidars.push_back(std::move(l));
+            } else if (type == "lidar3d") {  // M5-11
+                RecordLidar3d l;
+                l.step = j.at("step").get<std::uint64_t>();
+                l.time = number(j.at("time"));
+                l.name = j.at("name").get<std::string>();
+                l.frame = j.at("frame").get<std::uint64_t>();
+                l.points = j.at("points").get<std::size_t>();
+                l.sha256 = j.at("sha256").get<std::string>();
+                record.lidars3d.push_back(std::move(l));
             } else if (type == "camera") {
                 RecordCameraFrame c;
                 c.step = j.at("step").get<std::uint64_t>();
@@ -713,6 +754,7 @@ RerunResult rerunRecord(const Record& record, const terra::scene::WorldFactory& 
     };
     // M4-07：雷达扫描与相机位姿在记录的采样步上逐位比较（只比较场景中仍有的同名传感器）
     std::size_t nextLidar = 0;
+    std::size_t nextLidar3d = 0;  // M5-11
     std::size_t nextCamera = 0;
     const auto compareSensors = [&]() {
         const std::uint64_t step = world.stepIndex();
@@ -731,6 +773,23 @@ RerunResult rerunRecord(const Record& record, const terra::scene::WorldFactory& 
             bool same = scan.ranges.size() == expected.ranges.size();
             for (std::size_t i = 0; same && i < scan.ranges.size(); ++i) same = sameFloat(scan.ranges[i], expected.ranges[i]);
             if (!same) sensorDiffers(step, "雷达 " + expected.name + " 的距离");
+        }
+        // M5-11：3D 雷达：重算这一帧，比较点数与摘要
+        while (nextLidar3d < record.lidars3d.size() && record.lidars3d[nextLidar3d].step < step) ++nextLidar3d;
+        for (; nextLidar3d < record.lidars3d.size() && record.lidars3d[nextLidar3d].step == step; ++nextLidar3d) {
+            const RecordLidar3d& expected = record.lidars3d[nextLidar3d];
+            const auto it = std::find_if(loaded.scene->lidars3d.begin(), loaded.scene->lidars3d.end(),
+                                         [&](const terra::scene::Lidar3dSensor& l) { return l.name == expected.name; });
+            ++out.sensorSamples;
+            if (it == loaded.scene->lidars3d.end()) {
+                sensorDiffers(step, "场景中没有 3D 雷达 " + expected.name);
+                continue;
+            }
+            auto scan = scanLidar3d(world, *it);
+            noise.lidar3d(static_cast<std::size_t>(it - loaded.scene->lidars3d.begin()), scan);
+            if (scan.points.size() != expected.points || lidar3dDigest(scan) != expected.sha256) {
+                sensorDiffers(step, "3D 雷达 " + expected.name + " 的点云（" + std::to_string(scan.points.size()) + " / " + std::to_string(expected.points) + " 点）");
+            }
         }
         while (nextCamera < record.cameraFrames.size() && record.cameraFrames[nextCamera].step < step) ++nextCamera;
         if (nextCamera < record.cameraFrames.size() && record.cameraFrames[nextCamera].step == step) {

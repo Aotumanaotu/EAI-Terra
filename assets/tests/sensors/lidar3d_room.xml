@@ -1,0 +1,27 @@
+<!--
+  3D 激光雷达夹具（M5-11）。无重力。
+    房间   封闭的盒子：内表面 x = ±3、y = ±2、地面 z = 0、天花板 z = 3（墙厚 0.1 m）
+    rig    固定的支架，原点 (0, 0, 1)；外壳 housing 把雷达原点包在里面（雷达应忽略安装它的实体）
+    mover  自由刚体，原点 (0, 1, 1.5)；关键帧 moving 给它 +X 方向 1 m/s 的速度（测运动畸变），没有阻尼、不参与碰撞
+-->
+<mujoco model="lidar3d_room">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <geom name="floor" type="box" pos="0 0 -0.05" size="3.1 2.1 0.05"/>
+    <geom name="ceiling" type="box" pos="0 0 3.05" size="3.1 2.1 0.05"/>
+    <geom name="east" type="box" pos="3.05 0 1.5" size="0.05 2.1 1.6"/>
+    <geom name="west" type="box" pos="-3.05 0 1.5" size="0.05 2.1 1.6"/>
+    <geom name="north" type="box" pos="0 2.05 1.5" size="3.1 0.05 1.6"/>
+    <geom name="south" type="box" pos="0 -2.05 1.5" size="3.1 0.05 1.6"/>
+    <body name="rig" pos="0 0 1">
+      <geom name="housing" type="box" size="0.05 0.05 0.05"/>
+    </body>
+    <body name="mover" pos="0 1 1.5">
+      <freejoint name="mover_free"/>
+      <geom name="mover_shell" type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+  <keyframe>
+    <key name="moving" qpos="0 1 1.5 1 0 0 0" qvel="1 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

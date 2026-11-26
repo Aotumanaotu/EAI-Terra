@@ -76,6 +76,7 @@ SensorNoise::SensorNoise(const terra::scene::SceneInstance& scene, bool enabled)
         imus_.push_back(s);
     }
     for (const auto& l : scene.lidars) lidars_.emplace_back(l.noise, noiseStream(l.name));
+    for (const auto& l : scene.lidars3d) lidars3d_.emplace_back(l.noise, noiseStream(l.name));
     for (const auto& c : scene.cameras) cameras_.emplace_back(c.noise, noiseStream(c.name));
 }
 
@@ -91,6 +92,10 @@ bool SensorNoise::active() const noexcept {
     for (const auto& [n, stream] : lidars_) {
         (void)stream;
         if (n.configured && n.enabled && (n.rangeStd > 0 || n.rangeStdRelative > 0 || n.dropout > 0 || n.resolution > 0)) return true;
+    }
+    for (const auto& [n, stream] : lidars3d_) {
+        (void)stream;
+        if (n.configured && n.enabled && (n.rangeStdNear > 0 || n.rangeStdFar > 0 || n.angleStdDeg > 0)) return true;
     }
     for (const auto& [n, stream] : cameras_) {
         (void)stream;
@@ -193,6 +198,36 @@ void SensorNoise::color(std::size_t k, std::uint64_t step, std::vector<std::uint
         // 彩色的分量编号与深度错开（同一相机两者都可能加噪声）
         const double v = pixels[i] + n.pixelStd * noiseGaussian(seed_, stream ^ 0x5A5A5A5A5A5A5A5Aull, step, i);
         pixels[i] = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L));
+    }
+}
+
+void SensorNoise::lidar3d(std::size_t k, terra::simulation::Lidar3dScan& scan) const {
+    if (k >= lidars3d_.size() || !sceneEnabled_ || !runtimeEnabled_) return;
+    const auto& n = lidars3d_[k].first;
+    const std::uint64_t stream = lidars3d_[k].second;
+    if (!n.configured || !n.enabled) return;
+    constexpr double kDeg = 3.14159265358979323846 / 180.0;
+    const double sigmaAngle = n.angleStdDeg * kDeg;
+    for (auto& p : scan.points) {
+        const double x = p.x, y = p.y, z = p.z;
+        const double r = std::sqrt(x * x + y * y + z * z);
+        if (!(r > 0)) continue;
+        double sigma = n.rangeStdNear;
+        if (n.rangeFar > n.rangeNear) {
+            const double t = std::clamp((r - n.rangeNear) / (n.rangeFar - n.rangeNear), 0.0, 1.0);
+            sigma = n.rangeStdNear + (n.rangeStdFar - n.rangeStdNear) * t;
+        }
+        const std::uint64_t base = static_cast<std::uint64_t>(p.ray) * 3;
+        double rr = r + (sigma > 0 ? sigma * noiseGaussian(seed_, stream, scan.step, base) : 0.0);
+        if (rr < 0) rr = 0;
+        double az = std::atan2(y, x), el = std::asin(std::clamp(z / r, -1.0, 1.0));
+        if (sigmaAngle > 0) {
+            az += sigmaAngle * noiseGaussian(seed_, stream, scan.step, base + 1);
+            el += sigmaAngle * noiseGaussian(seed_, stream, scan.step, base + 2);
+        }
+        p.x = static_cast<float>(rr * std::cos(el) * std::cos(az));
+        p.y = static_cast<float>(rr * std::cos(el) * std::sin(az));
+        p.z = static_cast<float>(rr * std::sin(el));
     }
 }
 

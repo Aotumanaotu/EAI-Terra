@@ -1037,10 +1037,15 @@ std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::snapshot() cons
 
 // 射线检测（M4-03b）。Collision：MuJoCo 的射线不区分碰撞与显示，打到不参与碰撞的几何体时从命中点稍向前继续，
 // 直到打到参与碰撞的几何体、超出量程或没有命中（最多 64 次）。Visual：只打第 0～2 组（默认显示的分组）。
+// M5-11：第一次求交用 mj_multiRay（同一起点的多条射线共用几何体的包围检测，3D 雷达每帧 20,000 条），
+// 只有打到不参与碰撞的几何体的射线再逐条用 mj_ray 继续。mj_multiRay 需要可写的 mjData（只用其临时栈，结束时恢复），
+// 这里去掉 const：不改变任何仿真状态。
 std::vector<double> MujocoWorld::castRays(const RayQuery& query) const {
     const mjModel* m = impl_->model.get();
-    const mjData* d = impl_->data.get();
-    std::vector<double> out(query.directions.size(), std::numeric_limits<double>::infinity());
+    mjData* d = const_cast<mjData*>(impl_->data.get());
+    const std::size_t n = query.directions.size();
+    std::vector<double> out(n, std::numeric_limits<double>::infinity());
+    if (n == 0) return out;
     int exclude = -1;
     if (query.exclude.valid() && query.exclude.value <= impl_->entityToBody.size()) {
         exclude = impl_->entityToBody[query.exclude.value - 1];
@@ -1048,20 +1053,36 @@ std::vector<double> MujocoWorld::castRays(const RayQuery& query) const {
     const mjtByte visualGroups[mjNGROUP] = {1, 1, 1, 0, 0, 0};
     const mjtByte* groups = query.hits == RayTargets::Visual ? visualGroups : nullptr;
     constexpr double kStepPast = 1e-9;
-    for (std::size_t i = 0; i < query.directions.size(); ++i) {
+    std::vector<mjtNum> vec(3 * n), dist(n), normal(3 * n);
+    std::vector<int> geom(n, -1);
+    for (std::size_t i = 0; i < n; ++i) {
+        vec[3 * i] = query.directions[i].x;
+        vec[3 * i + 1] = query.directions[i].y;
+        vec[3 * i + 2] = query.directions[i].z;
+    }
+    const mjtNum origin[3] = {query.origin.x, query.origin.y, query.origin.z};
+    const mjtNum cutoff = query.maxRange > 0 ? query.maxRange : mjMAXVAL;
+    mj_multiRay(m, d, origin, vec.data(), groups, 1, exclude, geom.data(), dist.data(), normal.data(), static_cast<int>(n), cutoff);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (dist[i] < 0 || geom[i] < 0 || dist[i] > query.maxRange) continue;
+        const bool collides = m->geom_contype[geom[i]] != 0 || m->geom_conaffinity[geom[i]] != 0;
+        if (query.hits == RayTargets::Visual || collides) {
+            out[i] = dist[i];
+            continue;
+        }
+        // 打到不参与碰撞的几何体：从命中点稍向前逐条继续
         const terra::data::Vec3& dir = query.directions[i];
-        const mjtNum vec[3] = {dir.x, dir.y, dir.z};
-        double travelled = 0.0;
-        for (int hop = 0; hop < 64; ++hop) {
+        const mjtNum v[3] = {dir.x, dir.y, dir.z};
+        double travelled = dist[i] + kStepPast;
+        for (int hop = 1; hop < 64; ++hop) {
             const mjtNum pnt[3] = {query.origin.x + travelled * dir.x, query.origin.y + travelled * dir.y,
                                    query.origin.z + travelled * dir.z};
-            int geom = -1;
-            const mjtNum dist = mj_ray(m, d, pnt, vec, groups, 1, exclude, &geom, nullptr);
-            if (dist < 0 || geom < 0) break;
-            const double total = travelled + dist;
+            int g = -1;
+            const mjtNum dd = mj_ray(m, d, pnt, v, groups, 1, exclude, &g, nullptr);
+            if (dd < 0 || g < 0) break;
+            const double total = travelled + dd;
             if (total > query.maxRange) break;
-            const bool collides = m->geom_contype[geom] != 0 || m->geom_conaffinity[geom] != 0;
-            if (query.hits == RayTargets::Visual || collides) {
+            if (m->geom_contype[g] != 0 || m->geom_conaffinity[g] != 0) {
                 out[i] = total;
                 break;
             }

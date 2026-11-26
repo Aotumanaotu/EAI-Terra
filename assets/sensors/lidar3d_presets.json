@@ -1,0 +1,28 @@
+{
+  "format": "terra.lidar3d-presets",
+  "version": 1,
+  "comment": "3D 激光雷达预设（M5-11）。参数取自厂家公开资料（见 sources），扫描图案取自厂家的官方仿真插件；不凭空编写。场景文件 sensors 中 type 为 lidar3d、preset 为这里的键；显式写的字段覆盖预设。",
+  "presets": {
+    "livox_mid360": {
+      "name": "Livox Mid-360",
+      "pattern": "livox/mid360.csv",
+      "pointsPerSecond": 200000,
+      "rateHz": 10,
+      "rangeMin": 0.1,
+      "rangeMax": 40.0,
+      "lines": 4,
+      "noise": {"rangeStdNear": 0.03, "rangeNear": 0.2, "rangeStdFar": 0.02, "rangeFar": 10.0, "angleStdDeg": 0.15},
+      "imu": {
+        "position": [0.011, 0.02329, -0.04412],
+        "rateHz": 200,
+        "noise": {"gyro": {"noiseDensity": 7.854e-5}, "accel": {"noiseDensity": 9.807e-4}}
+      },
+      "sources": {
+        "specs": "https://www.livoxtech.com/mid-360/specs（2026-11-25 核查）：FOV 水平 360°、竖直 −7°～52°；40 m @ 10% / 70 m @ 80% 反射率（100 klx）；盲区 0.1 m；200,000 点/秒（首回波）；10 Hz（典型）；距离精度（1σ）≤ 2 cm @ 10 m、≤ 3 cm @ 0.2 m；角度精度（1σ）< 0.15°；内置 IMU ICM40609",
+        "pattern": "https://github.com/Livox-SDK/livox_laser_simulation（MIT）提交 1cce1073633a062b92e30243a4c2920e45551bb5 的 scan_mode/mid360.csv：800,000 行（4 s × 200,000 点/秒），天顶角 37.84°～97.21°",
+        "imu": "Livox Mid-360 用户手册 v1.2：IMU 推送 200 Hz，芯片在点云坐标系中位于 x = 11.0 mm、y = 23.29 mm、z = −44.12 mm；TDK ICM-40609-D 数据手册 DS-000330 v1.2：陀螺噪声谱密度 0.0045 °/s/√Hz、加速度计 100 µg/√Hz（@10 Hz）",
+        "assumptions": "Terra 不模拟反射率，默认最大量程取 10% 反射率的 40 m（可改为 70 m）；距离噪声在 0.2 m（3 cm）与 10 m（2 cm）之间按距离线性插值，10 m 以外取 2 cm；一帧内的点在同一物理时刻发出（没有运动畸变），每点另记扫描时间偏移；line 取图案的行序号对 4 取余（Mid-360 为 4 线）"
+      }
+    }
+  }
+}

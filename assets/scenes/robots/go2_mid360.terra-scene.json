@@ -1,0 +1,22 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 Go2 + Livox Mid-360（M5-11）：机身上方装一个 Mid-360（含内置 IMU），其余与“Go2 策略运行”相同（力矩执行器、机身 IMU 带陀螺噪声，没有 PD 层）。Mid-360 的安装位置是示例：机身原点前方 0.15 m、上方 0.12 m，水平朝前；需要先运行 scripts/assets/fetch_lidar_patterns.sh",
+  "title": "宇树 Go2 + Mid-360",
+  "models": [
+    {
+      "name": "go2",
+      "mjcf": "../../robots/unitree_go2/scene.xml"
+    }
+  ],
+  "initialKeyframe": "go2/home",
+  "noise": {"seed": 1},
+  "sensors": [
+    {"type": "imu", "site": "go2/imu", "rateHz": 500,
+     "noise": {"gyro": {"noiseDensity": 0.00516}}},
+    {"type": "lidar3d", "name": "go2/mid360", "entity": "go2/base", "position": [0.15, 0, 0.12], "preset": "livox_mid360", "imu": true}
+  ],
+  "view": {
+    "camera": {"position": [2.2, -1.8, 1.2], "target": [0, 0, 0.3]}
+  }
+}

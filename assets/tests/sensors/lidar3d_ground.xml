@@ -1,0 +1,17 @@
+<!--
+  Mid-360 地面圆环夹具（M5-11）。无重力。
+    floor  无限大的地面 z = 0
+    rig    固定的支架，原点 (0, 0, 0.4)，水平安装（不装外壳，雷达原点在空中）
+  水平安装的 Mid-360 打在地面上的点是一个环，外半径为量程 40 m；内半径 = 0.4 ÷ tan（该方位的最低仰角）：
+  官方图案的最低仰角随方位变化（左右 −7.2°、前后 −4.9°），所以内边界左右约 3.16 m、前后约 3.94 m，前后长。
+-->
+<mujoco model="lidar3d_ground">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+    <light pos="0 0 6" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="0 0 1" rgba="0.55 0.55 0.58 1"/>
+    <body name="rig" pos="0 0 0.4">
+      <geom name="marker" type="sphere" size="0.04" rgba="0.9 0.5 0.1 1" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>

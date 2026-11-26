@@ -99,6 +99,8 @@
 #include "viz_panel.hpp"
 #include "policy_panel.hpp"
 #include "terra/policy/controller.hpp"
+#include "terra/simulation/lidar3d.hpp"
+#include "terra/scene/pose_math.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
 #ifdef TERRA_WITH_ROS2
@@ -143,6 +145,7 @@ struct Options {
     bool policySelfTest = false;          // M4-10a：自检策略的运行、速度指令面板与停止
     std::string policyImportSelfTest;     // M4-10b：自检导入向导（给出要导入的文件）
     std::string importPolicy;             // M4-10b：启动后打开导入向导并选好这个文件
+    bool lidar3dSelfTest = false;         // M5-11：3D 雷达自检
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -190,6 +193,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.policyCommand = c;
         } else if (a == "--policy-self-test") {
             o.policySelfTest = true;
+        } else if (a == "--lidar3d-self-test") {
+            o.lidar3dSelfTest = true;
         } else if (a == "--import-policy" && hasValue) {
             o.importPolicy = argv[++i];
         } else if (a == "--policy-import-self-test" && hasValue) {
@@ -402,6 +407,8 @@ struct AppState {
         std::uint64_t inferences = 0;
         double forward = 0.0;
     } policyTest;
+    bool pointCloudOverlay = true;      // M5-11：在视口中叠加 3D 雷达的点云
+    std::size_t overlayPointsDrawn = 0;  // 自检：本帧在视口中画出的点数
     std::optional<std::string> pendingPolicy;  // M4-10b：打开场景后运行的策略（资源库中的策略卡片、导入并运行）
     struct PolicyImportTest {
         bool opened = false, scanned = false, bestFull = false, extraWarned = false, imported = false, registered = false, componentAsked = false;
@@ -524,6 +531,8 @@ struct SimulatedScene {
     std::vector<std::uint64_t> imuSamples;          // 累计采样数（自检用）
     std::vector<std::optional<terra::simulation::LidarScan>> lidarScans;
     std::vector<std::uint64_t> lidarSamples;
+    std::vector<std::optional<terra::simulation::Lidar3dScan>> lidar3dScans;  // M5-11
+    std::vector<std::uint64_t> lidar3dSamples;
     std::vector<CameraPreview> cameraPreviews;
     std::unique_ptr<vw::CameraRenderer> cameraRenderer;  // 场景中有相机时才创建
     terra::simulation::SensorNoise noise;                // M4-09：传感器噪声（按场景文件；面板中的开关可关闭）
@@ -537,6 +546,8 @@ struct SimulatedScene {
         imuSamples.assign(imus, 0);
         lidarScans.assign(instance.lidars.size(), std::nullopt);
         lidarSamples.assign(instance.lidars.size(), 0);
+        lidar3dScans.assign(instance.lidars3d.size(), std::nullopt);
+        lidar3dSamples.assign(instance.lidars3d.size(), 0);
         cameraPreviews.resize(instance.cameras.size());
         for (auto& c : cameraPreviews) c.pending.reset();
     }
@@ -567,6 +578,13 @@ struct SimulatedScene {
             noise.lidar(k, *lidarScans[k]);  // M4-09
             ++lidarSamples[k];
             if (recorder) recorder->lidar(*lidarScans[k]);  // M4-07
+        }
+        for (std::size_t k = 0; k < lidar3dScans.size(); ++k) {  // M5-11
+            if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.lidars3d[k].rateHz)) continue;
+            lidar3dScans[k] = terra::simulation::scanLidar3d(*instance.world, instance.lidars3d[k]);
+            noise.lidar3d(k, *lidar3dScans[k]);
+            ++lidar3dSamples[k];
+            if (recorder) recorder->lidar3d(*lidar3dScans[k]);
         }
         for (std::size_t k = 0; k < cameraPreviews.size(); ++k) {
             if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, instance.cameras[k].rateHz)) continue;
@@ -3176,6 +3194,7 @@ void updateReplaySensors(Frame& f) {
         scan.ranges = last->ranges;
         sim.lidarScans[k] = std::move(scan);
     }
+    for (auto& s3 : sim.lidar3dScans) s3.reset();  // M5-11：记录不保存点
     const std::filesystem::path base = std::filesystem::path{sim.replay->path}.parent_path();
     for (std::size_t k = 0; k < sim.cameraPreviews.size(); ++k) {
         const auto& camera = sim.instance.cameras[k];
@@ -3409,6 +3428,93 @@ void lidarView(const terra::simulation::LidarScan& scan, float size) {
     dl->AddTriangleFilled(ImVec2(c.x, c.y - 7.0f), ImVec2(c.x - 5.0f, c.y + 5.0f), ImVec2(c.x + 5.0f, c.y + 5.0f), head);
 }
 
+// M5-11：3D 雷达的俯视（XY）与侧视（XZ）散点图，按高度着色；点多时均匀抽稀到 6000 个
+ImU32 heightColor(float z, float zMin, float zMax) {
+    const float t = zMax > zMin ? std::clamp((z - zMin) / (zMax - zMin), 0.0f, 1.0f) : 0.5f;
+    const auto lerp = [](float a, float b, float u) { return static_cast<int>(a + (b - a) * u); };
+    // 蓝 → 青 → 黄 → 红
+    if (t < 0.33f) return IM_COL32(lerp(40, 40, t / 0.33f), lerp(80, 200, t / 0.33f), lerp(220, 220, t / 0.33f), 255);
+    if (t < 0.66f) return IM_COL32(lerp(40, 240, (t - 0.33f) / 0.33f), lerp(200, 220, (t - 0.33f) / 0.33f), lerp(220, 60, (t - 0.33f) / 0.33f), 255);
+    return IM_COL32(lerp(240, 230, (t - 0.66f) / 0.34f), lerp(220, 60, (t - 0.66f) / 0.34f), lerp(60, 50, (t - 0.66f) / 0.34f), 255);
+}
+
+void pointCloudView(const terra::simulation::Lidar3dScan& scan, float size, bool side) {
+    ImGui::InvisibleButton(side ? "##side" : "##top", ImVec2(size, side ? size * 0.5f : size));
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg), 3.0f);
+    float extent = 0.5f, zMin = 0.0f, zMax = 0.0f;
+    for (std::size_t i = 0; i < scan.points.size(); ++i) {
+        const auto& p = scan.points[i];
+        extent = std::max({extent, std::fabs(p.x), std::fabs(p.y)});
+        zMin = i == 0 ? p.z : std::min(zMin, p.z);
+        zMax = i == 0 ? p.z : std::max(zMax, p.z);
+    }
+    extent *= 1.05f;
+    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    const float scale = (size * 0.5f - 4.0f) / extent;
+    const std::size_t stride = std::max<std::size_t>(1, scan.points.size() / 6000);
+    for (std::size_t i = 0; i < scan.points.size(); i += stride) {
+        const auto& p = scan.points[i];
+        // 俯视：+X 向上、+Y 向左；侧视：+X 向右、+Z 向上（雷达在左右居中、上下居中）
+        const ImVec2 q = side ? ImVec2(c.x + p.x * scale, c.y - p.z * scale) : ImVec2(c.x - p.y * scale, c.y - p.x * scale);
+        if (q.x < a.x || q.x > b.x || q.y < a.y || q.y > b.y) continue;
+        dl->AddRectFilled(q, ImVec2(q.x + 1.5f, q.y + 1.5f), heightColor(p.z, zMin, zMax));
+    }
+    const ImU32 head = ImGui::GetColorU32(ImGuiCol_Text);
+    if (side) dl->AddCircleFilled(c, 3.0f, head);
+    else dl->AddTriangleFilled(ImVec2(c.x, c.y - 7.0f), ImVec2(c.x - 5.0f, c.y + 5.0f), ImVec2(c.x + 5.0f, c.y + 5.0f), head);
+}
+
+// M5-11：把 3D 雷达的点按查看器相机投影到视口图像上（叠加显示，不做遮挡；类似 RViz 的点云显示）
+void pointCloudOverlay(Frame& f) {
+    f.state.overlayPointsDrawn = 0;
+    if (!f.state.pointCloudOverlay || !f.simulated) return;
+    ImGuiWindow* viewport = ImGui::FindWindowByName("###Viewport");
+    const ImVec2 a = f.state.viewportImageMin, b = f.state.viewportImageMax;
+    if (viewport == nullptr || viewport->DrawList == nullptr || b.x <= a.x || b.y <= a.y) return;
+    const double aspect = static_cast<double>(b.x - a.x) / static_cast<double>(b.y - a.y);
+    const auto view = f.camera.viewMatrix();
+    const auto proj = f.camera.projectionMatrix(aspect);
+    const auto mul = [](const std::array<float, 16>& m, const std::array<float, 4>& v) {
+        std::array<float, 4> o{};
+        for (int r = 0; r < 4; ++r) {
+            o[static_cast<std::size_t>(r)] = m[static_cast<std::size_t>(r)] * v[0] + m[static_cast<std::size_t>(4 + r)] * v[1] +
+                                             m[static_cast<std::size_t>(8 + r)] * v[2] + m[static_cast<std::size_t>(12 + r)] * v[3];
+        }
+        return o;
+    };
+    ImDrawList* dl = viewport->DrawList;
+    dl->PushClipRect(a, b, true);
+    for (const auto& scan : f.simulated->lidar3dScans) {
+        if (!scan) continue;
+        float zMin = 0.0f, zMax = 0.0f;
+        std::vector<terra::data::Vec3> world;
+        world.reserve(scan->points.size());
+        for (std::size_t i = 0; i < scan->points.size(); ++i) {
+            const auto& p = scan->points[i];
+            const terra::data::Vec3 local{p.x, p.y, p.z};
+            const terra::data::Vec3 r = terra::scene::rotate(scan->pose.orientation, local);
+            const terra::data::Vec3 w{scan->pose.position.x + r.x, scan->pose.position.y + r.y, scan->pose.position.z + r.z};
+            world.push_back(w);
+            const auto z = static_cast<float>(w.z);
+            zMin = i == 0 ? z : std::min(zMin, z);
+            zMax = i == 0 ? z : std::max(zMax, z);
+        }
+        for (const auto& w : world) {
+            const auto clip = mul(proj, mul(view, {static_cast<float>(w.x), static_cast<float>(w.y), static_cast<float>(w.z), 1.0f}));
+            if (clip[3] <= 1e-4f) continue;
+            const float nx = clip[0] / clip[3], ny = clip[1] / clip[3];
+            if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f) continue;
+            const ImVec2 q(a.x + (nx * 0.5f + 0.5f) * (b.x - a.x), a.y + (0.5f - ny * 0.5f) * (b.y - a.y));
+            dl->AddRectFilled(ImVec2(q.x - 1.0f, q.y - 1.0f), ImVec2(q.x + 1.0f, q.y + 1.0f), heightColor(static_cast<float>(w.z), zMin, zMax));
+            ++f.state.overlayPointsDrawn;
+        }
+    }
+    dl->PopClipRect();
+}
+
 void sensorsPanel(Frame& f) {
     if (!f.state.showSensors) return;
     // 已保存的布局中没有这个面板时，首次显示并入执行器面板所在的停靠组
@@ -3497,6 +3603,30 @@ void sensorsPanel(Frame& f) {
                             lidarView(*scan, std::min(ImGui::GetContentRegionAvail().x, font * 18.0f));
                         } else {
                             ImGui::TextDisabled("%s", tr(TextId::SensorsWaiting));
+                        }
+                        ImGui::PopID();
+                    }
+                }
+            }
+            if (!sim.instance.lidars3d.empty()) {  // M5-11
+                const std::string header = std::string{tr(TextId::SensorsLidar3d)} + "  (" + std::to_string(sim.instance.lidars3d.size()) + ")###lidar3d";
+                if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::Checkbox(tr(TextId::SensorsPointOverlay), &f.state.pointCloudOverlay);
+                    for (std::size_t k = 0; k < sim.instance.lidars3d.size(); ++k) {
+                        ImGui::PushID(static_cast<int>(k));
+                        const auto& lidar = sim.instance.lidars3d[k];
+                        ImGui::TextUnformatted(lidar.name.c_str());
+                        if (const auto& scan = sim.lidar3dScans[k]) {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("%.0f Hz  ·  %zu / %zu %s  ·  t = %.3f s", lidar.rateHz, scan->points.size(), scan->rays, tr(TextId::SensorsPoints),
+                                                scan->time);
+                            const float w = std::min(ImGui::GetContentRegionAvail().x, font * 18.0f);
+                            ImGui::TextDisabled("%s", tr(TextId::SensorsTopView));
+                            pointCloudView(*scan, w, false);
+                            ImGui::TextDisabled("%s", tr(TextId::SensorsSideView));
+                            pointCloudView(*scan, w, true);
+                        } else {
+                            ImGui::TextDisabled("%s", sim.replay ? tr(TextId::SensorsLidar3dReplay) : tr(TextId::SensorsWaiting));
                         }
                         ImGui::PopID();
                     }
@@ -3914,6 +4044,7 @@ void buildUi(Frame& f) {
     detailsPanel(f);
     actuatorPanel(f);
     sensorsPanel(f);  // 在执行器面板之后：首次显示时并入它所在的停靠组
+    pointCloudOverlay(f);  // M5-11：在视口上叠加 3D 雷达的点云
     logPanel(f);
     statsPanel(f);
     timelinePanel(f);  // 在日志之后：首次显示时并入日志所在的停靠组
@@ -4184,6 +4315,7 @@ struct SceneSelfTestRecord {
     bool recordTest = false;
     std::size_t replayIndex = 0;  // 回放跳到的状态下标
     bool sensorTest = false;      // M4-04：传感器自检（播放后不暂停、不单步）
+    bool lidar3dTest = false;     // M5-11：3D 雷达自检（同上）
     bool vizTest = false;         // M4-08d：显示配置自检（播放后一直运行）
     bool sensorRecordTest = false;  // M4-07：传感器记录自检（第 6 帧开始记录并保存图像，中间停止并回放到一帧有图像的时刻）
     std::uint64_t replayCameraStep = 0;
@@ -4230,7 +4362,7 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
         }
         return;
     }
-    if (sceneRecord.sensorTest || sceneRecord.vizTest) return;  // M4-04、M4-08d：第 3 帧按播放后一直运行
+    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest) return;  // M4-04、M4-08d、M5-11：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
         // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
         // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
@@ -4764,7 +4896,35 @@ int sensorSelfTest(Frame& f) {
     return failures == 0 ? 0 : 1;
 }
 
+// M5-11：3D 雷达自检（夹具 lidar3d_room）：各雷达按 10 Hz 采样；最新一帧 540 点；传感器面板与视口叠加画出点云
+int lidar3dSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    SimulatedScene& sim = *f.simulated;
+    const double dt = sim.instance.world->description().timestep;
+    const std::uint64_t steps = sim.instance.world->stepIndex();
+    std::uint64_t due = 0;
+    for (std::uint64_t s = 0; s <= steps; ++s) due += terra::simulation::sensorSampleDue(s, dt, 10.0) ? 1u : 0u;
+    std::printf("INFO 3D 雷达自检：%llu 步；视口中画出 %zu 个点\n", static_cast<unsigned long long>(steps), f.state.overlayPointsDrawn);
+    check(steps > 50, "仿真推进了（" + std::to_string(steps) + " 步）");
+    check(!sim.lidar3dSamples.empty(), "场景中有 3D 雷达");
+    for (std::size_t k = 0; k < sim.lidar3dSamples.size(); ++k) {
+        check(sim.lidar3dSamples[k] == due, sim.instance.lidars3d[k].name + " 按 10 Hz 采样：" + std::to_string(sim.lidar3dSamples[k]) + " 次");
+    }
+    const auto& first = sim.lidar3dScans.empty() ? std::nullopt : sim.lidar3dScans[0];
+    check(first && first->points.size() == 540 && terra::simulation::sensorSampleDue(first->step, dt, 10.0), "最新一帧在采样步上，540 个点");
+    check(f.state.overlayPointsDrawn > 0, "视口中叠加了点云");
+    check(ImGui::FindWindowByName("###Sensors") != nullptr, "传感器面板");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "3D 雷达自检通过\n" : "3D 雷达自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.lidar3dTest) return lidar3dSelfTest(f);
     if (sceneRecord.sensorRecordTest) return sensorRecordSelfTest(f);
     if (sceneRecord.sensorTest) return sensorSelfTest(f);
     if (sceneRecord.recordTest) return recordSelfTest(f);
@@ -5091,6 +5251,7 @@ int main(int argc, char** argv) {
         sceneRecord.motionPath = options.motionPath;
         sceneRecord.recordTest = options.recordSelfTest;
         sceneRecord.sensorTest = options.sensorSelfTest;
+        sceneRecord.lidar3dTest = options.lidar3dSelfTest;
         sceneRecord.sensorRecordTest = options.sensorRecordSelfTest;
         sceneRecord.vizTest = options.vizSelfTest;
     }

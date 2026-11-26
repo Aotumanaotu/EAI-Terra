@@ -1,0 +1,12 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "Livox Mid-360 的官方扫描图案（M5-11）：需要先运行 scripts/assets/fetch_lidar_patterns.sh；没有时测试跳过",
+  "title": "Mid-360 图案",
+  "models": [
+    {"name": "room", "mjcf": "lidar3d_room.xml"}
+  ],
+  "sensors": [
+    {"type": "lidar3d", "name": "room/mid360", "entity": "room/rig", "preset": "livox_mid360", "noise": {"enabled": false}}
+  ]
+}

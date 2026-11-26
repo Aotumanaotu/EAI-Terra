@@ -585,6 +585,13 @@ enum class TextId : int {
     PolicyImported,
     PolicyDraftWritten,
     PolicyFromRos2,
+    // M5-11：3D 激光雷达
+    SensorsLidar3d,
+    SensorsTopView,
+    SensorsSideView,
+    SensorsPointOverlay,
+    SensorsPoints,
+    SensorsLidar3dReplay,
     Count,
 };
 

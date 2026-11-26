@@ -6,6 +6,7 @@
 add_library(terra_scene STATIC
     src/camera_model.cpp
     src/composition.cpp
+    src/lidar_pattern.cpp
     src/scene_file.cpp
     src/scene_instance.cpp)
 add_library(terra::scene ALIAS terra_scene)

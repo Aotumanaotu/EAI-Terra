@@ -163,8 +163,9 @@ mutations = {
         "        exclude = impl_->entityToBody[query.exclude.value - 1];",
         "        (void)0;"),
     "打到不参与碰撞的几何体": (
-        "            if (query.hits == RayTargets::Visual || collides) {",
-        "            if (true || collides) {"),
+        # M5-11：castRays 改用 mj_multiRay 后缩进变了，判断的含义不变
+        "        if (query.hits == RayTargets::Visual || collides) {",
+        "        if (true || collides) {"),
     "不限最大量程": (
         "            if (total > query.maxRange) break;",
         "            (void)0;"),

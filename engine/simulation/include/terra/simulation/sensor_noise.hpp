@@ -18,6 +18,7 @@
 #include "terra/data/state.hpp"
 #include "terra/scene/scene.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/lidar3d.hpp"
 
 namespace terra::simulation {
 
@@ -45,6 +46,9 @@ public:
     terra::data::PhysicsSnapshot withNoise(const terra::data::PhysicsSnapshot& snapshot);
     // 2D 激光雷达：k 为 SceneInstance::lidars 的下标；scan.step 为采样的步序号
     void lidar(std::size_t k, terra::simulation::LidarScan& scan) const;
+    // M5-11：3D 激光雷达，k 为 SceneInstance::lidars3d 的下标。距离加 σ(距离) 的高斯噪声（近、远两点之间线性插值），
+    // 方向加方位与俯仰各 σ = angleStdDeg 的高斯噪声；分量编号为本帧的射线序号，与调用顺序无关
+    void lidar3d(std::size_t k, terra::simulation::Lidar3dScan& scan) const;
     // 相机：k 为 SceneInstance::cameras 的下标；深度（米，inf 为没有命中）与彩色（每像素 channels 个字节）
     void depth(std::size_t k, std::uint64_t step, std::vector<float>& depth) const;
     void color(std::size_t k, std::uint64_t step, std::vector<std::uint8_t>& pixels, int channels) const;
@@ -69,6 +73,7 @@ private:
     double timestep_ = 0.0;
     std::vector<ImuState> imus_;
     std::vector<std::pair<terra::scene::LidarNoise, std::uint64_t>> lidars_;   // 配置、流编号
+    std::vector<std::pair<terra::scene::Lidar3dNoise, std::uint64_t>> lidars3d_;  // M5-11
     std::vector<std::pair<terra::scene::CameraNoise, std::uint64_t>> cameras_;
 };
 

@@ -10,6 +10,8 @@
 //   cameras/<相机名>/depth/<步序号>.npy 深度（float32，米，沿光轴；无命中为 +inf；NumPy 格式，行 0 为图像顶部）
 //   cameras/<相机名>/seg/<步序号>.npy   分割图（M4-09，uint16 实体 ID，0 为背景；相机写了 "segmentation": true 时）
 //   cameras/<相机名>/seg_labels.json    分割图的对照表（ID → 实体全名、模型实例、语义类别）
+//   lidars3d/<雷达名>/frames.jsonl      M5-11：3D 激光雷达每帧的步序号、时间、帧序号、第一点时刻、雷达位姿、点数与摘要
+//   lidars3d/<雷达名>/<步序号>.npy      M5-11：一帧的点（float32，形状 (点数, 5)：x、y、z（米，安装坐标系）、time（相对第一点，秒）、line）
 // 传感器噪声（M4-09）按场景文件加在 IMU、雷达、彩色与深度上；分割图不加噪声。
 // 相机名中的 “/” 换成 “_”。
 //
@@ -43,6 +45,7 @@
 #include "terra/scene/camera_model.hpp"
 #include "terra/scene/scene.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/lidar3d.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/sensor_noise.hpp"
@@ -157,6 +160,16 @@ bool writeNpy(const fs::path& path, const std::vector<float>& values, int width,
     return static_cast<bool>(out);
 }
 
+// M5-11：3D 雷达一帧的点，形状 (点数, 5)
+bool writePointsNpy(const fs::path& path, const sim::Lidar3dScan& scan) {
+    std::vector<float> values;
+    values.reserve(scan.points.size() * 5);
+    for (const auto& p : scan.points) {
+        values.insert(values.end(), {p.x, p.y, p.z, p.time, static_cast<float>(p.line)});
+    }
+    return writeNpy(path, values, 5, static_cast<int>(scan.points.size()));
+}
+
 std::string jsonString(const std::string& text) { return "\"" + hl::jsonEscape(text) + "\""; }
 
 std::string vec3(const td::Vec3& v) {
@@ -231,6 +244,7 @@ int run(const Options& options) {
         fs::remove(out / "capture.json", ec);
         fs::remove(out / "sensors.jsonl", ec);
         fs::remove_all(out / "cameras", ec);
+        fs::remove_all(out / "lidars3d", ec);  // M5-11
     }
     fs::create_directories(out, ec);
     if (ec) {
@@ -311,6 +325,15 @@ int run(const Options& options) {
                     ",\"angle_max\":" + hl::formatNumber(l.angleMax) + ",\"range_min\":" + hl::formatNumber(l.rangeMin) +
                     ",\"range_max\":" + hl::formatNumber(l.rangeMax) + "}";
         }
+        json += "],\"lidars3d\":[";  // M5-11
+        for (std::size_t k = 0; k < scene.lidars3d.size(); ++k) {
+            const auto& l = scene.lidars3d[k];
+            json += std::string{k > 0 ? "," : ""} + "{\"name\":" + jsonString(l.name) + ",\"directory\":" + jsonString("lidars3d/" + safeName(l.name)) +
+                    ",\"preset\":" + jsonString(l.preset) + ",\"rate_hz\":" + hl::formatNumber(l.rateHz) + ",\"points_per_second\":" +
+                    hl::formatNumber(l.pointsPerSecond) + ",\"points_per_frame\":" + std::to_string(l.pointsPerFrame()) + ",\"range_min\":" +
+                    hl::formatNumber(l.rangeMin) + ",\"range_max\":" + hl::formatNumber(l.rangeMax) + ",\"motion_distortion\":" +
+                    (l.motionDistortion ? "true" : "false") + "}";
+        }
         json += "],\"cameras\":[";
         for (std::size_t k = 0; k < scene.cameras.size() && cameras; ++k) {
             const auto& c = scene.cameras[k];
@@ -347,6 +370,16 @@ int run(const Options& options) {
             frameLogs.emplace_back(dir / "frames.jsonl", std::ios::binary);
         }
     }
+    // M5-11：3D 雷达的输出目录
+    std::vector<fs::path> lidar3dDirs;
+    std::vector<std::ofstream> lidar3dLogs;
+    for (const auto& l : scene.lidars3d) {
+        const fs::path dir = out / "lidars3d" / safeName(l.name);
+        fs::create_directories(dir, ec);
+        lidar3dDirs.push_back(dir);
+        lidar3dLogs.emplace_back(dir / "frames.jsonl", std::ios::binary);
+    }
+    std::uint64_t clouds = 0;
     std::uint64_t imuLines = 0;
     std::uint64_t scans = 0;
     std::uint64_t frames = 0;
@@ -380,6 +413,20 @@ int run(const Options& options) {
             meta.rateHz = lidar.rateHz;
             sensors << hl::lidarToJson(meta, scan.ranges) << '\n';
             ++scans;
+        }
+        for (std::size_t k = 0; k < scene.lidars3d.size(); ++k) {  // M5-11
+            const auto& lidar = scene.lidars3d[k];
+            if (!sim::sensorSampleDue(step, dt, lidar.rateHz)) continue;
+            auto scan = sim::scanLidar3d(world, lidar);
+            noise.lidar3d(k, scan);
+            const std::string name = stepName(step);
+            written = written && writePointsNpy(lidar3dDirs[k] / (name + ".npy"), scan);
+            lidar3dLogs[k] << "{\"step\":" << step << ",\"time\":" << hl::formatNumber(scan.time) << ",\"frame\":" << scan.frame
+                           << ",\"frame_start\":" << hl::formatNumber(scan.frameStart) << ",\"position\":" << vec3(scan.pose.position)
+                           << ",\"orientation\":[" << hl::formatNumber(scan.pose.orientation.w) << "," << hl::formatNumber(scan.pose.orientation.x) << ","
+                           << hl::formatNumber(scan.pose.orientation.y) << "," << hl::formatNumber(scan.pose.orientation.z) << "],\"points\":"
+                           << scan.points.size() << ",\"sha256\":\"" << sim::lidar3dDigest(scan) << "\",\"file\":\"" << name << ".npy\"}\n";
+            ++clouds;
         }
         for (std::size_t k = 0; k < cameraDirs.size(); ++k) {
             const auto& c = scene.cameras[k];
@@ -438,6 +485,10 @@ int run(const Options& options) {
         log.flush();
         written = written && static_cast<bool>(log);
     }
+    for (auto& log : lidar3dLogs) {
+        log.flush();
+        written = written && static_cast<bool>(log);
+    }
     if (!written || !sensors) {
         diagnose("写入输出失败：" + out.string());
         return 1;
@@ -445,6 +496,7 @@ int run(const Options& options) {
     std::printf("INFO 采集完成：%llu 步，IMU %llu 行，雷达 %llu 次扫描，相机 %llu 帧 → %s\n", static_cast<unsigned long long>(total),
                 static_cast<unsigned long long>(imuLines), static_cast<unsigned long long>(scans), static_cast<unsigned long long>(frames),
                 out.string().c_str());
+    if (!scene.lidars3d.empty()) std::printf("INFO 3D 激光雷达 %llu 帧\n", static_cast<unsigned long long>(clouds));  // M5-11
     // 图形资源早于上下文释放
     renderer.reset();
     view.reset();

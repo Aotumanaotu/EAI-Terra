@@ -3,6 +3,7 @@
 #include "terra/ros2/bridge.hpp"
 #include "runtime.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -26,6 +27,8 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/point_field.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
@@ -33,6 +36,7 @@
 #include "terra/scene/camera_model.hpp"
 #include "terra/scene/pose_math.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/lidar3d.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/sensor_noise.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
@@ -90,6 +94,7 @@ struct Bridge::Impl {
     std::vector<rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr> imus;  // 与模型描述的 sensors 一一对应
     std::vector<double> imuRates;
     std::vector<rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr> scans;  // 与 SceneInstance::lidars 一一对应
+    std::vector<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> clouds;  // M5-11：与 SceneInstance::lidars3d 一一对应
     struct CameraTopics {
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr color;
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth;
@@ -239,6 +244,9 @@ struct Bridge::Impl {
         for (const auto& l : scene.lidars) {
             if (!(profile.sensorsUseLinkFrames && identity(l.mount))) add(frameOf(l.entity), l.name, l.mount);
         }
+        for (const auto& l : scene.lidars3d) {  // M5-11
+            if (!(profile.sensorsUseLinkFrames && identity(l.mount))) add(frameOf(l.entity), l.name, l.mount);
+        }
         for (const auto& c : scene.cameras) {
             if (cameraFrame(c) == entityFrame(c.entity)) continue;  // M4-08b：光学坐标系就是连杆（如 oakd_rgb_camera_optical_frame）
             add(frameOf(c.entity), c.name, c.mount);
@@ -300,6 +308,9 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
             }
             for (const auto& l : scene.lidars) {
                 b.scans.push_back(b.node->create_publisher<sensor_msgs::msg::LaserScan>(b.mapped(b.topic(l.name) + "/scan"), rclcpp::SensorDataQoS()));
+            }
+            for (const auto& l : scene.lidars3d) {  // M5-11：<雷达名>/points（可用 topics 映射成真机的 /livox/lidar）
+                b.clouds.push_back(b.node->create_publisher<sensor_msgs::msg::PointCloud2>(b.mapped(b.topic(l.name) + "/points"), rclcpp::SensorDataQoS()));
             }
             for (const auto& c : scene.cameras) {
                 Impl::CameraTopics t;
@@ -631,6 +642,56 @@ void Bridge::publish(const td::PhysicsSnapshot& truth) {
         msg.range_max = static_cast<float>(scan.rangeMax);
         msg.ranges = scan.ranges;
         b.scans[k]->publish(msg);
+        ++b.published;
+    }
+    // M5-11：3D 激光雷达 → PointCloud2。字段与 livox_ros_driver2 的 PointCloud2 格式相同：
+    // x、y、z、intensity（float32），tag、line（uint8），timestamp（float64，每点的测量时刻，纳秒）；
+    // 消息头的时刻为第一点的测量时刻；intensity 固定为 100（Terra 不模拟反射率），tag 为 0
+    for (std::size_t k = 0; k < b.clouds.size(); ++k) {
+        const auto& lidar = b.scene.lidars3d[k];
+        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz)) continue;
+        auto scan = terra::simulation::scanLidar3d(*b.scene.world, lidar);
+        b.noise.lidar3d(k, scan);
+        sensor_msgs::msg::PointCloud2 msg;
+        msg.header.stamp = stampOf(std::max(0.0, scan.frameStart));
+        msg.header.frame_id = b.sensorFrame(lidar.name, lidar.entity, lidar.mount);
+        const auto field = [&](const char* name, std::uint32_t offset, std::uint8_t type) {
+            sensor_msgs::msg::PointField f;
+            f.name = name;
+            f.offset = offset;
+            f.datatype = type;
+            f.count = 1;
+            msg.fields.push_back(f);
+        };
+        using PF = sensor_msgs::msg::PointField;
+        field("x", 0, PF::FLOAT32);
+        field("y", 4, PF::FLOAT32);
+        field("z", 8, PF::FLOAT32);
+        field("intensity", 12, PF::FLOAT32);
+        field("tag", 16, PF::UINT8);
+        field("line", 17, PF::UINT8);
+        field("timestamp", 18, PF::FLOAT64);
+        msg.point_step = 26;
+        msg.height = 1;
+        msg.width = static_cast<std::uint32_t>(scan.points.size());
+        msg.row_step = msg.point_step * msg.width;
+        msg.is_bigendian = false;
+        msg.is_dense = true;
+        msg.data.resize(static_cast<std::size_t>(msg.row_step));
+        std::uint8_t* out = msg.data.data();
+        const float intensity = 100.0f;
+        for (const auto& p : scan.points) {
+            const double t = (std::max(0.0, scan.frameStart) + static_cast<double>(p.time)) * 1e9;
+            std::memcpy(out, &p.x, 4);
+            std::memcpy(out + 4, &p.y, 4);
+            std::memcpy(out + 8, &p.z, 4);
+            std::memcpy(out + 12, &intensity, 4);
+            out[16] = 0;
+            out[17] = p.line;
+            std::memcpy(out + 18, &t, 8);
+            out += msg.point_step;
+        }
+        b.clouds[k]->publish(msg);
         ++b.published;
     }
 #ifdef TERRA_ROS2_UNITREE_ENABLED

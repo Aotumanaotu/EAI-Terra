@@ -557,6 +557,21 @@ find_program(TERRA_PYTHON3_EXE python3 REQUIRED)
 add_test(NAME headless.sensors_noise
     COMMAND "${TERRA_PYTHON3_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/sensors/check_noise.py" headless --headless $<TARGET_FILE:terra_headless>
             --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/noise_suite.terra-scene.json" --work "${CMAKE_CURRENT_BINARY_DIR}/sensors_noise")
+# M5-11：3D 激光雷达（场景文件与预设、几何、噪声统计、运动畸变、官方 Mid-360 图案——已下载时）；夹具 assets/tests/sensors/lidar3d_room.*
+add_executable(test_lidar3d sensors/test_lidar3d.cpp)
+target_link_libraries(test_lidar3d PRIVATE terra::simulation terra::scene terra::physics_mujoco)
+target_compile_definitions(test_lidar3d PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_lidar3d)
+add_test(NAME simulation.lidar3d COMMAND test_lidar3d)
+# M5-11：Headless 与 terra_capture 的 3D 雷达出口、记录与复现（渲染关闭的构建只检查 Headless）
+set(_terra_capture_args)
+if(TERRA_BUILD_RENDER)
+    set(_terra_capture_args --capture $<TARGET_FILE:terra_capture>)
+endif()
+add_test(NAME headless.lidar3d
+    COMMAND "${TERRA_PYTHON3_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/sensors/check_lidar3d.py" --headless $<TARGET_FILE:terra_headless>
+            ${_terra_capture_args} --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/lidar3d_room.terra-scene.json"
+            --work "${CMAKE_CURRENT_BINARY_DIR}/headless_lidar3d")
 
 # 悬挂模式（M3-04b）：fixedBase 删掉根部自由关节，关键帧保留
 add_executable(test_fixed_base scene/test_fixed_base.cpp)
@@ -776,6 +791,11 @@ if(TERRA_BUILD_RENDER)
 
     # M4-04：查看器的传感器自检（IMU、雷达、相机的采样次数与读数，面板停靠）；terra_capture 的确定性与采样次数；
     # 没有相机（--no-cameras）时不创建图形上下文，在没有显示服务器的环境中也能运行
+    # M5-11：查看器的 3D 雷达（采样、传感器面板、视口叠加点云）
+    add_test(NAME graphics.viewer_lidar3d_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/lidar3d_room.terra-scene.json" --lidar3d-self-test)
+    set_tests_properties(graphics.viewer_lidar3d_selftest PROPERTIES LABELS graphics)
     add_test(NAME graphics.viewer_sensor_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)
@@ -941,6 +961,11 @@ else()
         COMMAND "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_policy_cmd_vel.py" --headless $<TARGET_FILE:terra_headless>
                 --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_policy_cmd_vel")
     set_tests_properties(ros2.policy_cmd_vel PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 120)
+    # M5-11：3D 激光雷达的 PointCloud2（与 livox_ros_driver2 相同的字段）与内置 IMU
+    add_test(NAME ros2.lidar3d
+        COMMAND "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_lidar3d_ros2.py" --headless $<TARGET_FILE:terra_headless>
+                --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_lidar3d")
+    set_tests_properties(ros2.lidar3d PROPERTIES LABELS ros2 RUN_SERIAL TRUE TIMEOUT 120)
 
     # ROS2 监视器（M4-08d）：Python 发布内容已知的消息（含宇树 LowState），逐项核对展开、曲线字段、图像、TF 与统计
     add_executable(test_ros2_monitor ros2/test_ros2_monitor.cpp)

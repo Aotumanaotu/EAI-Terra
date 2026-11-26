@@ -29,3 +29,6 @@ compile_commands.json
 /assets/robots/*/
 # 用户训练产物与策略（M4-10）：检查点、ONNX、TorchScript、训练日志等，体积大且属于用户数据
 /others/
+
+# M5-11：3D 激光雷达扫描图案，由 scripts/assets/fetch_lidar_patterns.sh 下载（记录见 assets/sensors/lidar3d_patterns.lock）
+/assets/sensors/livox/

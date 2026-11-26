@@ -1,0 +1,4 @@
+# 3D 激光雷达的扫描图案（M5-11）。由 scripts/assets/fetch_lidar_patterns.sh 下载到 assets/sensors/<路径>（不提交）。
+# 格式：路径|下载地址|sha256|许可与来源
+livox/mid360.csv|https://raw.githubusercontent.com/Livox-SDK/livox_laser_simulation/1cce1073633a062b92e30243a4c2920e45551bb5/scan_mode/mid360.csv|aa1fc08b6a4400608dbd6ee832b7ea3a9c3c37197e734f60f58fe5abf762269a|MIT，Livox-SDK/livox_laser_simulation 提交 1cce1073（2023-03-29）
+livox/LICENSE|https://raw.githubusercontent.com/Livox-SDK/livox_laser_simulation/1cce1073633a062b92e30243a4c2920e45551bb5/LICENSE|4846843fe86275ad7a08915992fe69019608aebb783b3fb84e35a68d4611ad26|MIT 许可文本

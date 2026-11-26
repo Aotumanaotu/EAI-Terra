@@ -610,6 +610,12 @@ constexpr Entry kEntries[] = {
     {TextId::PolicyImported, "策略已导入：", "Policy imported: "},
     {TextId::PolicyDraftWritten, "已生成说明文件草稿：", "Draft policy file written: "},
     {TextId::PolicyFromRos2, "指令来自 ROS2 /cmd_vel", "Command from ROS2 /cmd_vel"},
+    {TextId::SensorsLidar3d, "3D 激光雷达", "3D LiDAR"},
+    {TextId::SensorsTopView, "俯视", "Top"},
+    {TextId::SensorsSideView, "侧视", "Side"},
+    {TextId::SensorsPointOverlay, "在视口中显示点云", "Show point cloud in viewport"},
+    {TextId::SensorsPoints, "点", "points"},
+    {TextId::SensorsLidar3dReplay, "记录中只保存了每帧的点数与摘要（不保存点）", "Records keep only the point count and digest of each frame (not the points)"},
 };
 
 constexpr bool entriesInOrder() {

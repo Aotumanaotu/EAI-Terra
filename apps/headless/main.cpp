@@ -9,6 +9,7 @@
 // 输出约定、退出码见 cli.hpp。本文件只使用 Terra 类型，不包含 MuJoCo 头文件。
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -32,6 +33,7 @@
 #include "terra/simulation/record.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/lidar3d.hpp"
 #include "terra/simulation/sensor_noise.hpp"
 #ifdef TERRA_WITH_ROS2
 #include "terra/ros2/bridge.hpp"
@@ -402,6 +404,7 @@ int run(const RunOptions& requested) {
     std::vector<terra::scene::PdAssignment> pdAssignments;
     std::vector<terra::scene::SensorConfig> sensorConfigs;  // M4-02：场景中各传感器的采样频率
     std::vector<terra::scene::LidarSensor> lidars;          // M4-03b：场景中的 2D 激光雷达
+    std::vector<terra::scene::Lidar3dSensor> lidars3d;      // M5-11：场景中的 3D 激光雷达
     if (!options.scenePath.empty()) {
         // 场景文件（M2-08）：由 terra_scene 组合模型实例，只跑物理；视觉绑定只检查文件是否存在
         auto scene = terra::scene::loadScene(options.scenePath, terra::physics::mujoco::composeWorld);
@@ -414,6 +417,7 @@ int run(const RunOptions& requested) {
         pdAssignments = scene.scene->pd;
         sensorConfigs = scene.scene->sensors;
         lidars = scene.scene->lidars;
+        lidars3d = scene.scene->lidars3d;
         // 相机需要图形上下文（M4-03）：Headless 不链接图形库，只提示、不渲染
         if (!scene.scene->cameras.empty()) {
             diagnose("场景中有 " + std::to_string(scene.scene->cameras.size()) +
@@ -582,10 +586,32 @@ int run(const RunOptions& requested) {
             meta.rateHz = lidar.rateHz;
             written = written && emit(lidarToJson(meta, scan.ranges));
         }
+        // 3D 激光雷达（M5-11）：一帧一行，给出点数、距离范围与内容摘要（点本身用 terra_capture 或 ROS2 取）
+        for (std::size_t k = 0; k < lidars3d.size(); ++k) {
+            const auto& lidar = lidars3d[k];
+            if (!terra::simulation::sensorSampleDue(snap->stepIndex, dt, lidar.rateHz)) continue;
+            auto scan = terra::simulation::scanLidar3d(world, lidar);
+            noise.lidar3d(k, scan);
+            double nearest = 0.0, farthest = 0.0, zMin = 0.0, zMax = 0.0;
+            for (std::size_t i = 0; i < scan.points.size(); ++i) {
+                const auto& p = scan.points[i];
+                const double r = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y + static_cast<double>(p.z) * p.z);
+                if (i == 0 || r < nearest) nearest = r;
+                if (i == 0 || r > farthest) farthest = r;
+                if (i == 0 || p.z < zMin) zMin = p.z;
+                if (i == 0 || p.z > zMax) zMax = p.z;
+            }
+            written = written && emit("{\"type\":\"lidar3d\",\"name\":\"" + jsonEscape(scan.sensor) + "\",\"step\":" + std::to_string(scan.step) +
+                                      ",\"time\":" + formatNumber(scan.time) + ",\"frame\":" + std::to_string(scan.frame) + ",\"frame_start\":" +
+                                      formatNumber(scan.frameStart) + ",\"rays\":" + std::to_string(scan.rays) + ",\"points\":" +
+                                      std::to_string(scan.points.size()) + ",\"range_min\":" + formatNumber(nearest) + ",\"range_max\":" +
+                                      formatNumber(farthest) + ",\"z_min\":" + formatNumber(zMin) + ",\"z_max\":" + formatNumber(zMax) +
+                                      ",\"rate_hz\":" + formatNumber(lidar.rateHz) + ",\"sha256\":\"" + terra::simulation::lidar3dDigest(scan) + "\"}");
+        }
         return written;
     };
     if (options.sensors) {
-        if (sensors.empty() && lidars.empty()) diagnose("--sensors：模型中没有传感器（MJCF 中的 IMU，或场景文件 sensors 中添加的）");
+        if (sensors.empty() && lidars.empty() && lidars3d.empty()) diagnose("--sensors：模型中没有传感器（MJCF 中的 IMU，或场景文件 sensors 中添加的）");
         ok = ok && emit(sensorListToJson(world.description(), sensorRates));
     }
 

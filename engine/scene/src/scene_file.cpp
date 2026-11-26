@@ -1,5 +1,6 @@
 // 场景文件读取与校验（M2-05，M2-01 设计第 3 节）。nlohmann/json 只在本文件中使用，不进入公共头。
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <optional>
 #include <set>
 
 #include <nlohmann/json.hpp>
@@ -530,6 +532,135 @@ void readLidar(Reader& r, const Json& item, const std::string& where, SensorSpec
     }
 }
 
+// ---- 3D 激光雷达（M5-11）----
+
+// 3D 雷达预设与扫描图案所在目录：与雷达预设文件（TERRA_SENSOR_PRESETS）相同的目录
+fs::path sensorPresetDirectory() { return fs::path{presetFile()}.parent_path(); }
+
+void readLidar3dNoiseFields(Reader& r, const Json& j, const std::string& where, Lidar3dNoise& n) {
+    noiseNumber(r, j, where, "rangeStdNear", n.rangeStdNear);
+    noiseNumber(r, j, where, "rangeNear", n.rangeNear);
+    noiseNumber(r, j, where, "rangeStdFar", n.rangeStdFar);
+    noiseNumber(r, j, where, "rangeFar", n.rangeFar);
+    noiseNumber(r, j, where, "angleStdDeg", n.angleStdDeg, 10.0);
+}
+
+// 一个 3D 激光雷达；imu: true 时另返回一个 IMU 的描述
+std::optional<SensorSpec> readLidar3d(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
+    std::optional<SensorSpec> imu;
+    if (!r.object(item, where, {"type", "name", "entity", "position", "rotation", "preset", "rateHz", "rangeMin", "rangeMax", "pointsPerSecond",
+                                "hits", "noise", "imu", "motionDistortion", "pattern"})) {
+        return imu;
+    }
+    if (!item.contains("entity")) {
+        r.error(where, "3D 激光雷达需要 entity（安装的实体，“world” 表示装在世界上）");
+        return imu;
+    }
+    if (const auto n = r.string(item["entity"], where + "/entity")) s.entity = *n;
+    r.pose(item, where, s.pose);
+    if (s.name.empty() && !item.contains("name")) r.error(where, "3D 激光雷达需要 name（带实例前缀，如 “go2/mid360”）");
+    if (!item.contains("preset")) {
+        r.error(where, "3D 激光雷达需要 preset（扫描图案与参数，如 “livox_mid360”；见 assets/sensors/lidar3d_presets.json）");
+        return imu;
+    }
+    const auto name = r.string(item["preset"], where + "/preset");
+    if (!name) return imu;
+    s.lidar3dPreset = *name;
+    const fs::path dir = sensorPresetDirectory();
+    std::ifstream in(dir / "lidar3d_presets.json", std::ios::binary);
+    const Json presets = in ? Json::parse(in, nullptr, false) : Json{};
+    if (presets.is_discarded() || !presets.is_object() || !presets.contains("presets") || !presets["presets"].is_object()) {
+        r.error(where + "/preset", "无法读取 3D 雷达预设文件：" + (dir / "lidar3d_presets.json").string());
+        return imu;
+    }
+    if (!presets["presets"].contains(*name)) {
+        std::string list;
+        for (auto it = presets["presets"].begin(); it != presets["presets"].end(); ++it) list += (list.empty() ? "" : "、") + it.key();
+        r.error(where + "/preset", "没有 3D 雷达预设“" + *name + "”（可用：" + list + "）");
+        return imu;
+    }
+    const Json& p = presets["presets"][*name];
+    const std::string pw = where + "/preset(" + *name + ")";
+    if (p.contains("pattern")) {
+        if (const auto f = r.string(p["pattern"], pw + "/pattern")) s.patternFile = (dir / *f).lexically_normal().string();
+    }
+    const auto presetNumber = [&](const char* key, double& target) {
+        if (p.contains(key)) {
+            if (const auto d = r.number(p[key], pw + "/" + key)) target = *d;
+        }
+    };
+    double rate = 10.0;
+    presetNumber("pointsPerSecond", s.pointsPerSecond);
+    presetNumber("rateHz", rate);
+    presetNumber("rangeMin", s.rangeMin);
+    presetNumber("rangeMax", s.rangeMax);
+    s.rateHz = rate;
+    if (p.contains("lines")) {
+        if (const auto n = r.integer(p["lines"], pw + "/lines")) s.lines = static_cast<int>(std::max<long long>(1, *n));
+    }
+    if (p.contains("noise") && p["noise"].is_object()) {
+        s.lidar3dNoise.configured = true;
+        s.lidar3dNoise.preset = *name;
+        readLidar3dNoiseFields(r, p["noise"], pw + "/noise", s.lidar3dNoise);
+    }
+    // 显式写的字段覆盖预设；pattern 为自定义的扫描图案（相对场景文件，格式同 Livox 的 CSV）
+    if (item.contains("pattern")) {
+        if (const auto f = r.string(item["pattern"], where + "/pattern")) s.patternFile = r.path(*f);
+    }
+    for (const auto& [key, target] : {std::pair<const char*, double*>{"rangeMin", &s.rangeMin}, std::pair<const char*, double*>{"rangeMax", &s.rangeMax},
+                                      std::pair<const char*, double*>{"pointsPerSecond", &s.pointsPerSecond}}) {
+        if (item.contains(key)) {
+            if (const auto d = r.number(item[key], where + "/" + key)) *target = *d;
+        }
+    }
+    if (!(s.rangeMin >= 0.0)) r.error(where + "/rangeMin", "最小量程不能为负");
+    if (!(s.rangeMax > s.rangeMin)) r.error(where + "/rangeMax", "最大量程必须大于最小量程");
+    if (!(s.pointsPerSecond > 0.0 && s.pointsPerSecond <= 5.0e6)) r.error(where + "/pointsPerSecond", "点频应在 0 到 5,000,000 点/秒之间");
+    if (item.contains("hits")) {
+        if (const auto h = r.string(item["hits"], where + "/hits")) {
+            if (*h == "visual") s.hitVisual = true;
+            else if (*h != "collision") r.error(where + "/hits", "hits 应为 “collision”（参与碰撞的几何体）或 “visual”（显示的几何体）");
+        }
+    }
+    if (item.contains("motionDistortion")) {
+        if (const auto b = r.boolean(item["motionDistortion"], where + "/motionDistortion")) s.motionDistortion = *b;
+    }
+    if (item.contains("noise")) {
+        const Json& n = item["noise"];
+        if (r.object(n, where + "/noise", {"enabled", "rangeStdNear", "rangeNear", "rangeStdFar", "rangeFar", "angleStdDeg"})) {
+            s.lidar3dNoise.configured = true;
+            noiseEnabled(r, n, where + "/noise", s.lidar3dNoise.enabled);
+            readLidar3dNoiseFields(r, n, where + "/noise", s.lidar3dNoise);
+        }
+    }
+    if (item.contains("imu")) {
+        const auto on = r.boolean(item["imu"], where + "/imu");
+        if (on && *on) {
+            if (!p.contains("imu") || !p["imu"].is_object()) {
+                r.error(where + "/imu", "预设“" + *name + "”没有内置 IMU");
+            } else {
+                const Json& q = p["imu"];
+                SensorSpec m;
+                m.type = "imu";
+                m.name = s.name + "_imu";
+                m.entity = s.entity;
+                m.where = where + "/imu";
+                terra::data::Pose offset;
+                if (q.contains("position")) {
+                    if (const auto v = r.vec3(q["position"], pw + "/imu/position")) offset.position = *v;
+                }
+                m.pose = multiply(s.pose, offset);
+                if (q.contains("rateHz")) {
+                    if (const auto d = r.number(q["rateHz"], pw + "/imu/rateHz")) m.rateHz = *d;
+                }
+                if (q.contains("noise")) readImuNoise(r, q["noise"], pw + "/imu/noise", m.imuNoise);
+                imu = std::move(m);
+            }
+        }
+    }
+    return imu;
+}
+
 void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
     if (!v.is_array()) {
         r.error("/sensors", "sensors 应为数组");
@@ -546,13 +677,13 @@ void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
         SensorSpec s;
         s.where = where;
         if (!item.contains("type")) {
-            r.error(where, "缺少 type（imu、camera 或 lidar2d）");
+            r.error(where, "缺少 type（imu、camera、lidar2d 或 lidar3d）");
             continue;
         }
         const auto type = r.string(item["type"], where + "/type");
         if (!type) continue;
-        if (*type != "imu" && *type != "camera" && *type != "lidar2d") {
-            r.error(where + "/type", "未知的传感器类型“" + *type + "”（可用：imu、camera、lidar2d）");
+        if (*type != "imu" && *type != "camera" && *type != "lidar2d" && *type != "lidar3d") {
+            r.error(where + "/type", "未知的传感器类型“" + *type + "”（可用：imu、camera、lidar2d、lidar3d）");
             continue;
         }
         s.type = *type;
@@ -562,9 +693,11 @@ void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
                 s.name = *n;
             }
         }
+        std::optional<SensorSpec> extraImu;  // M5-11：3D 雷达内置的 IMU
         if (s.type == "imu") readImu(r, item, where, s);
         else if (s.type == "camera") readCamera(r, item, where, s);
-        else readLidar(r, item, where, s);
+        else if (s.type == "lidar2d") readLidar(r, item, where, s);
+        else extraImu = readLidar3d(r, item, where, s);
         if (item.contains("rateHz")) {
             if (const auto d = r.number(item["rateHz"], where + "/rateHz")) {
                 if (*d > 0) s.rateHz = *d;
@@ -574,10 +707,15 @@ void readSensors(Reader& r, const Json& v, std::vector<SensorSpec>& out) {
         if (item.contains("noise")) {  // M4-09
             if (s.type == "imu") readImuNoise(r, item["noise"], where + "/noise", s.imuNoise);
             else if (s.type == "camera") readCameraNoise(r, item["noise"], where + "/noise", s.cameraNoise);
-            else readLidarNoise(r, item["noise"], where + "/noise", s.lidarNoise);
+            else if (s.type == "lidar2d") readLidarNoise(r, item["noise"], where + "/noise", s.lidarNoise);
+            // lidar3d 的 noise 已在 readLidar3d 中读取
         }
         if (!s.name.empty() && !names.insert(s.name).second) r.error(where + "/name", "传感器名“" + s.name + "”重复");
         out.push_back(std::move(s));
+        if (extraImu) {
+            if (!names.insert(extraImu->name).second) r.error(where + "/imu", "传感器名“" + extraImu->name + "”重复");
+            out.push_back(std::move(*extraImu));
+        }
     }
 }
 

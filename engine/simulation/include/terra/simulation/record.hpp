@@ -14,6 +14,7 @@
 //   state    另有 sensors：每份状态都记全部 IMU 的读数（快照的 sensors，每个 10 个数）
 //   lidar    雷达在其采样步上的一次扫描（距离；没有命中写成字符串 "inf" / "-inf"）
 //   camera   相机在其采样步上的元数据：步序号、时间、相机位姿（Terra 相机坐标系在世界中）
+//   lidar3d  M5-11：3D 雷达在其采样步上的一帧：帧序号、点数与内容摘要（sha256）；header 的 sensors 另有 lidars3d
 //   camera_image  该步的图像已保存（相对记录文件所在目录的路径；只有查看器在打开“记录相机图像”时写，且只写实际渲染的帧）
 // 版本 1 的记录照常读取（没有传感器）。
 // 数值按往返精确的方式写出，读回后逐位相同。一份记录对应一段连续运行（中途重置时由调用方结束本记录、另起一份）。
@@ -34,6 +35,7 @@
 #include "terra/scene/composition.hpp"
 #include "terra/scene/scene.hpp"
 #include "terra/simulation/lidar.hpp"
+#include "terra/simulation/lidar3d.hpp"
 
 namespace terra::simulation {
 
@@ -42,6 +44,12 @@ struct RecordLidarInfo {
     std::string name;
     double rateHz = 0.0;
     int samples = 0;
+};
+// M5-11：3D 激光雷达（每帧只记点数与内容摘要，点本身体积太大；复现时重算并逐位比较摘要）
+struct RecordLidar3dInfo {
+    std::string name;
+    double rateHz = 0.0;
+    std::size_t pointsPerFrame = 0;
 };
 struct RecordCameraInfo {
     std::string name;
@@ -79,6 +87,7 @@ struct RecordHeader {
     std::vector<std::string> imus;
     std::vector<RecordLidarInfo> lidars;
     std::vector<RecordCameraInfo> cameras;
+    std::vector<RecordLidar3dInfo> lidars3d;  // M5-11
     // M4-09：记录时是否加了传感器噪声（场景文件的配置与种子随场景文件的摘要核对）；复现时按此设置。旧记录没有此项，视为没有噪声
     bool sensorNoise = false;
     // M4-10a：运行时的策略（只作记录：复现按记录的控制量，不需要推理库）。没有策略时为空
@@ -99,6 +108,14 @@ struct RecordLidar {
     double time = 0.0;
     std::string name;
     std::vector<float> ranges;
+};
+struct RecordLidar3d {
+    std::uint64_t step = 0;
+    double time = 0.0;
+    std::string name;
+    std::uint64_t frame = 0;
+    std::size_t points = 0;
+    std::string sha256;  // lidar3dDigest
 };
 struct RecordCameraFrame {
     std::uint64_t step = 0;
@@ -135,6 +152,7 @@ struct Record {
     std::vector<terra::data::PhysicsSnapshot> states;  // 按步序号递增
     std::vector<RecordEvent> events;
     std::vector<RecordLidar> lidars;              // M4-07：按写入顺序（步序号不减）
+    std::vector<RecordLidar3d> lidars3d;          // M5-11：按写入顺序
     std::vector<RecordCameraFrame> cameraFrames;  // M4-07：按写入顺序；camera_image 合并到同一帧
     std::optional<RecordSummary> summary;  // 没有时表示记录没有正常结束（如程序中断）
 };
@@ -153,6 +171,7 @@ public:
     void event(std::uint64_t step, const std::string& kind, const std::string& detail = {});
     // M4-07：传感器（IMU 随 state 写，不需要单独调用）
     void lidar(const LidarScan& scan);
+    void lidar3d(const Lidar3dScan& scan);  // M5-11：只写点数与摘要
     void camera(const RecordCameraFrame& frame);  // 只写元数据（rgb、depth 忽略）
     void cameraImage(std::uint64_t step, const std::string& name, const std::string& rgb, const std::string& depth);
     // 写入 summary 并关闭文件；返回整个记录是否写入成功

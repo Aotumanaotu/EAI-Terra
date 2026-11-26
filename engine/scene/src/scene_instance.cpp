@@ -348,6 +348,62 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         }
         scene.lidars.push_back(std::move(lidar));
     }
+
+    // 3D 激光雷达（M5-11）：同 2D 的安装与命名规则；扫描图案在这里读入（缺少时为错误，并给出下载方法）
+    for (const SensorSpec& spec : document.sensors) {
+        if (spec.type != "lidar3d") continue;
+        Lidar3dSensor lidar;
+        lidar.name = spec.name;
+        lidar.where = spec.where;
+        if (spec.entity != "world") {
+            const td::EntityDescription* e = d.findEntity(spec.entity);
+            if (e == nullptr) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/entity", "找不到实体“" + spec.entity + "”" + entityHint(d, spec.entity)});
+                failed = true;
+                continue;
+            }
+            const std::size_t slash = spec.entity.find('/');
+            const std::string prefix = slash == std::string::npos ? std::string{} : spec.entity.substr(0, slash + 1);
+            if (prefix.empty() || spec.name.rfind(prefix, 0) != 0 || spec.name.size() == prefix.size()) {
+                out.issues.push_back({Severity::Error, {}, spec.where + "/name",
+                                      "激光雷达名字应以所属实例的前缀“" + prefix + "”开头，如 “" + prefix + "mid360”"});
+                failed = true;
+                continue;
+            }
+            lidar.entity = e->id;
+        }
+        std::string error;
+        lidar.pattern = loadLidarPattern(spec.patternFile, error);
+        if (!lidar.pattern) {
+            out.issues.push_back({Severity::Error, {}, spec.where + "/preset", error});
+            failed = true;
+            continue;
+        }
+        lidar.mount = spec.pose;
+        lidar.preset = spec.lidar3dPreset;
+        lidar.pointsPerSecond = spec.pointsPerSecond;
+        lidar.rangeMin = spec.rangeMin;
+        lidar.rangeMax = spec.rangeMax;
+        lidar.lines = spec.lines;
+        lidar.hitVisual = spec.hitVisual;
+        lidar.motionDistortion = spec.motionDistortion;
+        lidar.noise = spec.lidar3dNoise;
+        lidar.rateHz = spec.rateHz.value_or(10.0);
+        if (lidar.rateHz > physicsRate) {
+            out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",
+                                  "频率 " + std::to_string(lidar.rateHz) + " Hz 高于物理频率，按物理频率 " + std::to_string(physicsRate) +
+                                      " Hz 采样"});
+            lidar.rateHz = physicsRate;
+        }
+        if (lidar.pointsPerFrame() == 0 || lidar.pointsPerFrame() > lidar.pattern->size()) {
+            out.issues.push_back({Severity::Error, {}, spec.where + "/pointsPerSecond",
+                                  "每帧点数 " + std::to_string(lidar.pointsPerFrame()) + " 应在 1 到扫描图案的长度 " + std::to_string(lidar.pattern->size()) +
+                                      " 之间"});
+            failed = true;
+            continue;
+        }
+        scene.lidars3d.push_back(std::move(lidar));
+    }
     if (failed) return out;
 
     scene.document = std::move(document);

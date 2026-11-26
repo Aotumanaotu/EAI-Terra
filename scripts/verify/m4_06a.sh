@@ -238,8 +238,9 @@ mutations = {
         "                if (!paused || stepOnce) break;",
         "                if (!paused) break;"),
     "雷达不按频率发布": (
-        "        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz)) continue;",
-        "        if (false) continue;"),
+        # M5-11：3D 雷达的发布也有同样一行，锚点带上下一行以保持唯一
+        "        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz)) continue;\n        auto scan = terra::simulation::scanLidar(*b.scene.world, lidar);",
+        "        if (false) continue;\n        auto scan = terra::simulation::scanLidar(*b.scene.world, lidar);"),
     "光学坐标系没有旋转": (
         "            add(c.name, c.name + \"_optical\", td::Pose{{0, 0, 0}, terra::scene::opticalRotation()});",
         "            add(c.name, c.name + \"_optical\", td::Pose{});"),

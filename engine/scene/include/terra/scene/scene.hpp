@@ -81,6 +81,11 @@ struct PdAssignment {
 //   逆时针为正（与 sensor_msgs/LaserScan 一致）。angleMinDeg、angleMaxDeg（默认 −180、180）、samples（默认 360，
 //   第一束在 angleMin，最后一束在 angleMax）、rangeMin、rangeMax（默认 0.15、12 m）、rateHz（默认 10）、
 //   hits（"collision" 默认，只打参与碰撞的几何体；"visual" 只打默认显示的几何体）。
+// 3D 激光雷达（M5-11）：type 为 "lidar3d"；装在实体上（entity、position、rotation），name 必填；preset 选
+//   assets/sensors/lidar3d_presets.json 中的型号（如 "livox_mid360"），给出扫描图案、点频、帧率、量程与噪声；
+//   rateHz、rangeMin、rangeMax、pointsPerSecond、hits、pattern（自定义扫描图案，相对场景文件）可覆盖预设；noise 写 {"enabled": false} 关闭，或覆盖各项；
+//   motionDistortion（默认 true）：按每点的测量时刻发出射线（运动畸变）；
+//   imu: true 时在预设给出的位置另装一个 IMU（名字为 <name>_imu，频率与噪声取预设，如 Mid-360 内置的 ICM40609）。
 // ---- 传感器噪声（M4-09，设计稿第 2 节）----
 // 不写即为 0（不加该项噪声）；enabled = false 时保留参数但不加（用户评审时的要求：噪声可以关闭）。
 struct ImuNoiseAxis {
@@ -114,6 +119,19 @@ struct CameraNoise {
     double depthStdQuadratic = 0.0;  // σ = depthStd + depthStdQuadratic × z²（1/米）
     double dropout = 0.0;            // 深度像素丢失的概率（丢失为 inf）
     double pixelStd = 0.0;           // RGB 每个通道的高斯噪声（0–255）
+};
+
+// M5-11：3D 激光雷达的噪声。距离 σ 在 rangeNear（σ = rangeStdNear）与 rangeFar（σ = rangeStdFar）之间按距离线性插值，
+// 两端之外取端点的值；方向另加 σ = angleStdDeg 的方位与俯仰扰动
+struct Lidar3dNoise {
+    bool configured = false;
+    bool enabled = true;
+    std::string preset;
+    double rangeStdNear = 0.0;  // 米
+    double rangeNear = 0.2;     // 米
+    double rangeStdFar = 0.0;   // 米
+    double rangeFar = 10.0;     // 米
+    double angleStdDeg = 0.0;
 };
 
 // 场景级的噪声设置
@@ -151,6 +169,13 @@ struct SensorSpec {
     // M4-09：噪声（按类型取其一）
     ImuNoise imuNoise;
     LidarNoise lidarNoise;
+    // 3D 激光雷达（M5-11）：rangeMin、rangeMax、hitVisual 与 2D 共用（预设的值先填入）
+    std::string lidar3dPreset;
+    std::string patternFile;         // 扫描图案（绝对路径）
+    double pointsPerSecond = 0.0;
+    int lines = 1;
+    bool motionDistortion = true;
+    Lidar3dNoise lidar3dNoise;
     CameraNoise cameraNoise;
 };
 
@@ -168,6 +193,41 @@ struct LidarSensor {
     bool hitVisual = false;
     LidarNoise noise;  // M4-09
     std::string where;
+};
+
+// 3D 激光雷达的扫描图案（M5-11）：依次发出的射线方向（安装坐标系，度）。天顶角从 +Z 起，方位角从 +X 起逆时针；
+// 方向 = (sin 天顶 · cos 方位, sin 天顶 · sin 方位, cos 天顶)。按步依次取用，用完后从头循环（非重复扫描的实测图案）
+struct Lidar3dPattern {
+    std::string path;
+    std::vector<float> azimuth;
+    std::vector<float> zenith;
+    std::size_t size() const noexcept { return azimuth.size(); }
+};
+
+// 读入扫描图案（CSV：表头一行，之后每行 “序号, 方位角（度）, 天顶角（度）”，即 Livox 官方仿真插件的格式）。
+// 同一路径只读一次（进程内缓存）；失败时返回空并写 error
+std::shared_ptr<const Lidar3dPattern> loadLidarPattern(const std::string& path, std::string& error);
+
+// 启用的 3D 激光雷达（M5-11）：按扫描图案做物理侧的射线检测（不需要图形，Headless 也可用）
+struct Lidar3dSensor {
+    std::string name;
+    terra::data::EntityId entity;  // 无效 ID 表示装在世界上
+    terra::data::Pose mount;       // 相对实体原点；扫描图案在安装坐标系中
+    std::string preset;
+    std::shared_ptr<const Lidar3dPattern> pattern;
+    double pointsPerSecond = 200000.0;
+    double rateHz = 10.0;
+    double rangeMin = 0.1;   // m：近于它的没有回波（盲区）
+    double rangeMax = 40.0;  // m
+    int lines = 4;
+    bool hitVisual = false;
+    // 运动畸变：真机一帧的点在 1 / 帧率 秒内依次测得。开启时每 1 ms 的射线按该时刻的安装位姿发出（由当前的线速度与角速度
+    // 向前回推），点在各自时刻的安装坐标系中——与真机相同，供 LIO 等算法按每点时间去畸变。关闭时一帧在同一时刻发出
+    bool motionDistortion = true;
+    Lidar3dNoise noise;
+    std::string where;
+    // 每帧的点数 = 点频 ÷ 帧率（四舍五入）
+    std::size_t pointsPerFrame() const noexcept;
 };
 
 // 启用的相机传感器（M4-03）。图像由有图形上下文的程序渲染（查看器、terra_capture）；Headless 不渲染。
@@ -256,6 +316,7 @@ struct SceneInstance {
     std::vector<SensorConfig> sensors;        // M4-02：MJCF 中原有的与场景文件添加的传感器，与模型描述的顺序相同
     std::vector<CameraSensor> cameras;        // M4-03：场景文件中启用的相机，按场景文件的顺序
     std::vector<LidarSensor> lidars;          // M4-03b：场景文件中的 2D 激光雷达，按场景文件的顺序
+    std::vector<Lidar3dSensor> lidars3d;      // M5-11：场景文件中的 3D 激光雷达，按场景文件的顺序
 
     const VisualPart* visual(terra::data::VisualId id) const noexcept {
         return id.valid() && id.value <= visuals.size() ? &visuals[id.value - 1] : nullptr;

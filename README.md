@@ -1,3 +1,5 @@
+<div align="center">
+
 # EAI Terra
 
 ### An Open Robotics Simulation Engine
@@ -6,217 +8,193 @@
 
 **MuJoCo Physics · Independent Rendering · Robotics First**
 
-> 项目状态：M0、M1、M2 已完成，M3 准备中（Pre-Alpha）。M2（2026-11-23 验收）：场景文件、多模型实例组合、由物理快照驱动的渲染、帧率无关的仿真、查看器的仿真模式（打开场景、播放 / 暂停 / 单步 / 重置、大纲与属性）与 Headless 场景运行。详见[开发总结](docs/planning/SUMMARY.md)和[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
-
 </div>
+
+> **项目状态：Pre-Alpha。**M0～M4 已验收（最近一次：M4 传感器与 ROS2，2026-11-25）；M5 复杂场景与应用尚未启动。
+> 没有发布版本，也不提供可用性保证。实际进度以[开发记录](docs/planning/DEVELOPMENT_LOG.md)为准，阶段汇总见[开发总结](docs/planning/SUMMARY.md)。
 
 ---
 
-## 1. 项目简介
+## 1. 简介
 
-**EAI Terra** 是一个面向机器人研发、具身智能训练和工业数字孪生的仿真引擎项目。
+EAI Terra 是面向机器人研发、具身智能训练与工业数字孪生的仿真引擎：
+- **物理**由 MuJoCo 计算；
+- **渲染**用自研的 OpenGL 渲染器；
+- **场景、仿真时钟、传感器、记录、资源库与外部接口**由 Terra 自己管理。
 
-项目以 **MuJoCo** 为首个物理计算后端，结合**自主开发的实时三维渲染器**，将机器人动力学、场景表达、传感器仿真和可视化交互组织为一套可扩展的仿真平台。**Terra 独立管理仿真世界、物理接口、状态同步与渲染系统；MuJoCo 不替代项目整体架构。**
+Terra 不依赖 Unity 或 Unreal Engine，也不自研刚体求解器。目标是一套**可控、可复现、物理与渲染解耦**的机器人仿真基础设施。
 
-EAI Terra **不依赖 Unity 或 Unreal Engine 作为运行时引擎**。项目首先以 **OpenGL** 建立可运行的渲染管线，并为未来支持 Vulkan 或其他图形后端保留架构空间。
+**设计原则：**
+- **物理与渲染解耦：**渲染只读取物理快照，不反向修改物理。Headless 程序不链接任何图形库。
+- **可复现：**固定步长、按步序号采样，噪声用带种子的计数器式随机数。同一机器上，Headless 运行、实验记录与复现逐位相同；查看器中的运行由 Headless 的复现逻辑逐位复现。
+- **可选依赖：**ROS2 桥接、推理库都可以不装。核心库不链接 ROS2，推理库（ONNX Runtime）在运行时按需加载。
+- **一键操作：**维护好的场景、动作、策略都是资源库中的卡片，单击即可加载，快捷键只是辅助。
 
-项目的重点不是重新实现 MuJoCo 的动力学求解器，也不是复制完整的通用游戏引擎，而是构建一套**面向机器人应用、可控、可扩展、物理与渲染解耦**的仿真基础设施。
+## 2. 现在能做什么
 
-## 2. 项目目标
-
-- **自主可控**：掌握场景、渲染、交互、数据接口与系统集成的核心实现，减少对大型商业游戏引擎的依赖。
-- **物理可信**：基于 MuJoCo 进行刚体、关节、碰撞与接触动力学仿真；明确区分物理精度与视觉真实感。
-- **视觉表现**：逐步实现 PBR 材质、实时阴影、光照、反射与后处理，支持较高质量的机器人和工业场景呈现。
-- **机器人优先**：围绕机器人模型、运动控制、状态观测、传感器和 ROS2 连接设计功能。
-- **训练友好**：支持无界面（Headless）仿真、批量实验、记录与回放，为强化学习、模仿学习与策略评估提供基础能力。
-- **可扩展**：分离物理引擎、渲染后端和外部接口，避免将系统长期绑定到单一技术栈。
-
-## 3. 总体架构
-
-```text
-            ┌─────────────────────────────────────────┐
-            │       Applications / Tools              │
-            │  仿真编辑器 · 机器人调试 · 策略评估       │
-            └──────────────────┬──────────────────────┘
-                               │
-       ┌───────────────────────▼───────────────────────┐
-       │                Terra Core                     │
-       │ 场景管理 · 实体映射 · 仿真时钟 · 资源管理 · API  │
-       └──────────┬────────────┬────────────┬──────────┘
-                  │            │            │
-         ┌────────▼─────┐ ┌────▼─────────┐ ┌▼──────────────┐
-         │ Physics      │ │ Rendering    │ │ Integration    │
-         │ MuJoCo       │ │ OpenGL first │ │ ROS2 / Python │
-         │ 刚体/接触/关节│ │ PBR/光影/相机 │ │ 训练与外部应用  │
-         └────────┬─────┘ └────▲─────────┘ └▲──────────────┘
-                  │            │            │
-                  └─────► Scene State ◄─────┘
-                    物体姿态 · 关节状态 · 传感器状态
-```
-
-### 核心原则：物理与渲染解耦
-
-- **Terra 管理世界并协调物理状态**：由 Core 控制生命周期和固定仿真时间步，MuJoCo 后端计算动力学，适配层发布 Terra 状态。
-- **渲染器消费物理状态快照**：以独立帧率绘制画面，必要时对姿态进行插值，不反向修改物理计算结果。
-- **应用接口不直接依赖图形 API**：ROS2、Python、训练程序可以在关闭渲染窗口的情况下使用仿真能力。
-- **场景与资源分层**：物理场景、可视化资产和运行时状态通过稳定的映射关系关联。
-
-## 4. 技术路线
-
-| 层级 | 初期技术选择 | 说明 |
+| 能力 | 内容 | 阶段 |
 | --- | --- | --- |
-| 核心语言 | C++17 | 仿真与渲染核心；后续可扩展 Python 接口 |
-| 物理引擎 | MuJoCo | 动力学、关节、碰撞与接触求解 |
-| 图形 API | OpenGL（首选） | 尽快完成独立实时渲染原型 |
-| 后续图形后端 | Vulkan（候选） | 视性能需求与开发成本决定是否投入 |
-| 机器人描述 | MJCF 优先；评估 URDF 导入 | 保留模型转换和兼容能力 |
-| 三维美术资产 | glTF / GLB 优先 | Blender 等工具负责建模与资产制作 |
-| 机器人通信 | ROS2 桥接（规划） | 与引擎核心解耦，初期面向 Humble |
-| 脚本与训练 | Python API（规划） | 控制、实验、记录与批量评估 |
-| 初期开发环境 | Ubuntu 22.04 / x86-64 | 后续再评估其他 Linux / ARM 平台 |
+| Headless 物理 | 加载 MJCF 或场景文件，固定步进，JSON Lines 输出状态与传感器读数 | M0、M2 |
+| 渲染与查看器 | 渲染：PBR、阴影、基于图像的光照、4× MSAA、glTF 资产。<br>界面：编辑器式中英文界面，停靠面板、大纲、属性、统计、设置持久化 | M1 |
+| 场景系统 | 场景文件（`*.terra-scene.json`）组合多个模型实例；快照驱动渲染，帧率不影响物理轨迹 | M2 |
+| 参考机器人 | 宇树 G1、Go2、Go2W、AS2，Hello Robot Stretch 3，TurtleBot 4 | M3、M4 |
+| 动作与控制 | 动作文件、PD 控制层、悬挂模式；执行器面板 | M3 |
+| 实验记录 | 记录、按记录重新仿真比较、查看器中的时间轴回放 | M3、M4 |
+| 传感器 | IMU；RGB / 深度相机（内参、外参）；2D 激光雷达；分割图。<br>噪声可关闭，激光雷达预设来自数据手册。<br>传感器面板；离线采集程序 `terra_capture` | M4 |
+| ROS2（Humble，可选） | `/clock`、`/joint_states`、`/tf`、传感器话题、关节命令、重置 / 暂停 / 单步服务。<br>宇树配置与真机相同的 `lowstate` / `lowcmd`，与官方示例程序闭环；TurtleBot 4 的话题与差速底盘。<br>查看器中的 ROS2 面板与显示配置，可导出 `.rviz` | M4 |
+| 模型导入与资源库 | URDF / xacro / MJCF 导入向导；SQLite 资源库：场景、动作、机器人、环境贴图、显示配置、策略的卡片；资产包 | M4 |
+| 策略 | 导入 `.onnx` / `.pt`，选机器人后自动配置（观测、动作、PD 增益、历史帧、步态相位）。<br>推理库作为组件按需下载，带进度条，离线时可从文件安装。<br>速度指令面板、键盘驾驶、ROS2 `/cmd_vel` | M4 |
 
-以上为初期技术决策，具体第三方依赖与接口形式在原型验证后确定。
+**尚未提供：**
+- 3D 激光雷达；
+- Python 接口；
+- 强化学习训练的接入：已规划，见[开发计划](docs/planning/DEVELOPMENT_PLAN.md) 11.9 节；
+- 批量仿真；
+- GPU 推理；
+- 工业场景示例；
+- 发布版本与许可证。
 
-## 5. 核心模块
+## 3. 快速开始
 
-### Terra Core — 仿真核心
+**环境：**
+- 已验证的环境：Ubuntu 22.04 / x86-64 / X11 桌面；
+- 编译工具：GCC 11（C++17）、CMake ≥ 3.22、Ninja；
+- 从源码构建 MuJoCo 另需 gcc-12；
+- 图形测试需要 `xvfb`。
 
-负责仿真时钟、场景对象标识、生命周期、资源管理，以及物理状态与可视化对象之间的同步。
+依赖都按版本与 SHA-256 锁定，用显式脚本获取，CMake 不会自动联网。
 
-### Terra Physics — 物理层
+```bash
+# 物理（必需）
+sudo apt install gcc-12 g++-12 xvfb
+scripts/mujoco/fetch.sh && scripts/mujoco/build.sh       # MuJoCo 4.0.1
 
-基于 MuJoCo 完成模型加载、关节驱动、动力学步进、碰撞和接触状态读取。**不计划在初期自研物理求解器**。
+# 渲染与查看器（可选）
+scripts/render/fetch.sh && scripts/render/build.sh       # GLFW、GLM、Dear ImGui 等
+scripts/assets/fetch_hdri.sh && scripts/assets/fetch_models.sh && scripts/assets/fetch_robots.sh
 
-### Terra Render — 渲染层
+# 构建与测试（预设：debug、release 只有物理；render-debug、render-release 含渲染与查看器）
+cmake --preset render-release && cmake --build --preset render-release && ctest --preset render-release
+```
 
-自研渲染器，首期重点包括：网格与材质、相机、基础光照、阴影、PBR、帧缓冲与离屏渲染。后续按需求逐步增加更复杂的反射、全局光照与后处理能力。
+**ROS2 桥接**（可选，需要 ROS2 Humble；宇树配置另需 `unitree_ros2`）：
 
-### Terra Scene — 场景层
+```bash
+source /opt/ros/humble/setup.bash
+cmake -S . -B build/ros2 -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERRA_BUILD_RENDER=ON -DTERRA_BUILD_ROS2=ON
+cmake --build build/ros2
+```
 
-管理地形、建筑、机器人、静态设备和动态物体；建立 MJCF 物理对象与 GLB 可视对象的对应关系。支持逐步扩展工业场景和大规模场景管理能力。
+**常用程序：**
 
-### Terra Sensors — 传感器层（规划）
+```bash
+# 查看器：欢迎页与资源库中的卡片，单击即打开
+build/render-release/apps/viewer/terra_viewer
 
-逐步引入 RGB、深度、分割图、IMU、激光雷达等模拟输出。传感器是否可信取决于具体成像、扫描、时间模型及噪声模型，**不会仅以视觉效果代替传感器物理验证**。
+# Headless：运行场景并输出传感器读数（不需要图形）
+build/render-release/apps/headless/terra_headless --scene assets/tests/sensors/sensor_suite.terra-scene.json --duration 2 --sensors
 
-### Terra Bridge — 外部接口（规划）
+# 播放预定义动作，记录并复现
+terra_headless --motion assets/motions/go2/lie_stand_sit.terra-motion.json --record go2.terra-record.jsonl
+terra_headless --rerun go2.terra-record.jsonl
 
-通过独立接口层与 ROS2、Python 训练程序和外部客户端交互，包括控制命令、机器人状态、传感器数据、录制与回放。
+# 策略：安装推理组件（184 MB），导入并运行
+terra_headless --install-component onnxruntime-cpu
+terra_headless --import-policy <policy.onnx> --scene assets/scenes/robots/go2_policy.terra-scene.json
+terra_headless --policy <导入得到的 *.terra-policy.json> --command 0.5,0,0 --duration 10
 
-### Terra Studio — 可视化工具（后续）
+# 离线采集传感器数据（需要图形上下文，可在 Xvfb 中运行）
+build/render-release/apps/capture/terra_capture --scene assets/tests/sensors/sensor_suite.terra-scene.json --steps 500 --output capture/
 
-提供场景浏览、对象属性、机器人状态、仿真启停、调试与可视化操作界面。**编辑器不是最小可运行版本的前置条件**。
+# 导入 URDF / xacro / MJCF，生成场景（查看器中也可以直接拖入文件）
+build/render-release/apps/import/terra_import <robot.urdf> --name my_robot
+```
 
-## 6. 首期适用场景
+`terra_headless --help` 列出全部参数与退出码。
 
-1. **机器人运动与控制验证**：导入机器人模型，验证关节控制、底盘运动、碰撞与接触行为。
-2. **具身智能策略测试**：为模仿学习、强化学习和策略回归测试提供可重复的物理环境。
-3. **工业场景仿真**：搭建变电站、厂房、仓储等场景，用于机器人导航、操作与任务验证。
-4. **数字孪生可视化**：与真实机器人状态对接，在三维场景中呈现位姿、关节状态与运行信息。
+**阶段验收**（统一复现全部证据，需要桌面会话；M4 的验收约 80 分钟）：
 
-## 7. 开发路线图
+```bash
+bash scripts/verify/m4_acceptance.sh
+```
 
-- [x] **M0 · 基础工程与物理集成**（2026-11-19 验收）：验证并锁定 MuJoCo 官方库，加载 MJCF，完成 Headless 固定步进、状态输出、Terra Physics 适配及自动化验收。
-- [x] **M1 · 自研基础渲染器**（2026-11-23 验收）：OpenGL 4.5 窗口与编辑器式界面、相机、PBR 材质与光照、glTF 资产、设置持久化、参考图与帧耗时基线；渲染可独立运行。
-- [x] **M2 · 状态同步与场景系统**（2026-11-23 验收）：场景文件与多模型实例组合、快照驱动渲染、帧率无关的固定步长仿真、查看器仿真模式与 Headless 场景运行。
-- [ ] **M3 · 机器人模型及运动仿真**：加载参考机器人，验证连杆、关节、执行器控制和可重复运动。
-- [ ] **M4 · 传感器与 ROS2 接口**：验证首批 IMU、RGB/深度和时间语义，提供可选 ROS2 状态与控制桥接；按需扩展其他传感器。
-- [ ] **M5 · 复杂场景与仿真应用**：交付代表性工业任务，按需求推进 Python、训练/批量实验、实测性能优化与后续 Studio 工具。
-
-> **第一个里程碑的验收标准**：立方体从空中自由下落，与地面碰撞后稳定，输出仿真时间、位置、姿态及相关物理状态；全过程不创建 OpenGL、EGL 或 OSMesa 上下文。完整条件见[开发计划](docs/planning/DEVELOPMENT_PLAN.md)。文档规划覆盖全项目，开发按阶段推进。
-
-## 8. 暂不纳入首期范围
-
-- 从零研发通用刚体动力学与接触求解器。
-- 一开始就同时维护 OpenGL 和 Vulkan 两套完整渲染后端。
-- 在首个版本复制 Unity / UE5 的完整编辑器、资产流水线和所有视觉特效。
-- 未经测试就宣称达到电影级实时渲染、严格的传感器真实性或大规模仿真性能。
-
-## 9. 计划中的目录结构
+## 4. 架构与代码结构
 
 ```text
-eai-terra/
-├── README.md
-├── docs/
-│   └── planning/         # 需求、开发计划、技术设计、决策与开发记录
-├── engine/
-│   ├── core/             # 仿真时钟、场景对象与状态同步
-│   ├── physics/          # MuJoCo 适配层
-│   ├── render/           # OpenGL 渲染器
-│   ├── scene/            # 资源、场景与实体映射
-│   └── sensors/          # 传感器仿真
-├── bridges/
-│   ├── ros2/             # ROS2 接口
-│   └── python/           # Python 接口
-├── apps/                 # 示例、调试器和后续 Studio
-├── assets/               # 示例场景与模型
-└── tests/                # 核心逻辑、物理与渲染测试
+            ┌──────────────────────────────────────────────────────────┐
+            │ apps：terra_viewer · terra_headless · terra_capture       │
+            │       terra_import · terra_bench · terra_render_bench     │
+            └─────────────────────────────┬────────────────────────────┘
+       ┌───────────────┬──────────────────┼───────────────┬────────────────┐
+       │ scene         │ simulation       │ policy        │ ros2（可选）    │
+       │ 场景文件与组合 │ 时钟·动作·PD·     │ 说明文件·推理  │ 桥接·宇树配置   │
+       │ 传感器配置     │ 传感器·噪声·记录  │ 后端·自动配置  │ 监视器          │
+       └───────┬───────┴────────┬─────────┴───────┬───────┴────────┬───────┘
+               │      physics（PhysicsWorld 接口；MuJoCo 私有后端）  │
+               │                │                 │                │
+       render · asset · view · ui · platform · input（不引用物理）   library · import · viz · settings
 ```
 
-上述目录为规划草案，以实际代码演进为准。
+| 目录 | 内容 |
+| --- | --- |
+| `engine/core` | 构建信息、SHA-256、致命错误接管；`data`：模型描述与物理快照（数据契约） |
+| `engine/physics` | `PhysicsWorld` 接口与 MuJoCo 后端（MuJoCo 头文件只出现在后端实现中） |
+| `engine/scene` | 场景文件、模型实例组合、传感器与噪声配置、相机模型 |
+| `engine/simulation` | 仿真推进与时钟、动作、PD 层、传感器采样、激光雷达、噪声、实验记录 |
+| `engine/render`、`asset`、`view`、`ui`、`platform`、`input` | 渲染器、glTF、相机、界面、窗口与输入；不引用物理 |
+| `engine/library` | SQLite 资源库、资产包、可下载组件 |
+| `engine/import` | URDF / xacro / MJCF 导入 |
+| `engine/viz` | 显示配置（`.terviz`）与导出器（`.rviz`） |
+| `engine/policy` | 策略说明文件、ONNX 信息、推理后端、自动配置、控制器、导入 |
+| `engine/ros2` | ROS2 桥接与监视器（只在 `TERRA_BUILD_ROS2=ON` 时构建） |
+| `apps/` | 各程序 |
+| `assets/` | 场景、机器人（脚本获取）、动作、传感器预设、组件清单、测试夹具 |
+| `tests/` | 单元、集成、图形（Xvfb + llvmpipe）与 ROS2 测试 |
+| `scripts/` | 依赖获取与校验、资产工具、各阶段验证脚本（`scripts/verify/`） |
+| `third_party/` | 锁定版本的第三方源码与头文件（附许可） |
+| `docs/` | 规划文档与验证报告 |
 
-### 构建
+模块边界由测试检查，例如：
+- `boundary.render_isolation`：窗口库、图形 API、界面库、JSON、SQLite、miniz、ONNX Runtime、ROS2 的头文件只出现在允许的位置；
+- `boundary.no_mujoco_in_public_headers`；
+- `headless.no_graphics_libs`。
 
-需要 GCC 11（C++17）、CMake ≥ 3.22、Ninja；从源码构建 MuJoCo 另需 gcc-12/g++-12：
+## 5. 路线图
 
-```bash
-sudo apt install gcc-12 g++-12   # 仅首次
-scripts/mujoco/fetch.sh          # 下载并校验 MuJoCo 源码（版本见 third_party/mujoco/mujoco.lock）
-scripts/mujoco/build.sh          # 构建并安装到 third_party/mujoco/install
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug
-```
+- [x] **M0 · 基础工程与物理集成**（2026-11-19）：MuJoCo 接入、Headless 固定步进与状态快照、后端无关的物理接口。
+- [x] **M1 · 自研基础渲染器**（2026-11-23）：OpenGL 4.5、PBR、glTF、编辑器式界面与设置、参考图与帧耗时基线。
+- [x] **M2 · 状态同步与场景系统**（2026-11-23）：场景文件、多模型实例、快照驱动渲染、查看器的仿真模式。
+- [x] **M3 · 机器人模型与运动仿真**（2026-11-24）：参考机器人、动作与 PD 控制、实验记录与复现、SQLite 资源库。
+- [x] **M4 · 传感器与 ROS2**（2026-11-25）：IMU、相机、激光雷达、噪声与分割；ROS2 桥接与宇树真机通信层；模型导入与资源库卡片；策略的导入与运行。
+- [ ] **M5 · 复杂场景与应用**：冻结一个工业任务及规模；端到端示例；性能剖析。强化学习训练的接入按三层推进：
+  1. 训练结果回流与评估；
+  2. 一键启动外部训练；
+  3. Python 接口。
 
-运行立方体下落示例（无图形，stdout 为 JSON Lines：config → model → state … → summary）：
+  Studio 功能另立范围。
 
-```bash
-build/debug/apps/headless/terra_headless --model assets/tests/falling_cube.xml --duration 5 --sample-every 500
-```
+## 6. 文档
 
-渲染（M1 起，可选；默认关闭，不影响上面的物理构建）：
+| 文档 | 内容 |
+| --- | --- |
+| [开发总结](docs/planning/SUMMARY.md) | 各阶段交付与当前边界 |
+| [开发记录](docs/planning/DEVELOPMENT_LOG.md) | 实际做过什么、验证证据、下一步 |
+| [开发计划](docs/planning/DEVELOPMENT_PLAN.md) | 阶段任务与完成标准 |
+| [产品需求](docs/planning/PRD.md) | 需求与优先级 |
+| [技术设计](docs/planning/TECHNICAL_DESIGN.md) | 模块边界、数据契约、接口 |
+| [技术决策](docs/planning/DECISIONS.md) | 方案选择与理由 |
+| [验证报告](docs/validation/) | 每个任务的实现说明与基线机器的运行结果；阶段验收报告：[M0-09](docs/validation/M0-09-acceptance.md)、[M1-11](docs/validation/M1-11-acceptance.md)、[M2-09](docs/validation/M2-09-acceptance.md)、[M3-08](docs/validation/M3-08-acceptance.md)、[M4-11](docs/validation/M4-11-acceptance.md) |
+| [文档导航与维护规范](docs/planning/README.md) | 文档如何组织与更新 |
 
-```bash
-scripts/render/fetch.sh          # 下载并校验 GLFW、GLM、Dear ImGui（版本见 third_party/render/render.lock）
-scripts/render/build.sh          # 构建 GLFW 静态库到 third_party/render/install
-scripts/assets/fetch_hdri.sh && scripts/assets/fetch_models.sh   # Poly Haven 的 HDRI 与 glTF 资产（CC0，可选）
-cmake --preset render-release && cmake --build --preset render-release && ctest --preset render-release
-build/render-release/apps/viewer/terra_viewer     # 编辑器式查看器（M1 演示场景，尚未接入物理）
-```
+## 7. 第三方组件与许可
 
-图形测试带 `graphics` 标签，固定在 Xvfb + Mesa llvmpipe 上运行（需要 `xvfb`）。
+| 来源 | 内容 |
+| --- | --- |
+| `third_party/` | 锁定版本的第三方源码与头文件，各自附许可文本，校验值见 `*.lock` |
+| 参考机器人 | MuJoCo Menagerie、unitree_mujoco、TurtleBot 4 / Create 3，许可为 BSD-3-Clause、Apache-2.0 等，随模型目录附带 |
+| ONNX Runtime | MIT，作为可下载组件在运行时加载，仓库只带 C API 头文件 |
 
-完整复现 M0 验收（三种构建配置的全量测试、变异测试、场景判定、重复运行、依赖检查与性能基线，约数分钟）；M1 验收（含 M0 回归、全部变异测试、真实 GPU 自检与帧耗时，需在桌面会话中运行，约 8 分钟）：
-
-```bash
-bash scripts/verify/m0_acceptance.sh
-bash scripts/verify/m1_acceptance.sh
-```
-
-说明与验证记录见 [`docs/validation/`](docs/validation/)；阶段汇总见 [M0-09](docs/validation/M0-09-acceptance.md) 与 [M1-11](docs/validation/M1-11-acceptance.md) 验收报告。
-
-## 10. 当前状态
-
-**M0（基础工程与 MuJoCo Headless 物理集成）已于 2026-11-19 完成验收；M1（自研基础渲染器）已于 2026-11-23 完成验收。**已实现：MuJoCo 4.0.1 源码构建接入、Headless 程序、MJCF 加载、固定步进与 reset、不可变状态快照、后端无关的 `PhysicsWorld` 接口与执行器控制；OpenGL 4.5 渲染器（PBR、阴影、基于图像的光照、4× MSAA、AgX 色调映射）、glTF 资产加载、独立输入系统、编辑器式中英文界面、显示模式、JSON 设置持久化、参考图测试与帧耗时基线。渲染与物理尚未连接，未提供发布版本或可用性保证。实际进度统一维护在[开发记录](docs/planning/DEVELOPMENT_LOG.md)。
-
-近期第一优先级：评审 M2 任务分解草案（[开发计划](docs/planning/DEVELOPMENT_PLAN.md)第 9 节）——场景格式、多模型实例、几何体描述、快照驱动渲染与 MuJoCo 致命错误接管。
-
-### 规划文档入口
-
-项目主 README 保留在根目录，详细规划及开发记录集中在 `docs/planning/`：
-
-- [文档导航与维护说明](docs/planning/README.md)
-- [验证报告](docs/validation/)（M0、M1 实现验证与界面设计报告）
-- [产品需求 PRD](docs/planning/PRD.md)
-- [开发计划与阶段验收](docs/planning/DEVELOPMENT_PLAN.md)
-- [技术架构与设计](docs/planning/TECHNICAL_DESIGN.md)
-- [技术决策记录](docs/planning/DECISIONS.md)
-- [开发记录与当前进度](docs/planning/DEVELOPMENT_LOG.md)
-- [开发总结与下一步](docs/planning/SUMMARY.md)
-
-## 11. 许可证
-
-**待定（TBD）**。在正式确定授权方式与第三方依赖约束之前，不应默认本项目已以某种开源许可证发布。
+**本项目自身的许可证待定（D-109）。**在确定之前，不应默认本项目已以某种开源许可证发布。
 
 ---
 

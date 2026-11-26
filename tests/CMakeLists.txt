@@ -573,6 +573,13 @@ add_test(NAME headless.lidar3d
             ${_terra_capture_args} --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/lidar3d_room.terra-scene.json"
             --work "${CMAKE_CURRENT_BINARY_DIR}/headless_lidar3d")
 
+# M5-06：热像仪（预设、温度表与曲线、热点、辐射测温、色板、噪声统计；不需要图形）；夹具 assets/tests/sensors/thermal_bench.*
+add_executable(test_thermal sensors/test_thermal.cpp)
+target_link_libraries(test_thermal PRIVATE terra::simulation terra::scene terra::physics_mujoco)
+target_compile_definitions(test_thermal PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_thermal)
+add_test(NAME simulation.thermal COMMAND test_thermal)
+
 # 悬挂模式（M3-04b）：fixedBase 删掉根部自由关节，关键帧保留
 add_executable(test_fixed_base scene/test_fixed_base.cpp)
 target_link_libraries(test_fixed_base PRIVATE terra::scene terra::physics_mujoco)
@@ -796,6 +803,11 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/lidar3d_room.terra-scene.json" --lidar3d-self-test)
     set_tests_properties(graphics.viewer_lidar3d_selftest PROPERTIES LABELS graphics)
+    # M5-06：热像仪自检（夹具 thermal_bench：三台热像仪、图像中心 80 °C、背向墙全是天空温度、预览纹理）
+    add_test(NAME graphics.viewer_thermal_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 120 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/thermal_bench.terra-scene.json" --thermal-self-test)
+    set_tests_properties(graphics.viewer_thermal_selftest PROPERTIES LABELS graphics)
     add_test(NAME graphics.viewer_sensor_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)
@@ -849,6 +861,12 @@ if(TERRA_BUILD_RENDER)
                 --capture $<TARGET_FILE:terra_capture> --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/noise_suite.terra-scene.json"
                 --work "${CMAKE_CURRENT_BINARY_DIR}/capture_noise")
     set_tests_properties(graphics.capture_noise PROPERTIES LABELS graphics)
+    # M5-06：terra_capture 的热像输出（温度与分割、深度逐像素对齐，热点，曲线，噪声统计，两次逐字节相同，PNG）
+    add_test(NAME graphics.capture_thermal
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${TERRA_PYTHON3_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/sensors/check_thermal.py"
+                --capture $<TARGET_FILE:terra_capture> --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/thermal_bench.terra-scene.json"
+                --work "${CMAKE_CURRENT_BINARY_DIR}/capture_thermal")
+    set_tests_properties(graphics.capture_thermal PROPERTIES LABELS graphics TIMEOUT 240)
     add_test(NAME capture.no_cameras
         COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
                 "${CMAKE_COMMAND}" -DEXPECTED=0 -DCOMMAND=$<TARGET_FILE:terra_capture>
@@ -983,6 +1001,11 @@ else()
                     --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_ros2_panel/library.sqlite3")
         set_tests_properties(graphics.viewer_ros2_panel_selftest PROPERTIES LABELS "graphics;ros2" RUN_SERIAL TRUE TIMEOUT 240
                              ENVIRONMENT "ROS_DOMAIN_ID=163;ROS_LOCALHOST_ONLY=1")
+        # M5-06：查看器开启桥接后的热像话题：mono16（0.01 K）、rgb8 伪彩色、camera_info（与热像同一相机）
+        add_test(NAME ros2.thermal
+            COMMAND ${TERRA_GRAPHICS_TEST_ENV} "${TERRA_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/ros2/check_thermal_ros2.py"
+                    --viewer $<TARGET_FILE:terra_viewer> --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/ros2_thermal")
+        set_tests_properties(ros2.thermal PROPERTIES LABELS "graphics;ros2" RUN_SERIAL TRUE TIMEOUT 180)
     endif()
 
     # ---- 宇树配置（M4-06b）：需要宇树消息包 ----

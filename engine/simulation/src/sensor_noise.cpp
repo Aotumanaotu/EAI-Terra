@@ -78,6 +78,13 @@ SensorNoise::SensorNoise(const terra::scene::SceneInstance& scene, bool enabled)
     for (const auto& l : scene.lidars) lidars_.emplace_back(l.noise, noiseStream(l.name));
     for (const auto& l : scene.lidars3d) lidars3d_.emplace_back(l.noise, noiseStream(l.name));
     for (const auto& c : scene.cameras) cameras_.emplace_back(c.noise, noiseStream(c.name));
+    for (const auto& c : scene.cameras) {  // M5-06：热像仪的流与相机的彩色、深度错开
+        ThermalState t;
+        if (c.thermal.enabled) t.config = c.thermal.noise;
+        t.stream = noiseStream(c.name + "#thermal");
+        t.bias = noiseGaussian(seed_, t.stream, kInitialStep, 0);
+        thermals_.push_back(t);
+    }
 }
 
 bool SensorNoise::imuActive(const ImuState& s) const noexcept {
@@ -100,6 +107,9 @@ bool SensorNoise::active() const noexcept {
     for (const auto& [n, stream] : cameras_) {
         (void)stream;
         if (n.configured && n.enabled && (n.depthStd > 0 || n.depthStdQuadratic > 0 || n.dropout > 0 || n.pixelStd > 0)) return true;
+    }
+    for (const auto& t : thermals_) {
+        if (t.config.configured && t.config.enabled && (t.config.netdK > 0 || t.config.accuracyAbsolute > 0 || t.config.accuracyRelative > 0)) return true;
     }
     return false;
 }
@@ -198,6 +208,20 @@ void SensorNoise::color(std::size_t k, std::uint64_t step, std::vector<std::uint
         // 彩色的分量编号与深度错开（同一相机两者都可能加噪声）
         const double v = pixels[i] + n.pixelStd * noiseGaussian(seed_, stream ^ 0x5A5A5A5A5A5A5A5Aull, step, i);
         pixels[i] = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0L, 255L));
+    }
+}
+
+void SensorNoise::thermal(std::size_t k, std::uint64_t step, std::vector<float>& celsius) const {
+    if (k >= thermals_.size() || !sceneEnabled_ || !runtimeEnabled_) return;
+    const ThermalState& t = thermals_[k];
+    const auto& n = t.config;
+    if (!n.configured || !n.enabled || (n.netdK <= 0 && n.accuracyAbsolute <= 0 && n.accuracyRelative <= 0)) return;
+    for (std::size_t i = 0; i < celsius.size(); ++i) {
+        const double v = static_cast<double>(celsius[i]);
+        if (!std::isfinite(v)) continue;
+        const double bias = t.bias * std::max(n.accuracyAbsolute, n.accuracyRelative * std::fabs(v)) * 0.5;
+        const double temporal = n.netdK > 0 ? n.netdK * noiseGaussian(seed_, t.stream, step, i) : 0.0;
+        celsius[i] = static_cast<float>(v + bias + temporal);
     }
 }
 

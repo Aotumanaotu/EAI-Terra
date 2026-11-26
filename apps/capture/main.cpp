@@ -10,9 +10,11 @@
 //   cameras/<相机名>/depth/<步序号>.npy 深度（float32，米，沿光轴；无命中为 +inf；NumPy 格式，行 0 为图像顶部）
 //   cameras/<相机名>/seg/<步序号>.npy   分割图（M4-09，uint16 实体 ID，0 为背景；相机写了 "segmentation": true 时）
 //   cameras/<相机名>/seg_labels.json    分割图的对照表（ID → 实体全名、模型实例、语义类别）
+//   cameras/<相机名>/thermal/<步序号>.npy M5-06：热像仪的温度图（float32，°C，带噪声时为带噪声的读数；行 0 为图像顶部）
+//   cameras/<相机名>/thermal/<步序号>.png M5-06：伪彩色图（相机的色板与显示区间）
 //   lidars3d/<雷达名>/frames.jsonl      M5-11：3D 激光雷达每帧的步序号、时间、帧序号、第一点时刻、雷达位姿、点数与摘要
 //   lidars3d/<雷达名>/<步序号>.npy      M5-11：一帧的点（float32，形状 (点数, 5)：x、y、z（米，安装坐标系）、time（相对第一点，秒）、line）
-// 传感器噪声（M4-09）按场景文件加在 IMU、雷达、彩色与深度上；分割图不加噪声。
+// 传感器噪声（M4-09）按场景文件加在 IMU、雷达、彩色、深度与温度上；分割图不加噪声。
 // 相机名中的 “/” 换成 “_”。
 //
 // 用法：terra_capture (--scene <场景> | --motion <动作> [--scene <场景>]) (--steps N | --duration 秒) --output <目录>
@@ -50,6 +52,7 @@
 #include "terra/simulation/pd_layer.hpp"
 #include "terra/simulation/sensor_noise.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
+#include "terra/simulation/thermal.hpp"
 
 namespace {
 
@@ -343,7 +346,16 @@ int run(const Options& options) {
                     ",\"fy\":" + hl::formatNumber(in.fy) + ",\"cx\":" + hl::formatNumber(in.cx) + ",\"cy\":" + hl::formatNumber(in.cy) +
                     ",\"near\":" + hl::formatNumber(c.nearClip) + ",\"far\":" + hl::formatNumber(c.farClip) + ",\"rate_hz\":" +
                     hl::formatNumber(c.rateHz) + ",\"rgb\":" + (c.rgb ? "true" : "false") + ",\"depth\":" + (c.depth ? "true" : "false") +
-                    ",\"display_rotation_deg\":" + std::to_string(c.displayRotation) + ",\"segmentation\":" + (c.segmentation ? "true" : "false") + "}";
+                    ",\"display_rotation_deg\":" + std::to_string(c.displayRotation) + ",\"segmentation\":" + (c.segmentation ? "true" : "false");
+            if (c.thermal.enabled) {  // M5-06
+                json += ",\"thermal\":{\"preset\":" + jsonString(c.thermal.preset) + ",\"gain\":" + jsonString(c.thermal.gain) +
+                        ",\"range\":[" + hl::formatNumber(c.thermal.rangeMin) + "," + hl::formatNumber(c.thermal.rangeMax) + "],\"palette\":" +
+                        jsonString(sc::thermalPaletteName(c.thermal.palette)) + ",\"display\":" +
+                        (c.thermal.autoDisplay ? std::string{"\"auto\""}
+                                               : "[" + hl::formatNumber(c.thermal.displayMin) + "," + hl::formatNumber(c.thermal.displayMax) + "]") +
+                        ",\"netd_k\":" + hl::formatNumber(c.thermal.noise.netdK) + "}";
+            }
+            json += "}";
         }
         json += "]}\n";
         std::ofstream file(out / "capture.json", std::ios::binary);
@@ -362,6 +374,7 @@ int run(const Options& options) {
             const fs::path dir = out / "cameras" / safeName(c.name);
             fs::create_directories(dir / "rgb", ec);
             fs::create_directories(dir / "depth", ec);
+            if (c.thermal.enabled) fs::create_directories(dir / "thermal", ec);  // M5-06
             if (c.segmentation) {  // M4-09：分割图与对照表（对照表只写一次）
                 fs::create_directories(dir / "seg", ec);
                 std::ofstream(dir / "seg_labels.json", std::ios::binary) << vw::segmentationLabelsJson(scene);
@@ -434,6 +447,7 @@ int run(const Options& options) {
             vw::CameraFrame frame = renderer->capture(scene, *view, c, *snap, lighting);
             noise.color(k, step, frame.rgb, 3);  // M4-09
             noise.depth(k, step, frame.depth);
+            noise.thermal(k, step, frame.thermal);  // M5-06
             const std::string name = stepName(step);
             std::string line = "{\"step\":" + std::to_string(step) + ",\"time\":" + hl::formatNumber(frame.time) + ",\"position\":" +
                                vec3(frame.pose.position) + ",\"orientation\":[" + hl::formatNumber(frame.pose.orientation.w) + "," +
@@ -456,6 +470,16 @@ int run(const Options& options) {
                     written = false;
                 }
                 line += ",\"segmentation\":\"seg/" + name + ".npy\"";
+            }
+            if (!frame.thermal.empty()) {  // M5-06
+                written = written && vw::writeThermalNpy((cameraDirs[k] / "thermal" / (name + ".npy")).string(), frame.thermal, c.width, c.height);
+                if (const auto error = terra::render::savePng((cameraDirs[k] / "thermal" / (name + ".png")).string(), vw::thermalImage(frame, c.thermal))) {
+                    diagnose("写热像 PNG 失败：" + *error);
+                    written = false;
+                }
+                const auto [lo, hi] = sim::thermalDisplayRange(c.thermal, frame.thermal);
+                line += ",\"thermal\":\"thermal/" + name + ".npy\",\"thermal_color\":\"thermal/" + name + ".png\",\"display_range\":[" +
+                        hl::formatNumber(lo) + "," + hl::formatNumber(hi) + "]";
             }
             frameLogs[k] << line << "}\n";
             ++frames;

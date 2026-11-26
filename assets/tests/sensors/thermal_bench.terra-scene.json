@@ -1,0 +1,35 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "热像仪夹具（M5-06）：墙 15 °C、板 80 °C、方块 20 → 60 °C（0～1 s 线性）、加热器 40 °C 且正面中心有 120 °C 的热点；三台 FLIR Lepton 3.5：无噪声、有噪声、背向墙看天空",
+  "title": "热像仪夹具",
+  "noise": {"seed": 7},
+  "models": [
+    {"name": "bench", "mjcf": "thermal_bench.xml"}
+  ],
+  "thermal": {
+    "ambient": 22.0,
+    "sky": -20.0,
+    "temperatures": {
+      "world": 15.0,
+      "bench/*": 30.0,
+      "bench/plate": 80.0,
+      "bench/block": [[0.0, 20.0], [1.0, 60.0]],
+      "bench/heater": 40.0
+    },
+    "hotspots": [
+      {"entity": "bench/heater", "position": [-0.1, 0.0, 0.0], "radius": 0.08, "temperature": 120.0}
+    ]
+  },
+  "sensors": [
+    {"type": "camera", "name": "bench/ir", "entity": "bench/rig", "rotation": {"rpyDeg": [90, 0, -90]}, "segmentation": true,
+     "thermal": {"preset": "flir_lepton_3_5", "noise": {"enabled": false}}},
+    {"type": "camera", "name": "bench/ir_noisy", "entity": "bench/rig", "rotation": {"rpyDeg": [90, 0, -90]}, "rgb": false, "depth": false,
+     "thermal": {"preset": "flir_lepton_3_5", "palette": "white-hot", "display": [0, 130]}},
+    {"type": "camera", "name": "bench/ir_sky", "entity": "bench/rig", "rotation": {"rpyDeg": [90, 0, 90]}, "rgb": false, "depth": false,
+     "thermal": {"preset": "flir_lepton_3_5", "noise": {"enabled": false}}}
+  ],
+  "view": {
+    "camera": {"position": [-1.2, -1.6, 1.8], "target": [1.0, 0.0, 1.0]}
+  }
+}

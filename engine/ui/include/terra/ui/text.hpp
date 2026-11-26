@@ -592,6 +592,10 @@ enum class TextId : int {
     SensorsPointOverlay,
     SensorsPoints,
     SensorsLidar3dReplay,
+    // M5-06：热像仪
+    SensorsThermal,
+    SensorsTemperatureAt,
+    SensorsThermalSummary,
     Count,
 };
 

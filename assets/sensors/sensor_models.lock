@@ -1,0 +1,7 @@
+# 传感器的外观模型（M5-11）。由 scripts/assets/fetch_sensor_models.sh 下载到 assets/sensors/models/<路径>（不提交），
+# 再用 scripts/assets/dae_to_glb.py 把 .dae 转为 Terra 显示用的 .glb。
+# 格式：路径|下载地址|sha256|许可与来源
+src/livox_gz_sim/mid360.dae|https://raw.githubusercontent.com/mathaimp/livox_gz_sim/3f06f1ac4d3f6854f7275ca9aa097484791a1abd/meshes/mid360.dae|7323b886c2be32ae9b9cbc1f8dd44664218415f2407f8fc253c88bce319ccfc8|MIT，mathaimp/livox_gz_sim 提交 3f06f1ac；按 Mid-360 用户手册的尺寸自建的低面数模型（65 × 65 × 60 mm，原点在底面中心，+X 为标志一侧）
+src/livox_gz_sim/LICENSE|https://raw.githubusercontent.com/mathaimp/livox_gz_sim/3f06f1ac4d3f6854f7275ca9aa097484791a1abd/LICENSE|e4da13b8ee8adf3c184f3cfaa765c1b002efd9e1b7a200fe7c507a30391f8fb9|MIT 许可文本
+# 转换结果：输出路径|输入路径|期望的 sha256（dae_to_glb.py 的输出是确定的；不一致时只警告）
+=livox_mid360.glb|src/livox_gz_sim/mid360.dae|ca80ed03f477a350fd87a8d273e621b62da2832be8e8100a3760cca6edc99a1b

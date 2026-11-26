@@ -146,6 +146,7 @@ struct Options {
     std::string policyImportSelfTest;     // M4-10b：自检导入向导（给出要导入的文件）
     std::string importPolicy;             // M4-10b：启动后打开导入向导并选好这个文件
     bool lidar3dSelfTest = false;         // M5-11：3D 雷达自检
+    bool thermalSelfTest = false;         // M5-06：热像仪自检
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -195,6 +196,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.policySelfTest = true;
         } else if (a == "--lidar3d-self-test") {
             o.lidar3dSelfTest = true;
+        } else if (a == "--thermal-self-test") {
+            o.thermalSelfTest = true;
         } else if (a == "--import-policy" && hasValue) {
             o.importPolicy = argv[++i];
         } else if (a == "--policy-import-self-test" && hasValue) {
@@ -409,6 +412,7 @@ struct AppState {
     } policyTest;
     bool pointCloudOverlay = true;      // M5-11：在视口中叠加 3D 雷达的点云
     std::size_t overlayPointsDrawn = 0;  // 自检：本帧在视口中画出的点数
+    std::uint64_t thermalFramesShown = 0;  // M5-06 自检：创建过的热像预览次数
     std::optional<std::string> pendingPolicy;  // M4-10b：打开场景后运行的策略（资源库中的策略卡片、导入并运行）
     struct PolicyImportTest {
         bool opened = false, scanned = false, bestFull = false, extraWarned = false, imported = false, registered = false, componentAsked = false;
@@ -522,6 +526,7 @@ struct SimulatedScene {
         terra::render::Texture2D color;
         terra::render::Texture2D depth;
         terra::render::Texture2D segmentation;  // M4-09
+        terra::render::Texture2D thermal;       // M5-06：伪彩色
         std::uint64_t rendered = 0;
         bool pendingRecorded = false;  // M4-07：pending 这一步的元数据已写入记录（图像可以随后写入）
         std::string shownImage;        // M4-07：回放时显示的图像文件（避免每帧重读）
@@ -3208,6 +3213,7 @@ void updateReplaySensors(Frame& f) {
             preview.frame.reset();
             preview.color = {};
             preview.depth = {};
+            preview.thermal = {};  // M5-06：记录中不保存热像
             preview.shownImage.clear();
             continue;
         }
@@ -3220,6 +3226,7 @@ void updateReplaySensors(Frame& f) {
         frame.intrinsics = terra::scene::cameraIntrinsics(camera.width, camera.height, camera.fovyDegrees);
         preview.color = {};
         preview.depth = {};
+        preview.thermal = {};  // M5-06：记录中不保存热像
         if (!last->rgb.empty()) {
             const auto loaded = terra::render::loadImage((base / last->rgb).string());
             if (loaded.ok() && loaded.image.width == camera.width && loaded.image.height == camera.height) {
@@ -3314,6 +3321,7 @@ void updateCameraPreviews(Frame& f) {
         // M4-09：渲染后加一次噪声，之后的预览、记录与 ROS2 都用这一份
         sim.noise.color(k, preview.frame->step, preview.frame->rgb, 3);
         sim.noise.depth(k, preview.frame->step, preview.frame->depth);
+        sim.noise.thermal(k, preview.frame->step, preview.frame->thermal);  // M5-06
         preview.pending.reset();
         if (preview.pendingRecorded && sim.recorder && f.state.recordCameraImages) saveRecordedImage(f, camera, *preview.frame);  // M4-07
         ++preview.rendered;
@@ -3333,6 +3341,7 @@ void updateCameraPreviews(Frame& f) {
             image.rgb = frame.rgb;
             image.depth = frame.depth;
             image.segmentation = frame.segmentation;  // M4-09
+            image.thermal = frame.thermal;            // M5-06
             sim.ros2->publishCamera(k, image);
         }
 #endif
@@ -3351,6 +3360,11 @@ void updateCameraPreviews(Frame& f) {
         if (!frame.segmentation.empty()) {  // M4-09：分割图按 ID 着色
             const auto image = vw::segmentationPreview(frame.segmentation, camera.width, camera.height);
             preview.segmentation = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
+        }
+        if (!frame.thermal.empty()) {  // M5-06：按相机的色板与显示区间
+            const auto image = vw::thermalImage(frame, camera.thermal);
+            preview.thermal = terra::render::Texture2D::create(image.width, image.height, image.pixels.data(), false);
+            ++f.state.thermalFramesShown;
         }
     }
 }
@@ -3654,7 +3668,17 @@ void sensorsPanel(Frame& f) {
                             ImGui::TextDisabled("t = %.3f s  ·  %s %llu", frame.time, tr(TextId::SensorsStep),
                                                 static_cast<unsigned long long>(frame.step));
                             const int shown = (preview.color.name() != 0 ? 1 : 0) + (preview.depth.name() != 0 ? 1 : 0) +
-                                              (preview.segmentation.name() != 0 ? 1 : 0);
+                                              (preview.segmentation.name() != 0 ? 1 : 0) + (preview.thermal.name() != 0 ? 1 : 0);
+                            if (!frame.thermal.empty()) {  // M5-06：预设、量程、色板与本帧的温度
+                                const std::size_t center = static_cast<std::size_t>(camera.height / 2) * static_cast<std::size_t>(camera.width) +
+                                                           static_cast<std::size_t>(camera.width / 2);
+                                const auto [lo, hi] = std::minmax_element(frame.thermal.begin(), frame.thermal.end());
+                                ImGui::TextDisabled("%s  %s · %s · %.0f～%.0f °C · %s", tr(TextId::SensorsThermal), camera.thermal.preset.c_str(),
+                                                    terra::scene::thermalPaletteName(camera.thermal.palette), camera.thermal.rangeMin, camera.thermal.rangeMax,
+                                                    camera.thermal.gain.c_str());
+                                ImGui::TextDisabled("%s  %.2f / %.2f / %.2f °C", tr(TextId::SensorsThermalSummary), static_cast<double>(*lo),
+                                                    static_cast<double>(frame.thermal[std::min(center, frame.thermal.size() - 1)]), static_cast<double>(*hi));
+                            }
                             const float gap = ImGui::GetStyle().ItemSpacing.x;
                             const float w = (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(std::max(shown - 1, 0))) /
                                             static_cast<float>(std::max(shown, 1));
@@ -3667,7 +3691,7 @@ void sensorsPanel(Frame& f) {
                                 return ImVec2(static_cast<float>(t[0]), static_cast<float>(t[1]));
                             };
                             int index = 0;
-                            for (const auto* texture : {&preview.color, &preview.depth, &preview.segmentation}) {
+                            for (const auto* texture : {&preview.color, &preview.depth, &preview.segmentation, &preview.thermal}) {
                                 if (texture->name() == 0) continue;
                                 if (index > 0) ImGui::SameLine();
                                 ImGui::PushID(index++);
@@ -3677,7 +3701,15 @@ void sensorsPanel(Frame& f) {
                                 ImGui::GetWindowDrawList()->AddImageQuad(static_cast<ImTextureID>(texture->name()), a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y),
                                                                          uvAt(0, 0), uvAt(1, 0), uvAt(1, 1), uvAt(0, 1));
                                 // M4-09：分割图上悬停显示该像素的实体
-                                if (texture == &preview.segmentation && ImGui::IsItemHovered() && !frame.segmentation.empty()) {
+                                if (texture == &preview.thermal && ImGui::IsItemHovered() && !frame.thermal.empty()) {  // M5-06：悬停显示温度
+                                    const ImVec2 at = ImGui::GetIO().MousePos;
+                                    const auto t = terra::scene::displayToImage(rotation, static_cast<double>((at.x - a.x) / size.x),
+                                                                                static_cast<double>((at.y - a.y) / size.y));
+                                    const int px = std::clamp(static_cast<int>(t[0] * camera.width), 0, camera.width - 1);
+                                    const int py = std::clamp(static_cast<int>(t[1] * camera.height), 0, camera.height - 1);
+                                    const float celsius = frame.thermal[static_cast<std::size_t>(py) * static_cast<std::size_t>(camera.width) + static_cast<std::size_t>(px)];
+                                    ImGui::SetTooltip("(%d, %d)  %s %.2f °C", px, py, tr(TextId::SensorsTemperatureAt), static_cast<double>(celsius));
+                                } else if (texture == &preview.segmentation && ImGui::IsItemHovered() && !frame.segmentation.empty()) {
                                     const ImVec2 at = ImGui::GetIO().MousePos;
                                     const auto t = terra::scene::displayToImage(rotation, static_cast<double>((at.x - a.x) / size.x),
                                                                                 static_cast<double>((at.y - a.y) / size.y));
@@ -4316,6 +4348,7 @@ struct SceneSelfTestRecord {
     std::size_t replayIndex = 0;  // 回放跳到的状态下标
     bool sensorTest = false;      // M4-04：传感器自检（播放后不暂停、不单步）
     bool lidar3dTest = false;     // M5-11：3D 雷达自检（同上）
+    bool thermalTest = false;     // M5-06：热像仪自检（同上）
     bool vizTest = false;         // M4-08d：显示配置自检（播放后一直运行）
     bool sensorRecordTest = false;  // M4-07：传感器记录自检（第 6 帧开始记录并保存图像，中间停止并回放到一帧有图像的时刻）
     std::uint64_t replayCameraStep = 0;
@@ -4362,7 +4395,7 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
         }
         return;
     }
-    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest) return;  // M4-04、M4-08d、M5-11：第 3 帧按播放后一直运行
+    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest || sceneRecord.thermalTest) return;  // M4-04、M4-08d、M5-11、M5-06：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
         // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
         // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
@@ -4923,7 +4956,48 @@ int lidar3dSelfTest(Frame& f) {
     return failures == 0 ? 0 : 1;
 }
 
+// M5-06：热像仪自检（夹具 thermal_bench）：三台热像仪都出了温度图；无噪声相机的图像中心在 80 °C 的板上；
+// 背向墙的相机全是天空温度；预览纹理已创建；没有 GL 错误
+int thermalSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    SimulatedScene& sim = *f.simulated;
+    const std::uint64_t steps = sim.instance.world->stepIndex();
+    std::printf("INFO 热像仪自检：%llu 步；创建了 %llu 次热像预览\n", static_cast<unsigned long long>(steps),
+                static_cast<unsigned long long>(f.state.thermalFramesShown));
+    check(steps > 50, "仿真推进了（" + std::to_string(steps) + " 步）");
+    std::size_t thermals = 0;
+    for (std::size_t k = 0; k < sim.instance.cameras.size(); ++k) {
+        const auto& camera = sim.instance.cameras[k];
+        if (!camera.thermal.enabled) continue;
+        ++thermals;
+        const auto& preview = sim.cameraPreviews[k];
+        const bool ok = preview.frame && preview.frame->thermal.size() == static_cast<std::size_t>(camera.width) * static_cast<std::size_t>(camera.height);
+        check(ok && preview.thermal.name() != 0, camera.name + "：温度图 " + std::to_string(camera.width) + " × " + std::to_string(camera.height) + "，预览纹理已创建");
+        if (!ok) continue;
+        const auto& t = preview.frame->thermal;
+        const std::size_t center = static_cast<std::size_t>(camera.height / 2) * static_cast<std::size_t>(camera.width) + static_cast<std::size_t>(camera.width / 2);
+        if (camera.name == "bench/ir") {
+            check(std::fabs(static_cast<double>(t[center]) - 80.0) < 1e-3, "bench/ir：图像中心在板上，80 °C（" + std::to_string(t[center]) + "）");
+        }
+        if (camera.name == "bench/ir_sky") {
+            const bool sky = std::all_of(t.begin(), t.end(), [](float v) { return v == -20.0f; });
+            check(sky, "bench/ir_sky：背向墙没有命中，全是天空温度 −20 °C");
+        }
+    }
+    check(thermals == 3, "场景中有 3 台热像仪");
+    check(f.state.thermalFramesShown >= 3, "热像预览更新了多次");
+    check(ImGui::FindWindowByName("###Sensors") != nullptr, "传感器面板");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "热像仪自检通过\n" : "热像仪自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.thermalTest) return thermalSelfTest(f);
     if (sceneRecord.lidar3dTest) return lidar3dSelfTest(f);
     if (sceneRecord.sensorRecordTest) return sensorRecordSelfTest(f);
     if (sceneRecord.sensorTest) return sensorSelfTest(f);
@@ -5252,6 +5326,7 @@ int main(int argc, char** argv) {
         sceneRecord.recordTest = options.recordSelfTest;
         sceneRecord.sensorTest = options.sensorSelfTest;
         sceneRecord.lidar3dTest = options.lidar3dSelfTest;
+        sceneRecord.thermalTest = options.thermalSelfTest;
         sceneRecord.sensorRecordTest = options.sensorRecordSelfTest;
         sceneRecord.vizTest = options.vizSelfTest;
     }

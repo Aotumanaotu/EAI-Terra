@@ -616,6 +616,9 @@ constexpr Entry kEntries[] = {
     {TextId::SensorsPointOverlay, "在视口中显示点云", "Show point cloud in viewport"},
     {TextId::SensorsPoints, "点", "points"},
     {TextId::SensorsLidar3dReplay, "记录中只保存了每帧的点数与摘要（不保存点）", "Records keep only the point count and digest of each frame (not the points)"},
+    {TextId::SensorsThermal, "热像", "Thermal"},
+    {TextId::SensorsTemperatureAt, "温度", "temperature"},
+    {TextId::SensorsThermalSummary, "最低 / 中心 / 最高", "min / center / max"},
 };
 
 constexpr bool entriesInOrder() {

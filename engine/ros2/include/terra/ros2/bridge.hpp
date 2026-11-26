@@ -121,6 +121,9 @@ struct CameraImage {
     std::vector<std::uint8_t> rgb;  // width × height × 3；空表示不输出彩色
     std::vector<float> depth;       // width × height，米；空表示不输出深度
     std::vector<std::uint32_t> segmentation;  // M4-09：width × height 的实体 ID；发布为 16UC1（超过 65535 的记为 0）
+    // M5-06：width × height 的温度（°C，已加噪声）；热像仪发布 <相机>/thermal/image_raw（mono16，0.01 K，量程外截断）、
+    // <相机>/thermal/image_color（rgb8，相机的色板与显示区间）与 <相机>/thermal/camera_info
+    std::vector<float> thermal;
 };
 
 class Bridge {

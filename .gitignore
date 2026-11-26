@@ -32,3 +32,5 @@ compile_commands.json
 
 # M5-11：3D 激光雷达扫描图案，由 scripts/assets/fetch_lidar_patterns.sh 下载（记录见 assets/sensors/lidar3d_patterns.lock）
 /assets/sensors/livox/
+# M5-11：传感器外观模型，由 scripts/assets/fetch_sensor_models.sh 下载并转换（记录见 assets/sensors/sensor_models.lock）
+/assets/sensors/models/

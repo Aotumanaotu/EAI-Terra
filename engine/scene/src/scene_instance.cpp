@@ -170,13 +170,14 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
             bound.entity = e->id;
         }
         const auto key = std::make_tuple(spec.entity, spec.gltf, spec.node);
-        if (const auto it = seen.find(key); it != seen.end()) {
+        // 同一实体上装几个同型号的传感器时，外观模型可以重复（位置不同）
+        if (const auto it = seen.find(key); !spec.sensorModel && it != seen.end()) {
             out.issues.push_back({Severity::Error, {}, spec.where,
                                   "重复绑定：实体、glTF 文件与节点都与 " + it->second + " 相同"});
             failed = true;
             continue;
         }
-        seen.emplace(key, spec.where);
+        if (!spec.sensorModel) seen.emplace(key, spec.where);
         std::error_code ec;
         if (!fs::is_regular_file(spec.gltf, ec)) {
             out.issues.push_back({Severity::Warning, {}, spec.where + "/gltf",
@@ -194,7 +195,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
     // 所属实体有 glTF 绑定、且没有任何绑定要求 showGeoms 时，该实体的 MJCF 几何体默认隐藏
     std::map<std::uint32_t, bool> boundEntities;  // 实体 → 是否保留几何体
     for (const BoundVisual& b : scene.bindings) {
-        if (!b.entity.valid()) continue;
+        if (!b.entity.valid() || b.spec.sensorModel) continue;
         bool& keep = boundEntities[b.entity.value];
         keep = keep || b.spec.showGeoms;
     }
@@ -297,6 +298,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         camera.displayRotation = spec.displayRotationDegrees;
         camera.segmentation = spec.segmentation;  // M4-09
         camera.noise = spec.cameraNoise;
+        camera.thermal = spec.thermal;  // M5-06
         camera.rateHz = spec.rateHz.value_or(30.0);
         if (camera.rateHz > physicsRate) {
             out.issues.push_back({Severity::Warning, {}, spec.where + "/rateHz",
@@ -403,6 +405,54 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
             continue;
         }
         scene.lidars3d.push_back(std::move(lidar));
+    }
+    if (failed) return out;
+
+    // M5-06：温度表。每个实体取匹配等级最高的写法（与 labels 相同）；"world" 为静态几何体；热点按实体全名
+    {
+        ThermalModel& t = scene.thermal;
+        t.ambient = document.thermal.ambient;
+        t.sky = document.thermal.sky;
+        t.entities.assign(d.entities.size(), std::nullopt);
+        for (std::size_t i = 0; i < d.entities.size(); ++i) {
+            const td::EntityDescription& e = d.entities[i];
+            std::string instance;
+            if (e.modelInstance.valid() && e.modelInstance.value <= d.modelInstances.size()) instance = d.modelInstances[e.modelInstance.value - 1].name;
+            int bestRank = 0;
+            std::size_t bestLength = 0;
+            for (const auto& [pattern, curve] : document.thermal.temperatures) {
+                if (pattern == "world") continue;
+                std::size_t length = 0;
+                const int rank = scenePatternRank(pattern, e.name, instance, length);
+                if (rank > bestRank || (rank == bestRank && rank == 1 && length > bestLength)) {
+                    t.entities[i] = curve;
+                    bestRank = rank;
+                    bestLength = length;
+                }
+            }
+        }
+        for (const auto& [pattern, curve] : document.thermal.temperatures) {
+            if (pattern == "world") t.world = curve;
+        }
+        for (const HotspotSpec& h : document.thermal.hotspots) {
+            ThermalModel::Hotspot spot;
+            if (h.entity != "world") {
+                const td::EntityDescription* e = d.findEntity(h.entity);
+                if (e == nullptr) {
+                    out.issues.push_back({Severity::Error, {}, h.where + "/entity", "找不到实体“" + h.entity + "”" + entityHint(d, h.entity)});
+                    failed = true;
+                    continue;
+                }
+                spot.entity = e->id;
+            }
+            spot.position = h.position;
+            spot.radius = h.radius;
+            spot.temperature = h.temperature;
+            t.hotspots.push_back(std::move(spot));
+        }
+        if (document.thermal.configured && document.thermal.temperatures.empty() && document.thermal.hotspots.empty()) {
+            out.issues.push_back({Severity::Warning, {}, "/thermal", "thermal 段没有写 temperatures 或 hotspots：所有物体都是环境温度"});
+        }
     }
     if (failed) return out;
 

@@ -34,6 +34,7 @@ struct CameraFrame {
     std::vector<std::uint8_t> rgb;         // width × height × 3；相机不输出彩色时为空
     std::vector<float> depth;              // width × height；相机不输出深度时为空
     std::vector<std::uint32_t> segmentation;  // M4-09：width × height 的实体 ID（0 为背景）；相机不输出分割图时为空
+    std::vector<float> thermal;               // M5-06：width × height 的温度（°C，真值；噪声由调用方另加）；不是热像仪时为空
 };
 
 // 相机的观察与投影矩阵（列主序，单精度）
@@ -67,6 +68,10 @@ std::string segmentationLabelsJson(const terra::scene::SceneInstance& scene);
 bool writeSegmentationNpy(const std::string& path, const std::vector<std::uint32_t>& ids, int width, int height);
 // 彩色图转为 RGBA8 图像（便于写 PNG 与界面显示）
 terra::render::ImageRgba8 colorImage(const CameraFrame& frame);
+// M5-06：温度图的伪彩色图像（按相机的色板与显示区间；auto 时按本帧的最低、最高温度）
+terra::render::ImageRgba8 thermalImage(const CameraFrame& frame, const terra::scene::ThermalCameraSpec& spec);
+// M5-06：温度图写为 NumPy 文件（float32，°C，形状 (height, width)）
+bool writeThermalNpy(const std::string& path, const std::vector<float>& celsius, int width, int height);
 
 // 深度图的 NumPy .npy 文件（格式 1.0，小端 float32，形状 (height, width)，行优先；与 terra_capture 相同）。
 // M4-07：记录相机图像时写，回放时读。读失败（文件不存在、格式或尺寸不对）时返回空

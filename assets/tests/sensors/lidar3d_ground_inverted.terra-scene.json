@@ -1,0 +1,44 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "Mid-360 倒置（M5-11）：倒挂在 0.4 m 高处（绕 X 轴转 180°），只有一块无限大的地面；倒置时视场朝下（−52°～7°），地面上的点从雷达正下方附近开始（盲区内边界约 0.31～0.36 m），中间近似圆形。需要先运行 scripts/assets/fetch_lidar_patterns.sh",
+  "title": "Mid-360 倒置",
+  "models": [
+    {
+      "name": "ground",
+      "mjcf": "lidar3d_ground.xml"
+    }
+  ],
+  "sensors": [
+    {
+      "type": "lidar3d",
+      "name": "ground/mid360",
+      "entity": "ground/rig",
+      "rotation": {
+        "rpyDeg": [
+          180,
+          0,
+          0
+        ]
+      },
+      "preset": "livox_mid360",
+      "noise": {
+        "enabled": false
+      }
+    }
+  ],
+  "view": {
+    "camera": {
+      "position": [
+        0.3,
+        -0.3,
+        6
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}

@@ -5,7 +5,7 @@
 //   - 噪声：距离噪声的标准差与预设（0.2 m 处 3 cm、10 m 处 2 cm，线性插值）一致；方向噪声的标准差与设定一致；关闭时为真值；
 //   - 运动畸变：匀速移动的雷达，朝运动方向的射线距离按每点时刻回推（与关闭时之差 = 速度 × 回推时间）；侧向不变；
 //   - 官方 Mid-360 图案（已下载时）：每帧 20,000 点，按帧推进，4 s 一个循环，仰角在 −7.2°～52.2° 之内；记录单帧耗时；
-//     地面圆环（夹具 lidar3d_ground.*）：水平安装时盲区内边界与图案的解析值相同、前后左右对称。
+//     地面圆环（夹具 lidar3d_ground*）：正装与倒置时盲区内边界与图案的解析值相同、前后左右对称；外观模型的位置（已下载时）。
 // 统计容差按样本数的 4σ 左右取，冻结在本文件中。
 
 #include <algorithm>
@@ -276,13 +276,26 @@ int main() {
             check(f40.frame == 40 && f40.patternStart == 0 && sim::lidar3dDigest(f40) == sim::lidar3dDigest(f0), "4 s 后第 40 帧：图案循环，静止场景中点云与第 0 帧相同");
         }
 
-        // 地面圆环：水平安装在 0.4 m 高处，4 s（40 帧，整个图案）中每 30° 方位扇区地面点的最小水平距离（盲区内边界），
-        // 应等于该扇区图案最低仰角的解析值（0.4 ÷ tan）。官方图案的下边缘随方位变化：左右（±90°）−7.2°、前后（0°、180°）−4.9°，
-        // 所以盲区前后长、左右短（约 3.94 m 与 3.16 m），不是正圆；这里检查的是 Terra 与图案一致、前后左右对称（不偏心）
-        auto g = sc::loadScene(kDir + "/lidar3d_ground.terra-scene.json", terra::physics::mujoco::composeWorld);
-        if (!g.scene) {
-            check(false, "地面圆环场景无法加载");
-        } else {
+        // 地面圆环：装在 0.4 m 高处，4 s（40 帧，整个图案）中每 30° 方位扇区地面点的最小水平距离（盲区内边界），
+        // 应等于该扇区图案边缘仰角的解析值（0.4 ÷ tan）。官方图案的边缘随方位变化：下边缘左右（±90°）−7.2°、前后（0°、180°）−4.9°，
+        // 上边缘 52.2° 与 48.3°。
+        //   - 正装：地面在安装坐标系 z = −0.4 处，由下边缘决定，盲区前后长、左右短（约 3.94 m 与 3.16 m），不是正圆；
+        //   - 倒置（绕 X 轴转 180°）：地面在 z = +0.4 处，由上边缘决定，盲区只有 0.31～0.34 m，大部分射线打到地面，中间近似圆形。
+        // 检查 Terra 与图案一致、相对的扇区相同（不偏心）
+        struct GroundCase {
+            const char* file;
+            const char* label;
+            double side;  // 地面在安装坐标系中的 z 符号：正装 −1，倒置 +1
+            double innerMin, innerMax, outerMin;
+        };
+        for (const GroundCase& gc : {GroundCase{"lidar3d_ground.terra-scene.json", "正装", -1.0, 3.1, 4.0, 39.0},
+                                     GroundCase{"lidar3d_ground_inverted.terra-scene.json", "倒置", 1.0, 0.30, 0.35, 39.0}}) {
+            auto g = sc::loadScene(kDir + "/" + gc.file, terra::physics::mujoco::composeWorld);
+            const std::string tag = std::string{"地面圆环（"} + gc.label + "）";
+            if (!g.scene) {
+                check(false, tag + "：场景无法加载");
+                continue;
+            }
             auto& w = *g.scene->world;
             const auto& l = g.scene->lidars3d[0];
             constexpr double kHeight = 0.4;
@@ -292,16 +305,16 @@ int main() {
             for (std::size_t i = 0; i < l.pattern->size(); ++i) {
                 const double el = (90.0 - static_cast<double>(l.pattern->zenith[i])) * kPi / 180.0;
                 const auto sector = static_cast<std::size_t>(std::fmod(static_cast<double>(l.pattern->azimuth[i]), 360.0) / 30.0) % 12;
-                if (el < 0) expected[sector] = std::min(expected[sector], kHeight / std::tan(-el));
+                if (el * gc.side > 0) expected[sector] = std::min(expected[sector], kHeight / std::tan(std::fabs(el)));
             }
             for (int frame = 0; frame < 40; ++frame) {
                 if (frame > 0) {
                     for (int i = 0; i < 50; ++i) w.step();
                 }
-                const auto s = sim::scanLidar3d(w, l);
-                total += s.rays;
-                for (const auto& p : s.points) {
-                    if (std::fabs(static_cast<double>(p.z) + kHeight) > 1e-3) continue;
+                const auto frameScan = sim::scanLidar3d(w, l);
+                total += frameScan.rays;
+                for (const auto& p : frameScan.points) {
+                    if (std::fabs(static_cast<double>(p.z) - gc.side * kHeight) > 1e-3) continue;
                     ++ground;
                     const double r = std::hypot(static_cast<double>(p.x), static_cast<double>(p.y));
                     double az = std::atan2(static_cast<double>(p.y), static_cast<double>(p.x)) * 180.0 / kPi;
@@ -320,14 +333,22 @@ int main() {
                 std::snprintf(buf, sizeof buf, "%s%.2f", k == 0 ? "" : " ", measured[k]);
                 text += buf;
             }
-            std::printf("INFO 地面圆环（0.4 m 高，40 帧）：%zu / %zu 条射线打到地面；每 30° 扇区的内半径 %s m（最大 / 最小 = %.4f），外半径 %.2f m\n",
-                        ground, total, text.c_str(), *hi / *lo, outer);
-            check(exact, "地面圆环：每个扇区的内半径与图案最低仰角的解析值一致（0.2% 以内）");
-            check(*lo > 3.1 && *lo < 3.2 && *hi > 3.85 && *hi < 4.0, "地面圆环：左右的内半径约 3.16 m，前后约 3.94 m（官方图案的下边缘随方位变化）");
+            std::printf("INFO %s（0.4 m 高，40 帧）：%zu / %zu 条射线打到地面；每 30° 扇区的内半径 %s m（最大 / 最小 = %.4f），外半径 %.2f m\n",
+                        tag.c_str(), ground, total, text.c_str(), *hi / *lo, outer);
+            check(exact, tag + "：每个扇区的内半径与图案边缘仰角的解析值一致（0.2% 以内）");
+            check(*lo > gc.innerMin && *hi < gc.innerMax, tag + "：内半径在预期范围内");
             bool symmetric = true;
             for (std::size_t k = 0; k < 6; ++k) symmetric = symmetric && std::fabs(measured[k] - measured[k + 6]) < 0.01 * measured[k];
-            check(symmetric, "地面圆环：相对的扇区内半径相同（不偏心）");
-            check(outer > 39.0 && outer < 40.0, "地面圆环：外半径到量程 40 m");
+            check(symmetric, tag + "：相对的扇区内半径相同（不偏心）");
+            check(outer > gc.outerMin && outer < 40.0, tag + "：外半径到量程 40 m");
+            if (gc.side > 0) check(ground > total * 8 / 10, tag + "：八成以上的射线打到地面（视场朝下）");
+            // 外观模型（已下载时）：作为 glTF 绑定跟随安装实体，位于雷达原点下方 47 mm（倒置时在上方）
+            const auto* binding = g.scene->bindings.empty() ? nullptr : &g.scene->bindings.back();
+            if (binding != nullptr && binding->spec.sensorModel) {
+                const auto local = binding->spec.local;
+                check(std::fabs(local.position.x) < 1e-9 && std::fabs(local.position.y) < 1e-9 && std::fabs(local.position.z - gc.side * 0.047) < 1e-9,
+                      tag + "：外观模型的底面在雷达原点下方 47 mm（相对支架：正装 z = −0.047，倒置 z = +0.047）");
+            }
         }
     }
 

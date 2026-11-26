@@ -37,6 +37,7 @@
 #include "terra/scene/pose_math.hpp"
 #include "terra/simulation/lidar.hpp"
 #include "terra/simulation/lidar3d.hpp"
+#include "terra/simulation/thermal.hpp"
 #include "terra/simulation/motion.hpp"
 #include "terra/simulation/sensor_noise.hpp"
 #include "terra/simulation/sensor_sampling.hpp"
@@ -101,6 +102,9 @@ struct Bridge::Impl {
         rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info;
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr segmentation;  // M4-09：16UC1 实体 ID
         rclcpp::Publisher<std_msgs::msg::String>::SharedPtr labels;          // M4-09：对照表（JSON，transient local，只发一次）
+        rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr thermalRaw;    // M5-06：mono16，0.01 K
+        rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr thermalColor;  // M5-06：rgb8 伪彩色
+        rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr thermalInfo;
     };
     std::vector<CameraTopics> cameras;  // 与 SceneInstance::cameras 一一对应
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr commandSub;
@@ -315,6 +319,12 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
             for (const auto& c : scene.cameras) {
                 Impl::CameraTopics t;
                 if (c.rgb) t.color = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/image_raw"), rclcpp::SensorDataQoS());
+                if (c.thermal.enabled) {  // M5-06
+                    t.thermalRaw = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/thermal/image_raw"), rclcpp::SensorDataQoS());
+                    t.thermalColor = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/thermal/image_color"), rclcpp::SensorDataQoS());
+                    t.thermalInfo = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.mapped(b.topic(c.name) + "/thermal/camera_info"),
+                                                                                          rclcpp::SensorDataQoS());
+                }
                 if (c.depth) t.depth = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/depth/image_raw"), rclcpp::SensorDataQoS());
                 t.info = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.mapped(b.topic(c.name) + "/camera_info"), rclcpp::SensorDataQoS());
                 if (c.segmentation) {  // M4-09
@@ -763,6 +773,36 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
         topics.segmentation->publish(msg);
         ++b.published;
     }
+    if (topics.thermalRaw && !image.thermal.empty()) {  // M5-06
+        const auto& spec = b.scene.cameras[camera].thermal;
+        sensor_msgs::msg::Image raw;
+        raw.header.stamp = stamp;
+        raw.header.frame_id = frame;
+        raw.width = w;
+        raw.height = h;
+        raw.is_bigendian = 0;
+        raw.encoding = "mono16";
+        raw.step = w * 2;
+        raw.data.resize(image.thermal.size() * 2);
+        for (std::size_t i = 0; i < image.thermal.size(); ++i) {
+            const std::uint16_t v = terra::simulation::radiometricValue(static_cast<double>(image.thermal[i]), spec.rangeMin, spec.rangeMax);
+            raw.data[2 * i] = static_cast<std::uint8_t>(v & 0xFFu);
+            raw.data[2 * i + 1] = static_cast<std::uint8_t>(v >> 8);
+        }
+        topics.thermalRaw->publish(raw);
+        ++b.published;
+        const auto [lo, hi] = terra::simulation::thermalDisplayRange(spec, image.thermal);
+        sensor_msgs::msg::Image color;
+        color.header = raw.header;
+        color.width = w;
+        color.height = h;
+        color.is_bigendian = 0;
+        color.encoding = "rgb8";
+        color.step = w * 3;
+        color.data = terra::simulation::thermalColor(image.thermal, spec.palette, lo, hi);
+        topics.thermalColor->publish(color);
+        ++b.published;
+    }
     sensor_msgs::msg::CameraInfo info;
     info.header.stamp = stamp;
     info.header.frame_id = frame;
@@ -775,6 +815,10 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
     info.p = {image.fx, 0.0, image.cx, 0.0, 0.0, image.fy, image.cy, 0.0, 0.0, 0.0, 1.0, 0.0};
     topics.info->publish(info);
     ++b.published;
+    if (topics.thermalInfo && !image.thermal.empty()) {  // M5-06：与热像同一相机，内参相同
+        topics.thermalInfo->publish(info);
+        ++b.published;
+    }
 }
 
 bool Bridge::enableVelocityCommand(const std::string& topic, double timeout) {

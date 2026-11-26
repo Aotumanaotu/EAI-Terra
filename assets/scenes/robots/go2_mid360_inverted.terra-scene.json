@@ -1,0 +1,61 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 Go2 + 倒置的 Livox Mid-360（M5-11）：Mid-360 倒挂在机身前上方的支架下（绕 X 轴转 180°，视场朝下 −52°～7°），近处地面与腿都在视场中；其余与“宇树 Go2 + Mid-360”相同。安装位置是示例：机身原点前方 0.2 m、上方 0.16 m；需要先运行 scripts/assets/fetch_lidar_patterns.sh",
+  "title": "宇树 Go2 + Mid-360（倒置）",
+  "models": [
+    {
+      "name": "go2",
+      "mjcf": "../../robots/unitree_go2/scene.xml"
+    }
+  ],
+  "initialKeyframe": "go2/home",
+  "noise": {
+    "seed": 1
+  },
+  "sensors": [
+    {
+      "type": "imu",
+      "site": "go2/imu",
+      "rateHz": 500,
+      "noise": {
+        "gyro": {
+          "noiseDensity": 0.00516
+        }
+      }
+    },
+    {
+      "type": "lidar3d",
+      "name": "go2/mid360",
+      "entity": "go2/base",
+      "position": [
+        0.2,
+        0,
+        0.16
+      ],
+      "preset": "livox_mid360",
+      "imu": true,
+      "rotation": {
+        "rpyDeg": [
+          180,
+          0,
+          0
+        ]
+      }
+    }
+  ],
+  "view": {
+    "camera": {
+      "position": [
+        2.2,
+        -1.8,
+        1.2
+      ],
+      "target": [
+        0,
+        0,
+        0.3
+      ]
+    }
+  }
+}

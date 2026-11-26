@@ -52,6 +52,9 @@ public:
     // 相机：k 为 SceneInstance::cameras 的下标；深度（米，inf 为没有命中）与彩色（每像素 channels 个字节）
     void depth(std::size_t k, std::uint64_t step, std::vector<float>& depth) const;
     void color(std::size_t k, std::uint64_t step, std::vector<std::uint8_t>& pixels, int channels) const;
+    // M5-06：热像仪的温度图（°C），k 为 SceneInstance::cameras 的下标：每像素 σ = NETD 的高斯（每帧不同），
+    // 加每台相机一个固定偏差 g × max(精度绝对值, 精度比例 × |T|) ÷ 2（g 按种子取一次，与步序号无关）
+    void thermal(std::size_t k, std::uint64_t step, std::vector<float>& celsius) const;
 
     // 每个 IMU 的采样频率与步长（随机游走只在采样步上累加）
 private:
@@ -75,6 +78,12 @@ private:
     std::vector<std::pair<terra::scene::LidarNoise, std::uint64_t>> lidars_;   // 配置、流编号
     std::vector<std::pair<terra::scene::Lidar3dNoise, std::uint64_t>> lidars3d_;  // M5-11
     std::vector<std::pair<terra::scene::CameraNoise, std::uint64_t>> cameras_;
+    struct ThermalState {
+        terra::scene::ThermalNoise config;
+        std::uint64_t stream = 0;
+        double bias = 0.0;  // 标准正态数 g
+    };
+    std::vector<ThermalState> thermals_;  // M5-06：与 cameras_ 一一对应
 };
 
 }  // namespace terra::simulation

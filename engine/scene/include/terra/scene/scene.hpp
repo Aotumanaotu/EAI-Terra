@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "terra/data/geometry.hpp"
@@ -40,6 +41,8 @@ struct VisualBindingSpec {
     VisualFrame frame = VisualFrame::Node;
     bool showGeoms = false;
     std::string where;  // JSON 指针，如 "/visuals/0"
+    // M5-11：传感器的外观模型（由预设给出，如 Mid-360 的外壳）；不影响所属实体的 MJCF 几何体是否隐藏
+    bool sensorModel = false;
 };
 
 struct ViewSpec {
@@ -75,6 +78,7 @@ struct PdAssignment {
 //   - 装在实体上：写 entity 与可选的 position / rotation；相机看向自身 −Z、+Y 向上（与 MJCF 相同）；name 必填。
 //   width、height（默认 640 × 480，MJCF 写了分辨率时取它）、fovyDeg（竖直视场角，默认 60 或 MJCF 中的值）、
 //   near、far（默认 0.05、50 m）、rateHz（默认 30）、rgb、depth（默认都输出）。
+//   thermal（M5-06）：热像仪，见 ThermalCameraSpec；预设给出分辨率、视场角与帧率（相机显式写的优先），rgb 与 depth 可以都关闭。
 //   displayRotationDeg（M4-04，默认 0）：只影响显示，图像逆时针转 0、90、180 或 270° 后显示；数据（图像、深度、内参）不变，
 //   与真机一致（如 Stretch 3 的头部相机是横着装的，真机图像同样需要转 90° 才正）。
 // 2D 激光雷达（M4-03b）：装在实体上（entity、position、rotation），name 必填；在安装坐标系的 XY 平面内扫描，角度从 +X 起
@@ -85,7 +89,8 @@ struct PdAssignment {
 //   assets/sensors/lidar3d_presets.json 中的型号（如 "livox_mid360"），给出扫描图案、点频、帧率、量程与噪声；
 //   rateHz、rangeMin、rangeMax、pointsPerSecond、hits、pattern（自定义扫描图案，相对场景文件）可覆盖预设；noise 写 {"enabled": false} 关闭，或覆盖各项；
 //   motionDistortion（默认 true）：按每点的测量时刻发出射线（运动畸变）；
-//   imu: true 时在预设给出的位置另装一个 IMU（名字为 <name>_imu，频率与噪声取预设，如 Mid-360 内置的 ICM40609）。
+//   imu: true 时在预设给出的位置另装一个 IMU（名字为 <name>_imu，频率与噪声取预设，如 Mid-360 内置的 ICM40609）；
+//   model（默认 true）：预设给出外观模型时，在安装位置显示（glTF，由 scripts/assets/fetch_sensor_models.sh 下载；没有时只提示）。
 // ---- 传感器噪声（M4-09，设计稿第 2 节）----
 // 不写即为 0（不加该项噪声）；enabled = false 时保留参数但不加（用户评审时的要求：噪声可以关闭）。
 struct ImuNoiseAxis {
@@ -119,6 +124,64 @@ struct CameraNoise {
     double depthStdQuadratic = 0.0;  // σ = depthStd + depthStdQuadratic × z²（1/米）
     double dropout = 0.0;            // 深度像素丢失的概率（丢失为 inf）
     double pixelStd = 0.0;           // RGB 每个通道的高斯噪声（0–255）
+};
+
+// ---- 热成像（M5-06，M5-01 设计稿第 3 节）----
+// 温度曲线 [[t, T], …]：仿真时间（秒）→ 温度（°C），按时间线性插值，第一点之前与最后一点之后取端点的值；
+// 场景文件中也可以只写一个数（常数）
+struct TemperatureCurve {
+    std::vector<std::pair<double, double>> points;  // 按时间升序
+    double at(double time) const noexcept;
+};
+
+// 场景文件的 thermal 段：
+//   ambient（默认 20 °C）：没有指定温度的物体；sky（默认 −20 °C）：没有命中的像素；
+//   temperatures：{"实体全名" | "实例名" | "前缀*" | "world": 温度或曲线}，匹配规则与 labels 相同（实体全名 > 实例名 > 最长的前缀），
+//     "world" 为不属于任何实体的静态几何体（如 MJCF worldbody 中的地面、墙）；
+//   hotspots：[{entity, position（实体坐标系，米）, radius（米）, temperature}]：以 position 为中心、radius 为半径的区域，
+//     温度 = 底温 + (热点温度 − 底温) × (1 − (d / radius)²)²（中心为热点温度，边缘平滑地回到底温）；多个热点取最高
+struct HotspotSpec {
+    std::string entity;
+    terra::data::Vec3 position{0, 0, 0};
+    double radius = 0.1;
+    TemperatureCurve temperature;
+    std::string where;
+};
+struct ThermalSceneSpec {
+    bool configured = false;
+    double ambient = 20.0;
+    double sky = -20.0;
+    std::vector<std::pair<std::string, TemperatureCurve>> temperatures;  // 匹配写法 → 温度
+    std::vector<HotspotSpec> hotspots;
+};
+
+enum class ThermalPalette { Ironbow, WhiteHot, BlackHot, Rainbow };
+const char* thermalPaletteName(ThermalPalette palette) noexcept;
+
+// 热像仪的噪声：每帧每像素 σ = netdK 的高斯（时间噪声）；每台相机一个固定偏差（测温精度），
+//   偏差(T) = g × max(accuracyAbsolute, accuracyRelative × |T|) ÷ 2，g 为按种子取的标准正态数（精度按 2σ 理解）
+struct ThermalNoise {
+    bool configured = false;
+    bool enabled = true;
+    double netdK = 0.0;
+    double accuracyAbsolute = 0.0;  // °C
+    double accuracyRelative = 0.0;  // 读数（°C）的比例
+};
+
+// 相机的 thermal 块：preset（assets/sensors/thermal_presets.json）、gain（预设的增益档，决定量程与精度）、
+//   palette（ironbow 默认、white-hot、black-hot、rainbow）、display（"auto" 按每帧的最低、最高温度，或 [下限, 上限] °C）、
+//   noise（{"enabled": false} 关闭，或覆盖 netdK、accuracyAbsolute、accuracyRelative）
+struct ThermalCameraSpec {
+    bool enabled = false;
+    std::string preset;
+    std::string gain;
+    double rangeMin = -273.15;  // 量程（°C）：辐射测温图超出时截断
+    double rangeMax = 1000.0;
+    ThermalPalette palette = ThermalPalette::Ironbow;
+    bool autoDisplay = true;
+    double displayMin = 0.0;  // autoDisplay 为 false 时的伪彩色区间（°C）
+    double displayMax = 100.0;
+    ThermalNoise noise;
 };
 
 // M5-11：3D 激光雷达的噪声。距离 σ 在 rangeNear（σ = rangeStdNear）与 rangeFar（σ = rangeStdFar）之间按距离线性插值，
@@ -176,6 +239,9 @@ struct SensorSpec {
     int lines = 1;
     bool motionDistortion = true;
     Lidar3dNoise lidar3dNoise;
+    ThermalCameraSpec thermal;      // M5-06：相机的热成像输出
+    std::string modelFile;          // 外观模型（glTF，绝对路径；空表示不显示）
+    terra::data::Pose modelPose;    // 外观模型在安装坐标系中的位姿（Mid-360：底面中心在雷达原点下方 47 mm）
     CameraNoise cameraNoise;
 };
 
@@ -246,7 +312,25 @@ struct CameraSensor {
     int displayRotation = 0;  // M4-04：显示时逆时针旋转的角度（0、90、180、270），数据不变
     bool segmentation = false;  // M4-09：输出分割图
     CameraNoise noise;          // M4-09
+    ThermalCameraSpec thermal;  // M5-06：输出温度图（与彩色、深度、分割像素对齐）
     std::string where;
+};
+
+// M5-06：实例化后的温度表。实体按 EntityId 下标（value − 1）；没有写温度的实体为空（取 ambient）
+struct ThermalModel {
+    struct Hotspot {
+        terra::data::EntityId entity;  // 无效表示世界
+        terra::data::Vec3 position{0, 0, 0};
+        double radius = 0.1;
+        TemperatureCurve temperature;
+    };
+    double ambient = 20.0;
+    double sky = -20.0;
+    std::vector<std::optional<TemperatureCurve>> entities;
+    std::optional<TemperatureCurve> world;  // 不属于任何实体的静态几何体
+    std::vector<Hotspot> hotspots;
+    // 实体（无效 ID 为世界）在 time 时刻的底温（不含热点）
+    double base(terra::data::EntityId entity, double time) const noexcept;
 };
 
 // 传感器的采样配置（与 ModelDescription::sensors 一一对应）
@@ -272,6 +356,7 @@ struct SceneDocument {
     NoiseSettings noise;                        // M4-09：场景级的噪声设置（种子、总开关）
     // M4-09：分割图的语义类别：实体全名或模型实例名的通配（“go2/*”、“floor”）→ 类别名
     std::vector<std::pair<std::string, std::string>> labels;
+    ThermalSceneSpec thermal;  // M5-06：温度
 };
 
 struct ParseResult {
@@ -287,6 +372,8 @@ ParseResult readSceneFile(const std::string& path);
 // M4-09：实体的语义类别（分割图的对照表）：实体全名完全匹配优先，其次模型实例名，其次以 * 结尾的前缀（最长的优先）；
 // 都不匹配时为空
 std::string sceneLabel(const SceneDocument& document, const std::string& entityName, const std::string& instanceName);
+// 匹配写法的等级（labels 与 M5-06 的 thermal.temperatures 共用）：3 实体全名，2 实例名，1 以 * 结尾的前缀（length 为前缀长度），0 不匹配
+int scenePatternRank(const std::string& pattern, const std::string& entityName, const std::string& instanceName, std::size_t& length);
 
 // 视觉部件（M2-01 设计第 4 节）：先排 MJCF 几何体（按 GeomId），再排 glTF 绑定（按场景文件顺序）。
 struct VisualPart {
@@ -317,6 +404,7 @@ struct SceneInstance {
     std::vector<CameraSensor> cameras;        // M4-03：场景文件中启用的相机，按场景文件的顺序
     std::vector<LidarSensor> lidars;          // M4-03b：场景文件中的 2D 激光雷达，按场景文件的顺序
     std::vector<Lidar3dSensor> lidars3d;      // M5-11：场景文件中的 3D 激光雷达，按场景文件的顺序
+    ThermalModel thermal;                     // M5-06：场景的温度（热像仪用）
 
     const VisualPart* visual(terra::data::VisualId id) const noexcept {
         return id.valid() && id.value <= visuals.size() ? &visuals[id.value - 1] : nullptr;

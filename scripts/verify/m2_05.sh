@@ -170,7 +170,7 @@ mutations = {
         "            p.pose = g != nullptr ? multiply(e, g->local) : e;",
         "            p.pose = e;"),
     "重复绑定不检查": (
-        "        if (const auto it = seen.find(key); it != seen.end()) {",
+        "        if (const auto it = seen.find(key); !spec.sensorModel && it != seen.end()) {",
         "        if (const auto it = seen.find(key); false) {"),
 }
 old, new = mutations[name]

@@ -1,6 +1,6 @@
 # EAI Terra 开发记录
 
-> 本文件是**实际开发进度与验证证据的主记录**。开发计划描述未来任务，本文件只记录确实发生的工作。**M0 已完成**（2026-11-19）。**M1 已完成**（2026-11-23）。**M2 已完成**（2026-11-23）。**M3 已完成**（2026-11-24，LOG-132）。**M4 已完成**（2026-11-25，LOG-186）。M4 过程：M4-01 传感器设计评审通过；M4-02 IMU 已通过（LOG-136）；M4-03a 离屏渲染与相机已通过（LOG-138）；M4-03b 2D 激光雷达已通过（LOG-141）；M4-04 已通过（LOG-145）；M4-05 ROS2 接入设计评审通过（LOG-147）；Go2W、AS2 导入已通过（LOG-149）；M4-06a 通用配置的 ROS2 桥已通过（LOG-152）；M4-06b 宇树配置已通过（LOG-156）：M4-06 ROS2 桥接完成；M4-07 传感器记录已通过（LOG-158）；M4-08a 模型导入已通过；M4-08b TurtleBot 4 已通过（随 M4-08c 复跑）；M4-08c 资源库与场景卡片已验收（LOG-169、LOG-170）；M4-08d ROS2 面板与显示配置已通过（LOG-172）：M4-08 全部完成；M4-09 噪声与分割图已通过（LOG-175）；M4-10 设计稿按用户意见修订并分为 M4-10a / M4-10b（LOG-177）；M4-10a 推理组件与策略运行已通过（LOG-180）；M4-10b 策略导入向导已通过（LOG-183）：M4-10 完成；M4-11 阶段验收完成（LOG-185、LOG-186）：**M4 已完成**（2026-11-25）。M5-01 设计稿评审通过（LOG-189）；M5-11 MID-360 第一次运行有 4 项失败，已修正（LOG-191）；第二次运行仅 `ros2.lidar3d` 失败（测试的距离上限算错），已修正，待第三次运行（LOG-192）。
+> 本文件是**实际开发进度与验证证据的主记录**。开发计划描述未来任务，本文件只记录确实发生的工作。**M0 已完成**（2026-11-19）。**M1 已完成**（2026-11-23）。**M2 已完成**（2026-11-23）。**M3 已完成**（2026-11-24，LOG-132）。**M4 已完成**（2026-11-25，LOG-186）。M4 过程：M4-01 传感器设计评审通过；M4-02 IMU 已通过（LOG-136）；M4-03a 离屏渲染与相机已通过（LOG-138）；M4-03b 2D 激光雷达已通过（LOG-141）；M4-04 已通过（LOG-145）；M4-05 ROS2 接入设计评审通过（LOG-147）；Go2W、AS2 导入已通过（LOG-149）；M4-06a 通用配置的 ROS2 桥已通过（LOG-152）；M4-06b 宇树配置已通过（LOG-156）：M4-06 ROS2 桥接完成；M4-07 传感器记录已通过（LOG-158）；M4-08a 模型导入已通过；M4-08b TurtleBot 4 已通过（随 M4-08c 复跑）；M4-08c 资源库与场景卡片已验收（LOG-169、LOG-170）；M4-08d ROS2 面板与显示配置已通过（LOG-172）：M4-08 全部完成；M4-09 噪声与分割图已通过（LOG-175）；M4-10 设计稿按用户意见修订并分为 M4-10a / M4-10b（LOG-177）；M4-10a 推理组件与策略运行已通过（LOG-180）；M4-10b 策略导入向导已通过（LOG-183）：M4-10 完成；M4-11 阶段验收完成（LOG-185、LOG-186）：**M4 已完成**（2026-11-25）。M5-01 设计稿评审通过（LOG-189）；M5-11 MID-360 第一次运行有 4 项失败，已修正（LOG-191）；第二次运行仅 `ros2.lidar3d` 失败（测试的距离上限算错），已修正（LOG-192）；第三次运行全部通过，**M5-11 已通过**（LOG-193）。M5-06 热成像实现完成，待基线运行（LOG-194）。
 
 ## 1. 当前进度快照
 
@@ -2550,6 +2550,63 @@
   - 只在终端中显示，日志内容不变；
   - `m5_11.sh` 已接入，以后各阶段的脚本都使用。
 - **文件：**`tests/ros2/check_lidar3d_ros2.py`、`tests/sensors/check_lidar3d.py`、`tests/sensors/test_lidar3d.cpp`、`assets/tests/sensors/lidar3d_ground.*`（新）、`scripts/verify/lib/progress.sh`（新）、`scripts/verify/m5_11.sh`。未提交。
+
+### LOG-193：M5-11 基线验证通过；补充倒置展示与 Mid-360 外观模型
+
+- **日期：**2026-11-26。
+- **类型 / 当前状态：**验证 + 功能。**M5-11 已通过**；补充部分随下一次运行验证。
+- **结果（第三次运行）：**
+  - 111 / 152 / 152 / 168，ASan 120 + 32 + 16，全部通过；
+  - 变异 6/6；
+  - Mid-360 一帧 3.52 ms；
+  - 地面圆环与图案的解析值一致；
+  - 总耗时 25:24（进度条生效）。
+- **用户：**
+  - 观察过的是倒置的 Mid-360。分析见 [M5-11 报告](../validation/M5-11-mid360.md)第 5.3 节：倒置时盲区由上边缘决定，近似圆形。
+  - 要求展示倒置，并给雷达加外观模型。
+  - 要求直接开始后续开发。
+- **补充：**
+  - 倒置夹具、测试与 Go2 倒置场景卡片；
+  - 外观模型：`mathaimp/livox_gz_sim` 的 `mid360.dae`（MIT），下载并转为 glb；
+  - 预设 `model` 字段，场景解析时自动加 glTF 绑定（`VisualBindingSpec::sensorModel`）；
+  - 变异增加到 7 个。
+- **文件：**
+  - `engine/scene/include/terra/scene/scene.hpp`、`engine/scene/src/scene_file.cpp`、`engine/scene/src/scene_instance.cpp`；
+  - `assets/sensors/lidar3d_presets.json`、`assets/sensors/sensor_models.lock`（新）；
+  - `scripts/assets/fetch_sensor_models.sh`（新）、`scripts/assets/dae_to_glb.py`（新）；
+  - `assets/tests/sensors/lidar3d_ground_inverted.terra-scene.json`（新）、`assets/scenes/robots/go2_mid360_inverted.terra-scene.json`（新）；
+  - `tests/sensors/test_lidar3d.cpp`；`scripts/verify/m5_11.sh`、`scripts/verify/m2_05.sh`（锚点）；`.gitignore`。
+  - 未提交。
+
+### LOG-194：M5-06 热成像相机实现完成；热力学求解的方案确定
+
+- **日期：**2026-11-26。
+- **类型 / 当前状态：**功能 + 计划。**待基线运行**（`bash scripts/verify/m5_06.sh`）。
+- **实现**（说明见 [M5-06 报告](../validation/M5-06-thermal.md)）：
+  - 预设 `assets/sensors/thermal_presets.json`；
+  - 场景文件的 `thermal` 段（匹配写法与 labels 相同，曲线、热点），相机的 `thermal` 块；
+  - 温度由分割图与深度在 CPU 上算出（`engine/simulation` 的 thermal），与彩色、深度、分割像素对齐；
+  - 噪声：NETD 加固定偏差；辐射测温 0.01 K；四种色板；
+  - 出口：`terra_capture`、查看器传感器面板（悬停显示温度）、ROS2（mono16、rgb8、camera_info）。
+- **与设计稿的差别：**
+  - 按 glTF 节点或材质的温度随 M5-02 元素实现；
+  - 8 位灰度用 white-hot 色板代替；
+  - 记录只保存元数据。
+- **测试：**
+  - 新增 `simulation.thermal`、`graphics.capture_thermal`、`graphics.viewer_thermal_selftest`、`ros2.thermal`；
+  - 变异 7 个；锚点 329/329 唯一。
+- **用户：**
+  - 热力学按建议做：通用热网络用 C++ 自写；变压器按 IEC 60076-7，以 Alliander 的 transformer-thermal-model（MPL-2.0）作对照；放在 M5 之后；
+  - 火灾场景暂不做。
+  - 见开发计划 12.5 节。
+- **文件：**
+  - 引擎：`engine/scene`（`scene.hpp`、`scene_file.cpp`、`scene_instance.cpp`、`thermal_model.cpp`（新）、`CMakeLists.txt`）；`engine/simulation`（`thermal.hpp/.cpp`（新）、`sensor_noise.hpp/.cpp`、`CMakeLists.txt`）；`engine/ros2`（`bridge.hpp/.cpp`）；`engine/ui`（`text.hpp/.cpp`）；
+  - 程序：`apps/viewer`（`camera_sensor.hpp/.cpp`、`main.cpp`、`CMakeLists.txt`）；`apps/capture/main.cpp`；
+  - 素材：`assets/sensors/thermal_presets.json`（新）、`assets/tests/sensors/thermal_bench.*`（新）；
+  - 测试：`tests/sensors/test_thermal.cpp`（新）、`tests/sensors/check_thermal.py`（新）、`tests/ros2/check_thermal_ros2.py`（新）、`tests/CMakeLists.txt`；
+  - 脚本：`scripts/verify/m5_06.sh`（新）；
+  - 文档：`docs/planning/DEVELOPMENT_PLAN.md`。
+  - 未提交。
 
 ## 4. 后续记录规则
 

@@ -429,10 +429,12 @@ void readImu(Reader& r, const Json& item, const std::string& where, SensorSpec& 
     }
 }
 
+void readThermalCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s);  // M5-06，定义见下
+
 // 一个相机（M4-03）
 void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
     if (!r.object(item, where, {"type", "name", "camera", "entity", "position", "rotation", "width", "height", "fovyDeg", "near",
-                                "far", "rateHz", "rgb", "depth", "displayRotationDeg", "segmentation", "noise"})) {
+                                "far", "rateHz", "rgb", "depth", "displayRotationDeg", "segmentation", "noise", "thermal"})) {
         return;
     }
     const bool hasCamera = item.contains("camera");
@@ -482,7 +484,8 @@ void readCamera(Reader& r, const Json& item, const std::string& where, SensorSpe
     if (item.contains("depth")) {
         if (const auto b = r.boolean(item["depth"], where + "/depth")) s.depth = *b;
     }
-    if (!s.rgb && !s.depth) r.error(where, "rgb 与 depth 不能都关闭");
+    if (item.contains("thermal")) readThermalCamera(r, item, where, s);  // M5-06
+    if (!s.rgb && !s.depth && !s.thermal.enabled) r.error(where, "rgb 与 depth 不能都关闭（热像仪写 thermal 时可以都关闭）");
     if (item.contains("segmentation")) {  // M4-09
         if (const auto b = r.boolean(item["segmentation"], where + "/segmentation")) s.segmentation = *b;
     }
@@ -537,6 +540,219 @@ void readLidar(Reader& r, const Json& item, const std::string& where, SensorSpec
 // 3D 雷达预设与扫描图案所在目录：与雷达预设文件（TERRA_SENSOR_PRESETS）相同的目录
 fs::path sensorPresetDirectory() { return fs::path{presetFile()}.parent_path(); }
 
+// ---- 热成像（M5-06）----
+
+// 温度：一个数（常数），或 [[t, T], …]（时间严格递增，t ≥ 0）
+std::optional<TemperatureCurve> readTemperature(Reader& r, const Json& v, const std::string& where) {
+    TemperatureCurve c;
+    const auto valid = [&](double t) { return std::isfinite(t) && t > -273.15 && t < 10000.0; };
+    if (v.is_number()) {
+        const double t = v.get<double>();
+        if (!valid(t)) {
+            r.error(where, "温度应在 −273.15 °C 以上、10000 °C 以下");
+            return std::nullopt;
+        }
+        c.points.emplace_back(0.0, t);
+        return c;
+    }
+    if (!v.is_array() || v.empty()) {
+        r.error(where, "温度应为数（°C），或随时间变化的曲线 [[时间（秒）, 温度（°C）], …]");
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        double pair[2] = {0, 0};
+        if (!r.numbers(v[i], where + "/" + std::to_string(i), 2, pair)) return std::nullopt;
+        if (!(pair[0] >= 0.0) || (!c.points.empty() && !(pair[0] > c.points.back().first))) {
+            r.error(where + "/" + std::to_string(i), "曲线的时间应从 0 起严格递增");
+            return std::nullopt;
+        }
+        if (!valid(pair[1])) {
+            r.error(where + "/" + std::to_string(i), "温度应在 −273.15 °C 以上、10000 °C 以下");
+            return std::nullopt;
+        }
+        c.points.emplace_back(pair[0], pair[1]);
+    }
+    return c;
+}
+
+// 场景文件的 thermal 段
+void readThermalScene(Reader& r, const Json& j, ThermalSceneSpec& out) {
+    const std::string where = "/thermal";
+    if (!r.object(j, where, {"ambient", "sky", "temperatures", "hotspots"})) return;
+    out.configured = true;
+    for (const auto& [key, target] : {std::pair<const char*, double*>{"ambient", &out.ambient}, std::pair<const char*, double*>{"sky", &out.sky}}) {
+        if (!j.contains(key)) continue;
+        if (const auto d = r.number(j[key], where + "/" + key)) {
+            if (*d > -273.15 && *d < 10000.0) *target = *d;
+            else r.error(where + "/" + key, "温度应在 −273.15 °C 以上、10000 °C 以下");
+        }
+    }
+    if (j.contains("temperatures")) {
+        const Json& t = j["temperatures"];
+        if (!t.is_object()) {
+            r.error(where + "/temperatures", "应为对象（实体全名、实例名、以 * 结尾的前缀或 “world” → 温度）");
+        } else {
+            for (auto it = t.begin(); it != t.end(); ++it) {
+                const std::string key = it.key();
+                const std::string w = where + "/temperatures/" + key;
+                const std::size_t star = key.find('*');
+                if (key.empty() || (star != std::string::npos && star + 1 != key.size())) {
+                    r.error(w, "写法应为实体全名、实例名、“world”，或以 * 结尾的前缀（如 “go2/*”）");
+                    continue;
+                }
+                if (auto c = readTemperature(r, it.value(), w)) out.temperatures.emplace_back(key, std::move(*c));
+            }
+        }
+    }
+    if (j.contains("hotspots")) {
+        const Json& h = j["hotspots"];
+        if (!h.is_array()) {
+            r.error(where + "/hotspots", "应为数组");
+            return;
+        }
+        for (std::size_t i = 0; i < h.size(); ++i) {
+            const std::string w = where + "/hotspots/" + std::to_string(i);
+            if (!r.object(h[i], w, {"entity", "position", "radius", "temperature"})) continue;
+            HotspotSpec spot;
+            spot.where = w;
+            if (!h[i].contains("entity")) r.error(w, "热点需要 entity（实体全名，或 “world”）");
+            else if (const auto e = r.string(h[i]["entity"], w + "/entity")) spot.entity = *e;
+            if (h[i].contains("position")) {
+                if (const auto v = r.vec3(h[i]["position"], w + "/position")) spot.position = *v;
+            }
+            if (h[i].contains("radius")) {
+                if (const auto d = r.number(h[i]["radius"], w + "/radius")) {
+                    if (*d > 0) spot.radius = *d;
+                    else r.error(w + "/radius", "半径必须大于 0");
+                }
+            }
+            if (!h[i].contains("temperature")) {
+                r.error(w, "热点需要 temperature（°C 或曲线）");
+                continue;
+            }
+            if (auto c = readTemperature(r, h[i]["temperature"], w + "/temperature")) {
+                spot.temperature = std::move(*c);
+                out.hotspots.push_back(std::move(spot));
+            }
+        }
+    }
+}
+
+// 相机的 thermal 块：预设给出分辨率、视场角、帧率与噪声（相机显式写的字段优先）
+void readThermalCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
+    const Json& j = item["thermal"];
+    const std::string w = where + "/thermal";
+    if (!r.object(j, w, {"preset", "gain", "palette", "display", "noise"})) return;
+    ThermalCameraSpec& t = s.thermal;
+    t.enabled = true;
+    if (!j.contains("preset")) {
+        r.error(w, "热像仪需要 preset（如 “flir_lepton_3_5”；见 assets/sensors/thermal_presets.json）");
+        return;
+    }
+    const auto name = r.string(j["preset"], w + "/preset");
+    if (!name) return;
+    t.preset = *name;
+    const fs::path file = sensorPresetDirectory() / "thermal_presets.json";
+    std::ifstream in(file, std::ios::binary);
+    const Json presets = in ? Json::parse(in, nullptr, false) : Json{};
+    if (presets.is_discarded() || !presets.is_object() || !presets.contains("presets") || !presets["presets"].is_object()) {
+        r.error(w + "/preset", "无法读取热像仪预设文件：" + file.string());
+        return;
+    }
+    if (!presets["presets"].contains(*name)) {
+        std::string list;
+        for (auto it = presets["presets"].begin(); it != presets["presets"].end(); ++it) list += (list.empty() ? "" : "、") + it.key();
+        r.error(w + "/preset", "没有热像仪预设“" + *name + "”（可用：" + list + "）");
+        return;
+    }
+    const Json& p = presets["presets"][*name];
+    const std::string pw = w + "/preset(" + *name + ")";
+    // 分辨率、视场角与帧率：相机没有写时取预设；竖直视场角按方形像素由水平视场角算出
+    if (!item.contains("width") && p.contains("width")) {
+        if (const auto n = r.integer(p["width"], pw + "/width")) s.width = static_cast<int>(*n);
+    }
+    if (!item.contains("height") && p.contains("height")) {
+        if (const auto n = r.integer(p["height"], pw + "/height")) s.height = static_cast<int>(*n);
+    }
+    if (!item.contains("fovyDeg") && p.contains("hfovDeg")) {
+        if (const auto h = r.number(p["hfovDeg"], pw + "/hfovDeg")) {
+            constexpr double kPi = 3.14159265358979323846;
+            const double width = static_cast<double>(s.width.value_or(640));
+            const double height = static_cast<double>(s.height.value_or(480));
+            s.fovyDegrees = 2.0 * std::atan(std::tan(*h * kPi / 360.0) * height / width) * 360.0 / kPi;
+        }
+    }
+    if (!item.contains("rateHz") && p.contains("rateHz")) {
+        if (const auto d = r.number(p["rateHz"], pw + "/rateHz")) s.rateHz = *d;
+    }
+    if (p.contains("netdK")) {
+        if (const auto d = r.number(p["netdK"], pw + "/netdK")) t.noise.netdK = *d;
+    }
+    t.noise.configured = true;
+    // 增益档：量程与精度
+    std::string gain;
+    if (p.contains("defaultGain")) {
+        if (const auto g = r.string(p["defaultGain"], pw + "/defaultGain")) gain = *g;
+    }
+    if (j.contains("gain")) {
+        if (const auto g = r.string(j["gain"], w + "/gain")) gain = *g;
+    }
+    if (!p.contains("gains") || !p["gains"].is_object() || !p["gains"].contains(gain)) {
+        std::string list;
+        if (p.contains("gains") && p["gains"].is_object()) {
+            for (auto it = p["gains"].begin(); it != p["gains"].end(); ++it) list += (list.empty() ? "" : "、") + it.key();
+        }
+        r.error(w + "/gain", "预设“" + *name + "”没有增益档“" + gain + "”（可用：" + list + "）");
+    } else {
+        t.gain = gain;
+        const Json& g = p["gains"][gain];
+        double range[2] = {t.rangeMin, t.rangeMax};
+        if (g.contains("range") && r.numbers(g["range"], pw + "/gains/" + gain + "/range", 2, range)) {
+            t.rangeMin = range[0];
+            t.rangeMax = range[1];
+        }
+        if (g.contains("accuracy") && g["accuracy"].is_object()) {
+            noiseNumber(r, g["accuracy"], pw + "/gains/" + gain + "/accuracy", "absolute", t.noise.accuracyAbsolute);
+            noiseNumber(r, g["accuracy"], pw + "/gains/" + gain + "/accuracy", "relative", t.noise.accuracyRelative, 1.0);
+        }
+    }
+    if (j.contains("palette")) {
+        if (const auto v = r.string(j["palette"], w + "/palette")) {
+            if (*v == "ironbow") t.palette = ThermalPalette::Ironbow;
+            else if (*v == "white-hot") t.palette = ThermalPalette::WhiteHot;
+            else if (*v == "black-hot") t.palette = ThermalPalette::BlackHot;
+            else if (*v == "rainbow") t.palette = ThermalPalette::Rainbow;
+            else r.error(w + "/palette", "色板应为 ironbow、white-hot、black-hot 或 rainbow");
+        }
+    }
+    if (j.contains("display")) {
+        const Json& d = j["display"];
+        if (d.is_string() && d.get<std::string>() == "auto") {
+            t.autoDisplay = true;
+        } else {
+            double range[2] = {0, 0};
+            if (r.numbers(d, w + "/display", 2, range)) {
+                if (range[1] > range[0]) {
+                    t.autoDisplay = false;
+                    t.displayMin = range[0];
+                    t.displayMax = range[1];
+                } else {
+                    r.error(w + "/display", "伪彩色区间的上限应大于下限");
+                }
+            }
+        }
+    }
+    if (j.contains("noise")) {
+        const Json& n = j["noise"];
+        if (r.object(n, w + "/noise", {"enabled", "netdK", "accuracyAbsolute", "accuracyRelative"})) {
+            noiseEnabled(r, n, w + "/noise", t.noise.enabled);
+            noiseNumber(r, n, w + "/noise", "netdK", t.noise.netdK, 10.0);
+            noiseNumber(r, n, w + "/noise", "accuracyAbsolute", t.noise.accuracyAbsolute, 1000.0);
+            noiseNumber(r, n, w + "/noise", "accuracyRelative", t.noise.accuracyRelative, 1.0);
+        }
+    }
+}
+
 void readLidar3dNoiseFields(Reader& r, const Json& j, const std::string& where, Lidar3dNoise& n) {
     noiseNumber(r, j, where, "rangeStdNear", n.rangeStdNear);
     noiseNumber(r, j, where, "rangeNear", n.rangeNear);
@@ -549,7 +765,7 @@ void readLidar3dNoiseFields(Reader& r, const Json& j, const std::string& where, 
 std::optional<SensorSpec> readLidar3d(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
     std::optional<SensorSpec> imu;
     if (!r.object(item, where, {"type", "name", "entity", "position", "rotation", "preset", "rateHz", "rangeMin", "rangeMax", "pointsPerSecond",
-                                "hits", "noise", "imu", "motionDistortion", "pattern"})) {
+                                "hits", "noise", "imu", "motionDistortion", "pattern", "model"})) {
         return imu;
     }
     if (!item.contains("entity")) {
@@ -602,6 +818,26 @@ std::optional<SensorSpec> readLidar3d(Reader& r, const Json& item, const std::st
         s.lidar3dNoise.configured = true;
         s.lidar3dNoise.preset = *name;
         readLidar3dNoiseFields(r, p["noise"], pw + "/noise", s.lidar3dNoise);
+    }
+    // 外观模型：预设的 model = {gltf（相对预设目录）, position, rotation（模型在安装坐标系中的位姿）}；场景写 "model": false 不显示
+    bool showModel = true;
+    if (item.contains("model")) {
+        if (const auto b = r.boolean(item["model"], where + "/model")) showModel = *b;
+    }
+    if (showModel && p.contains("model") && p["model"].is_object()) {
+        const Json& m = p["model"];
+        if (m.contains("gltf")) {
+            if (const auto f = r.string(m["gltf"], pw + "/model/gltf")) {
+                const fs::path file = (dir / *f).lexically_normal();
+                std::error_code ec;
+                if (fs::is_regular_file(file, ec)) {
+                    s.modelFile = file.string();
+                    r.pose(m, pw + "/model", s.modelPose);
+                } else {
+                    r.warning(where, "没有外观模型 " + file.string() + "（运行 scripts/assets/fetch_sensor_models.sh 下载），不显示雷达外观；读数不受影响");
+                }
+            }
+        }
     }
     // 显式写的字段覆盖预设；pattern 为自定义的扫描图案（相对场景文件，格式同 Livox 的 CSV）
     if (item.contains("pattern")) {
@@ -799,7 +1035,7 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     doc.path = path.string();
     doc.directory = path.parent_path().string();
     if (r.object(root, "", {"format", "version", "name", "title", "physics", "models", "visuals", "view", "initialKeyframe",
-                            "controllers", "sensors", "noise", "labels"})) {
+                            "controllers", "sensors", "noise", "labels", "thermal"})) {
         if (!root.contains("format")) {
             r.error("", "缺少 format（应为 “terra.scene”）");
         } else if (const auto s = r.string(root["format"], "/format"); s && *s != "terra.scene") {
@@ -828,8 +1064,21 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
         if (root.contains("view")) readView(r, root["view"], doc.view);
         if (root.contains("controllers")) readControllers(r, root["controllers"], doc.controllers);
         if (root.contains("sensors")) readSensors(r, root["sensors"], doc.sensors);
+        // M5-11：传感器的外观模型作为 glTF 绑定加到 visuals 末尾（跟随安装的实体）
+        for (const SensorSpec& s : doc.sensors) {
+            if (s.modelFile.empty()) continue;
+            VisualBindingSpec b;
+            b.entity = s.entity;
+            b.gltf = s.modelFile;
+            b.local = multiply(s.pose, s.modelPose);
+            b.frame = VisualFrame::Node;
+            b.sensorModel = true;
+            b.where = s.where + "/model";
+            doc.visuals.push_back(std::move(b));
+        }
         if (root.contains("noise")) readNoiseSettings(r, root["noise"], doc.noise);  // M4-09
         if (root.contains("labels")) readLabels(r, root["labels"], doc.labels);    // M4-09
+        if (root.contains("thermal")) readThermalScene(r, root["thermal"], doc.thermal);  // M5-06
         if (root.contains("initialKeyframe")) {
             if (const auto k = r.string(root["initialKeyframe"], "/initialKeyframe")) {
                 if (k->empty()) r.error("/initialKeyframe", "关键帧名为空（从模型初值开始时省略此字段）");
@@ -842,19 +1091,24 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     return result;
 }
 
+int scenePatternRank(const std::string& pattern, const std::string& entityName, const std::string& instanceName, std::size_t& length) {
+    length = pattern.size();
+    if (pattern == entityName) return 3;
+    if (pattern == instanceName) return 2;
+    if (!pattern.empty() && pattern.back() == '*' && entityName.compare(0, pattern.size() - 1, pattern, 0, pattern.size() - 1) == 0) {
+        length = pattern.size() - 1;
+        return 1;
+    }
+    return 0;
+}
+
 std::string sceneLabel(const SceneDocument& document, const std::string& entityName, const std::string& instanceName) {
     std::string best;
     std::size_t bestLength = 0;
     int bestRank = 0;  // 3：实体全名，2：实例名，1：前缀
     for (const auto& [pattern, label] : document.labels) {
-        int rank = 0;
-        std::size_t length = pattern.size();
-        if (pattern == entityName) rank = 3;
-        else if (pattern == instanceName) rank = 2;
-        else if (!pattern.empty() && pattern.back() == '*' && entityName.compare(0, pattern.size() - 1, pattern, 0, pattern.size() - 1) == 0) {
-            rank = 1;
-            length = pattern.size() - 1;
-        }
+        std::size_t length = 0;
+        const int rank = scenePatternRank(pattern, entityName, instanceName, length);
         if (rank > bestRank || (rank == bestRank && rank == 1 && length > bestLength)) {
             best = label;
             bestRank = rank;

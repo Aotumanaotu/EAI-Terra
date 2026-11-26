@@ -94,6 +94,10 @@ record "参考机器人" "$(tail -1 "$logs/robots.txt")，退出码 $rc" "$(ok $
 run_step "fetch_lidar_patterns" "$logs/lidar_patterns.txt" bash scripts/assets/fetch_lidar_patterns.sh
 rc=$?
 record "Livox 扫描图案" "$(tail -1 "$logs/lidar_patterns.txt")，退出码 $rc" "$(ok $rc)"
+run_step "fetch_sensor_models" "$logs/sensor_models.txt" bash scripts/assets/fetch_sensor_models.sh
+rc=$?
+record "Mid-360 外观模型" "$(tail -1 "$logs/sensor_models.txt")，退出码 $rc" "$(ok $rc)"
+grep -E "^警告" "$logs/sensor_models.txt" | sed 's/^/    /'
 run_step "check_third_party" "$logs/third_party.txt" bash scripts/import/check_third_party.sh
 rc=$?
 record "tinyxml2、xacro、miniz、ORT 头文件" "$(grep -c '^一致' "$logs/third_party.txt")/16 个文件一致，退出码 $rc" "$(ok $rc)"
@@ -304,6 +308,9 @@ mutations = {
     "内置 IMU 不按预设偏移": (
         "                m.pose = multiply(s.pose, offset);",
         "                m.pose = s.pose;"),
+    "外观模型不按预设偏移": (
+        "            b.local = multiply(s.pose, s.modelPose);",
+        "            b.local = s.pose;"),
 }
 old, new = mutations[name]
 text = open(path, encoding="utf-8").read()
@@ -317,12 +324,12 @@ PY
             continue
         fi
         echo "---- 变异：$name" >>"$log"
-        if ! run_step "变异 $total/6 编译" "$log" cmake --build "$b" -j "$jobs" --target "$target"; then
+        if ! run_step "变异 $total/7 编译" "$log" cmake --build "$b" -j "$jobs" --target "$target"; then
             summary+=("  变异 $name：编译失败，未判定（见 $log）")
             failed=1
             continue
         fi
-        if run_step "变异 $total/6 测试" "$log" ctest --test-dir "$b" -R "^${testname//./\\.}\$" --output-on-failure; then
+        if run_step "变异 $total/7 测试" "$log" ctest --test-dir "$b" -R "^${testname//./\\.}\$" --output-on-failure; then
             summary+=("  变异 $name：未被发现")
         else
             detected=$((detected + 1))
@@ -336,6 +343,7 @@ PY
 距离噪声缺失|engine/simulation/src/sensor_noise.cpp|test_lidar3d|simulation.lidar3d
 记录的点云摘要错|engine/simulation/src/record.cpp|terra_headless|headless.lidar3d
 内置 IMU 不按预设偏移|engine/scene/src/scene_file.cpp|test_lidar3d|simulation.lidar3d
+外观模型不按预设偏移|engine/scene/src/scene_file.cpp|test_lidar3d|simulation.lidar3d
 LIST
     restore
     trap - INT TERM
@@ -380,10 +388,16 @@ elif [ -x "$viewer" ]; then
     echo "  - 视口中叠加的彩色点是 Mid-360 的点云（按高度着色）；传感器面板的“3D 激光雷达”有俯视与侧视图，可以关掉视口叠加"
     echo "  - 速度指令面板或键盘驾驶（I/K、J/L、U/O）让 Go2 走动：看点云随机身移动（每帧 20,000 点，非重复扫描，4 s 循环）"
     echo "  - 传感器面板的“噪声”开关：关掉后点云变为真值；IMU 列表中多了 go2/mid360_imu（Mid-360 内置的 IMU，200 Hz）"
-    echo "  先打开 20 秒俯视：Mid-360 水平装在 0.4 m 高、只有地面（看盲区形状：官方图案的下边缘随方位变化，前后约 3.94 m、左右约 3.16 m）"
+    echo "  先打开两个 20 秒的俯视窗口：Mid-360 装在 0.4 m 高、只有地面；雷达处显示 Mid-360 的外观模型"
+    echo "    1) 正装：官方图案的下边缘随方位变化，盲区前后约 3.94 m、左右约 3.16 m（前后长）"
     "$viewer" --scene assets/tests/sensors/lidar3d_ground.terra-scene.json --seconds 20 \
         --settings "$out/show/settings_ground.json" --library "$policy_library" >"$logs/show_ground.txt" 2>&1
-    echo "  地面圆环展示 退出码 $?"
+    echo "       退出码 $?"
+    echo "    2) 倒置（绕 X 轴转 180°）：视场朝下，八成以上的点打在地面上，中间是接近圆形的密集区，盲区只有 0.31～0.34 m"
+    "$viewer" --scene assets/tests/sensors/lidar3d_ground_inverted.terra-scene.json --seconds 20 \
+        --settings "$out/show/settings_inverted.json" --library "$policy_library" >"$logs/show_inverted.txt" 2>&1
+    echo "       退出码 $?"
+    echo "  资源库里还有“宇树 Go2 + Mid-360（倒置）”场景卡片：Mid-360 倒挂在机身前上方"
     "$viewer" --scene assets/scenes/robots/go2_mid360.terra-scene.json "${policy_args[@]}" --seconds 300 \
         --settings "$out/show/settings.json" --library "$policy_library" >"$logs/show.txt" 2>&1
     rc=$?

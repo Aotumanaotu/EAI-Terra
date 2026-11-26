@@ -1,0 +1,29 @@
+<!--
+  热像仪真值夹具（M5-06）。无重力，几何体不参与碰撞，一切静止。
+    wall    静态的墙（属于世界），正面在 x = 2.0，足够大，充满水平视野：温度取 thermal.temperatures 的 "world"
+    plate   板，中心 (1.0, 0, 1.0)，正面在 x = 0.95，宽 0.4、高 0.4：正对相机光轴，图像中心的像素落在板上
+    block   方块，中心 (1.0, −0.36, 0.8)，半边长 0.08：温度随时间线性变化
+    heater  加热器，中心 (1.0, 0.38, 1.2)，半边长 0.1：正面中心 (−0.1, 0, 0)（实体坐标系）有一个热点
+    rig     相机支架，位于 (0, 0, 1)；外壳透明（不进入深度与分割）
+-->
+<mujoco model="thermal_bench">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+  <worldbody>
+    <geom name="wall" type="box" pos="2.05 0 1" size="0.05 5 5" rgba="0.7 0.7 0.7 1"/>
+    <body name="plate" pos="1.0 0 1.0">
+      <geom type="box" size="0.05 0.2 0.2" rgba="0.4 0.4 0.45 1"/>
+    </body>
+    <body name="block" pos="1.0 -0.36 0.8">
+      <geom type="box" size="0.08 0.08 0.08" rgba="0.2 0.5 0.8 1"/>
+    </body>
+    <body name="heater" pos="1.0 0.38 1.2">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.8 0.3 0.2 1"/>
+    </body>
+    <body name="rig" pos="0 0 1">
+      <geom type="sphere" size="0.01" rgba="0 0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -1,0 +1,58 @@
+{
+  "format": "terra.thermal-presets",
+  "version": 1,
+  "comment": "热像仪预设（M5-06，M5-01 设计稿 3.3 节，2026-11-26 评审通过）。参数取自厂家公开资料（见 sources），不凭空编写。场景文件中相机的 thermal.preset 为这里的键；相机显式写的 width、height、fovyDeg、rateHz 与 thermal 中的字段覆盖预设。hfovDeg 为水平视场角，竖直视场角按方形像素由分辨率算出。netdK 取数据手册的上限（< 50 mK 记为 0.05 K）作为时间噪声的 σ；accuracy 为“取 absolute（°C）与 relative × |读数（°C）| 中较大者”，按 2σ 理解（固定偏差的 σ 为其一半）。",
+  "presets": {
+    "flir_lepton_3_5": {
+      "name": "FLIR Lepton 3.5",
+      "width": 160,
+      "height": 120,
+      "hfovDeg": 57.0,
+      "rateHz": 8.7,
+      "netdK": 0.05,
+      "defaultGain": "high",
+      "gains": {
+        "high": {"range": [-10.0, 140.0], "accuracy": {"absolute": 5.0, "relative": 0.05}},
+        "low": {"range": [-10.0, 400.0], "accuracy": {"absolute": 10.0, "relative": 0.10}}
+      },
+      "sources": {
+        "specs": "FLIR Lepton 产品页（P/N 500-0771-01）与 GroupGets 转引的 Lepton Series Datasheet（2025-12）：160 × 120，水平 57°（对角 71°），8.7 Hz，NETD < 50 mK；高增益 −10～140 °C、低增益 −10～400 °C；精度高增益取 ±5 °C 或 5% 中较大者，低增益取 ±10 °C 或 10% 中较大者",
+        "radiometry": "FLIR Lepton Engineering Datasheet：TLinear 输出分辨率 0.1 K 或 0.01 K；Terra 取 0.01 K",
+        "notes": "低增益上限有 400 °C 与 450 °C 两种写法，取 2025-12 数据手册的 400 °C"
+      }
+    },
+    "flir_boson_640_50": {
+      "name": "Teledyne FLIR Boson 640（50°）",
+      "width": 640,
+      "height": 512,
+      "hfovDeg": 50.0,
+      "rateHz": 60.0,
+      "netdK": 0.04,
+      "defaultGain": "default",
+      "gains": {
+        "default": {"range": [-10.0, 140.0], "accuracy": {"absolute": 5.0, "relative": 0.05}}
+      },
+      "sources": {
+        "specs": "Teledyne FLIR Boson 640 产品页（20640AS50，9.2 mm，f/1.2，水平 50°）与经销商规格：640 × 512，60 Hz（可选 30 Hz），NETD < 40 mK（Industrial 级）",
+        "notes": "原版 Boson 640 不保证测温，只有部分型号带辐射测温；量程与精度没有统一的公开值，默认取 Lepton 高增益的 −10～140 °C 与 ±5 °C / 5%，用户应按所买型号填写"
+      }
+    },
+    "hikmicro_td5567t_15": {
+      "name": "海康威视 HM-TD5567T-15/W",
+      "width": 640,
+      "height": 512,
+      "hfovDeg": 39.9,
+      "rateHz": 50.0,
+      "netdK": 0.035,
+      "defaultGain": "low_temp",
+      "gains": {
+        "low_temp": {"range": [-20.0, 150.0], "accuracy": {"absolute": 2.0, "relative": 0.02}},
+        "high_temp": {"range": [0.0, 550.0], "accuracy": {"absolute": 2.0, "relative": 0.02}}
+      },
+      "sources": {
+        "specs": "海康威视 HM-TD5567T-15/W 产品页：640 × 512，15 mm 镜头，像元 17 µm，IFOV 1.13 mrad，NETD ≤ 35 mK，50 Hz（子码流），测温范围 −20～150 °C 与 0～550 °C，精度取 ±2 °C 或 ±2% 中较大者；产品页写明可用于巡检机器人集成",
+        "notes": "视场角由焦距与像元算出：水平 39.9°、竖直 32.4°（与 IFOV 一致）；经销商页面写 41.7° × 33.3°，可能含镜头畸变，以算出的值为准。可见光通道用彩色相机另配"
+      }
+    }
+  }
+}

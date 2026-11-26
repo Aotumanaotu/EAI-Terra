@@ -7,7 +7,8 @@
 add_library(terra_viewer_scene STATIC demo_scene.cpp scene_view.cpp mjcf_visual.cpp camera_sensor.cpp)
 add_library(terra::viewer_scene ALIAS terra_viewer_scene)
 target_include_directories(terra_viewer_scene PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(terra_viewer_scene PUBLIC terra::render terra::asset terra::settings terra::scene)
+# M5-06：热像仪的温度由 terra_simulation 的 thermal 算出（纯 CPU）
+target_link_libraries(terra_viewer_scene PUBLIC terra::render terra::asset terra::settings terra::scene terra::simulation)
 terra_configure_target(terra_viewer_scene)
 
 add_executable(terra_viewer main.cpp viewer_settings.cpp import_wizard.cpp library_panel.cpp viz_panel.cpp policy_panel.cpp)

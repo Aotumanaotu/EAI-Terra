@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "terra/scene/pose_math.hpp"
+#include "terra/simulation/thermal.hpp"
 
 namespace terra::viewer {
 
@@ -86,8 +87,41 @@ CameraFrame CameraRenderer::capture(const sc::SceneInstance& scene, const SceneV
     }
     if (camera.depth) frame.depth = depth_->render(camera.width, camera.height, params, items);
     if (camera.segmentation) frame.segmentation = depth_->renderIds(camera.width, camera.height, params, items);  // M4-09
+    if (camera.thermal.enabled) {
+        // M5-06：温度由同一帧的分割图与深度算出（相机不输出它们时也在这里渲染，只用于温度）
+        const std::vector<float> depth = camera.depth ? frame.depth : depth_->render(camera.width, camera.height, params, items);
+        const std::vector<std::uint32_t> ids = camera.segmentation ? frame.segmentation : depth_->renderIds(camera.width, camera.height, params, items);
+        const std::vector<td::Pose> poses = sc::entityPoses(snapshot);
+        terra::simulation::ThermalFrameInput in;
+        in.width = camera.width;
+        in.height = camera.height;
+        in.fovyDegrees = camera.fovyDegrees;
+        in.cameraWorld = frame.pose;
+        in.time = snapshot.simulationTime;
+        in.ids = &ids;
+        in.depth = &depth;
+        in.entityPoses = &poses;
+        frame.thermal = terra::simulation::thermalTruth(scene.thermal, in);
+    }
     return frame;
 }
+
+// ---- 热成像（M5-06）----
+
+r::ImageRgba8 thermalImage(const CameraFrame& frame, const sc::ThermalCameraSpec& spec) {
+    r::ImageRgba8 image;
+    image.width = frame.intrinsics.width;
+    image.height = frame.intrinsics.height;
+    const auto [lo, hi] = terra::simulation::thermalDisplayRange(spec, frame.thermal);
+    const std::vector<std::uint8_t> rgb = terra::simulation::thermalColor(frame.thermal, spec.palette, lo, hi);
+    image.pixels.assign(frame.thermal.size() * 4, 255);
+    for (std::size_t i = 0; i < frame.thermal.size(); ++i) {
+        for (std::size_t c = 0; c < 3; ++c) image.pixels[i * 4 + c] = rgb[i * 3 + c];
+    }
+    return image;
+}
+
+bool writeThermalNpy(const std::string& path, const std::vector<float>& celsius, int width, int height) { return writeDepthNpy(path, celsius, width, height); }
 
 // ---- 分割图（M4-09）----
 

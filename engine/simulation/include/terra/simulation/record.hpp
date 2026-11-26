@@ -81,6 +81,11 @@ struct RecordHeader {
     std::vector<RecordCameraInfo> cameras;
     // M4-09：记录时是否加了传感器噪声（场景文件的配置与种子随场景文件的摘要核对）；复现时按此设置。旧记录没有此项，视为没有噪声
     bool sensorNoise = false;
+    // M4-10a：运行时的策略（只作记录：复现按记录的控制量，不需要推理库）。没有策略时为空
+    std::string policyPath;        // 说明文件或模型文件
+    std::string policySha256;      // 说明文件的摘要（直接给模型文件时与 policyModelSha256 相同）
+    std::string policyModelSha256;
+    std::string policyBackend;     // 如 "ONNX Runtime 1.32.0（CPU，单线程，确定性计算）"
 };
 
 // 由模型描述与场景信息填写物理设置与名字清单（运行环境、文件摘要由调用方补充）

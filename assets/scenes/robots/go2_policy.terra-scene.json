@@ -1,0 +1,21 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 Go2 策略运行（M4-10a）：力矩执行器、机身 IMU 500 Hz 带陀螺噪声，没有 PD 层（策略自己算力矩）。陀螺白噪声按用户训练配置 noise_scales.base_ang_vel = 0.2（均匀分布 ±0.2 rad/s，σ = 0.2/√3 ≈ 0.115 rad/s）在 500 Hz 下换算为密度 0.115/√500 ≈ 0.00516 rad/s/√Hz",
+  "title": "宇树 Go2 策略运行",
+  "models": [
+    {
+      "name": "go2",
+      "mjcf": "../../robots/unitree_go2/scene.xml"
+    }
+  ],
+  "initialKeyframe": "go2/home",
+  "noise": {"seed": 1},
+  "sensors": [
+    {"type": "imu", "site": "go2/imu", "rateHz": 500,
+     "noise": {"gyro": {"noiseDensity": 0.00516}}}
+  ],
+  "view": {
+    "camera": {"position": [1.8, -1.6, 0.9], "target": [0, 0, 0.25]}
+  }
+}

@@ -1,6 +1,6 @@
 # ONNX Runtime（MIT）：M4-10 策略推理的后端（CPU）。仓库只带 C API 头文件（编译用）；运行库由客户端按需下载（组件管理器，带进度、校验）。
 # 来源：NuGet 上 Microsoft 签名发布的 Microsoft.ML.OnnxRuntime 1.32.0（2026-11-13 发布；构建提交 fab30a46491a40f5e4c968b80e8a59acbbb91b53）。
-# 2026-11-26 核查：github.com/microsoft/onnxruntime/releases 返回 404，GitHub 上第三方“镜像”的同名文件 sha256 互不一致，因此只用 NuGet。
+# 2026-11-25 核查：github.com/microsoft/onnxruntime/releases 返回 404，GitHub 上第三方“镜像”的同名文件 sha256 互不一致，因此只用 NuGet。
 ORT_VERSION=1.32.0
 ORT_NUPKG_URL=https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.32.0/microsoft.ml.onnxruntime.1.32.0.nupkg
 ORT_NUPKG_SIZE=184391411

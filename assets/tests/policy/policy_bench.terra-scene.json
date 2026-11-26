@@ -1,0 +1,14 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "策略控制器夹具（M4-10a）：浮动基座 + 两个力矩关节，IMU 50 Hz 带噪声",
+  "title": "策略夹具",
+  "noise": {"seed": 7},
+  "models": [
+    {"name": "bench", "mjcf": "policy_bench.xml"}
+  ],
+  "sensors": [
+    {"type": "imu", "site": "bench/imu", "rateHz": 50,
+     "noise": {"gyro": {"noiseDensity": 0.01}, "accel": {"noiseDensity": 0.02}}}
+  ]
+}

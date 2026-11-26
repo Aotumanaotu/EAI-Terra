@@ -8,6 +8,7 @@
 //
 // 输出约定、退出码见 cli.hpp。本文件只使用 Terra 类型，不包含 MuJoCo 头文件。
 
+#include <atomic>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -36,7 +37,11 @@
 #include "terra/ros2/bridge.hpp"
 #endif
 #include "terra/library/library.hpp"
+#include "terra/library/components.hpp"
 #include "terra/core/sha256.hpp"
+#include "terra/policy/autoconfig.hpp"
+#include "terra/policy/backend.hpp"
+#include "terra/policy/controller.hpp"
 
 namespace {
 
@@ -223,7 +228,76 @@ int listAssets(const RunOptions& options) {
     return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
 }
 
+// ---- 组件（M4-10a）：资源库目录下的 components/ ----
+std::string componentsDir(const RunOptions& options) {
+    return terra::library::componentsDirectory(options.libraryPath.empty() ? terra::library::defaultLibraryPath() : options.libraryPath);
+}
+
+constexpr const char* kCatalog = TERRA_ASSETS_DIR "/components/components.json";
+
+std::string componentJson(const terra::library::ComponentInfo& c, const terra::library::ComponentStatus& st) {
+    return "{\"type\":\"component\",\"id\":\"" + jsonEscape(c.id) + "\",\"name\":\"" + jsonEscape(c.nameChinese) + "\",\"version\":\"" +
+           jsonEscape(c.version) + "\",\"state\":\"" + terra::library::componentStateName(st.state) + "\",\"size\":" + std::to_string(c.size) +
+           ",\"license\":\"" + jsonEscape(c.license) + "\",\"directory\":\"" + jsonEscape(st.directory) + "\",\"library\":\"" +
+           jsonEscape(st.library) + "\",\"detail\":\"" + jsonEscape(st.detail) + "\"}";
+}
+
+int listComponents(const RunOptions& options) {
+    const auto catalog = terra::library::readComponentCatalog(kCatalog);
+    for (const auto& e : catalog.errors) diagnose("组件清单：" + e);
+    bool ok = true;
+    for (const auto& c : catalog.components) ok = ok && emit(componentJson(c, terra::library::componentStatus(c, componentsDir(options))));
+    return ok && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
+}
+
+int installComponent(const RunOptions& options) {
+    namespace lib = terra::library;
+    const auto catalog = lib::readComponentCatalog(kCatalog);
+    for (const auto& e : catalog.errors) diagnose("组件清单：" + e);
+    const lib::ComponentInfo* info = catalog.find(options.installComponent);
+    if (info == nullptr) {
+        std::string ids;
+        for (const auto& c : catalog.components) ids += (ids.empty() ? "" : "、") + c.id;
+        diagnose("没有组件“" + options.installComponent + "”（可用：" + ids + "）");
+        return kExitUsage;
+    }
+    const std::string dir = componentsDir(options);
+    diagnose("安装 " + info->nameChinese + " " + info->version + "（" + std::to_string(info->size / 1000000) + " MB，许可 " + info->license + "）到 " + dir +
+             (options.installFrom.empty() ? "：从 " + info->url + " 下载" : "：从本地文件 " + options.installFrom));
+    lib::InstallProgress progress;
+    lib::InstallResult result;
+    std::atomic<bool> finished{false};
+    std::thread worker([&] {
+        result = lib::installComponent(*info, dir, progress, options.installFrom);
+        finished = true;
+    });
+    int lastPercent = -1;
+    for (;;) {
+        const bool done = finished.load();
+        const auto total = progress.total.load();
+        const int percent = total > 0 ? static_cast<int>(100.0 * static_cast<double>(progress.done.load()) / static_cast<double>(total)) : 0;
+        if (percent / 10 != lastPercent / 10 && progress.stage == lib::InstallProgress::Download) {
+            std::fprintf(stderr, "terra_headless: 下载 %d%%（%.1f / %.1f MB）\n", percent, static_cast<double>(progress.done.load()) / 1e6,
+                         static_cast<double>(total) / 1e6);
+            lastPercent = percent;
+        }
+        if (done) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    worker.join();
+    if (!result.ok) {
+        diagnose(std::string{result.networkError ? "警告：下载失败（没有网络或地址不可达）：" : "安装失败："} + result.error);
+        if (result.networkError) diagnose(lib::manualInstallHint(*info));
+        return result.networkError ? kExitUnavailable : kExitInternal;
+    }
+    const auto status = lib::componentStatus(*info, dir, true);
+    diagnose("已安装：" + status.library);
+    return emit(componentJson(*info, status)) && std::fflush(stdout) == 0 ? kExitOk : kExitInternal;
+}
+
 int run(const RunOptions& requested) {
+    if (!requested.installComponent.empty()) return installComponent(requested);
+    if (requested.listComponents) return listComponents(requested);
     if (requested.listAssets) return listAssets(requested);
     if (requested.listRecords) return listRecords(requested);
     if (!requested.rerunPath.empty()) return rerun(requested);
@@ -248,6 +322,30 @@ int run(const RunOptions& requested) {
                 return kExitUsage;
             }
             options.scenePath = motionDocument->scene;
+        }
+    }
+
+    // 策略（M4-10a）：说明文件先解析，没给 --scene 时使用其中的推荐场景；给的是模型文件（.onnx）时在场景加载后自动配置
+    std::optional<terra::policy::PolicyDescription> policyDocument;
+    if (!options.policyPath.empty()) {
+        const std::string& pp = options.policyPath;
+        const std::string suffix = terra::policy::kPolicySuffix;
+        if (pp.size() >= suffix.size() && pp.compare(pp.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            const auto parsed = terra::policy::readPolicyFile(pp);
+            for (const auto& w : parsed.warnings) diagnose("策略警告 " + w);
+            for (const auto& e : parsed.errors) diagnose("策略错误 " + e);
+            if (!parsed.policy) return kExitModel;
+            policyDocument = *parsed.policy;
+            if (options.scenePath.empty()) {
+                if (policyDocument->scene.empty()) {
+                    diagnose("策略说明文件没有推荐场景，请用 --scene 指定机器人所在的场景");
+                    return kExitUsage;
+                }
+                options.scenePath = policyDocument->scene;
+            }
+        } else if (options.scenePath.empty()) {
+            diagnose("--policy 给的是模型文件时需要 --scene（选择与策略对应的机器人所在的场景），以便自动配置");
+            return kExitUsage;
         }
     }
 
@@ -306,6 +404,49 @@ int run(const RunOptions& requested) {
         player->start(world.stepIndex());
     }
 
+    // 策略（M4-10a）：自动配置（模型文件时）、加载推理后端（需要的组件不在时给出安装方法）、绑定到场景
+    std::unique_ptr<terra::policy::PolicyController> policy;
+    if (!options.policyPath.empty()) {
+        std::error_code ec;
+        if (!policyDocument) {
+            terra::policy::AutoconfigInput input;
+            input.model = std::filesystem::absolute(options.policyPath, ec).lexically_normal().string();
+            input.scene = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
+            const auto ac = terra::policy::autoconfigure(input, world.description());
+            if (!ac.format.empty()) diagnose("策略格式：" + ac.format);
+            for (const auto& n : ac.notes) diagnose("自动配置：" + n);
+            for (const auto& w : ac.warnings) diagnose("自动配置警告：" + w);
+            for (const auto& e : ac.errors) diagnose("自动配置错误：" + e);
+            if (!ac.policy) return kExitModel;
+            policyDocument = *ac.policy;
+        }
+        terra::policy::BackendContext context;
+        context.componentsDirectory = componentsDir(options);
+        context.catalogPath = kCatalog;
+        auto loaded = terra::policy::loadModel(*policyDocument, context);
+        for (const auto& w : loaded.warnings) diagnose("策略警告：" + w);
+        if (!loaded.model) {
+            diagnose(loaded.error);
+            if (!loaded.missingComponent.empty()) {
+                const auto catalog = terra::library::readComponentCatalog(kCatalog);
+                if (const auto* info = catalog.find(loaded.missingComponent)) diagnose(terra::library::manualInstallHint(*info));
+                return kExitUnavailable;
+            }
+            return kExitModel;
+        }
+        std::string error;
+        policy = terra::policy::PolicyController::create(*policyDocument, std::move(loaded.model), *sceneInstance, !options.noNoise, error);
+        if (!policy) {
+            diagnose(error);
+            return kExitModel;
+        }
+        if (options.command) policy->setCommand(*options.command);
+        const auto& c = policy->command();
+        diagnose("策略：" + policyDocument->name + "（" + policy->model().describe() + "；控制周期 " + std::to_string(policyDocument->controlPeriod) +
+                 " s，每 " + std::to_string(policy->decimation()) + " 步推理一次；指令 " + std::to_string(c[0]) + ", " + std::to_string(c[1]) + ", " +
+                 std::to_string(c[2]) + "）");
+    }
+
     ResolvedRun resolved;
     resolved.modelPath = world.description().sourcePath;
     resolved.timestep = world.description().timestep;
@@ -333,6 +474,13 @@ int run(const RunOptions& requested) {
         auto header = terra::simulation::makeRecordHeader(world.description(), options.sampleEvery);
         if (sceneInstance) terra::simulation::describeSensors(header, *sceneInstance);  // M4-07
         header.sensorNoise = noise.active();                                              // M4-09
+        if (policy) {                                                                     // M4-10a
+            std::error_code pec;
+            header.policyPath = std::filesystem::absolute(options.policyPath, pec).lexically_normal().string();
+            header.policySha256 = terra::sha256File(header.policyPath).value_or("");
+            header.policyModelSha256 = terra::sha256File(policyDocument->model).value_or("");
+            header.policyBackend = policy->model().describe();
+        }
         fillEnvironment(header);
         std::error_code ec;
         header.scenePath = std::filesystem::absolute(options.scenePath, ec).lexically_normal().string();
@@ -462,6 +610,7 @@ int run(const RunOptions& requested) {
                         else world.reset();
                         pd.clearTargets();
                         if (player) player->stop();
+                        if (policy) policy->reset();  // M4-10a
                         publishBridge();
                         reanchor();
                     }
@@ -476,7 +625,7 @@ int run(const RunOptions& requested) {
             std::this_thread::sleep_until(anchorWall + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(ahead)));
         }
         // 每步控制：动作给出的命令 → PD 层（与查看器的每步控制器相同）；ROS2 的命令并在动作之后（M4-06a）
-        if (player || !pd.empty() || bridged) {
+        if (player || !pd.empty() || bridged || policy) {
             auto commands = player ? player->commands(world.stepIndex(), dt) : std::vector<physics::ActuatorCommand>{};
 #ifdef TERRA_WITH_ROS2
             if (bridge) commands = terra::ros2::mergeCommands(std::move(commands), bridge->takeCommands());
@@ -486,6 +635,21 @@ int run(const RunOptions& requested) {
             // M4-06b：宇树 LowCmd 换算的力矩在 PD 层之后，同一执行器以它为准（PD 层让位）
             if (bridge) commands = terra::ros2::mergeCommands(std::move(commands), bridge->directCommands());
 #endif
+            // M4-10a：策略在最后，同一执行器以策略为准
+            if (policy) {
+                auto own = policy->commands(*world.snapshot());
+                if (policy->failed()) {
+                    diagnose("第 " + std::to_string(world.stepIndex()) + " 步策略停止：" + policy->error());
+                    emit(errorToJson("policy_failed", world.runEpoch(), world.stepIndex(), world.simulationTime(), policy->error()));
+                    std::fflush(stdout);
+                    if (recorder) {
+                        recorder->event(world.stepIndex(), "error", policy->error());
+                        recorder->finish(world.stepIndex(), world.simulationTime(), "error");
+                    }
+                    return kExitSimulation;
+                }
+                commands = terra::policy::overrideCommands(std::move(commands), own);
+            }
             if (!commands.empty()) {
                 if (recorder) recorder->control(world.stepIndex(), commands);
                 if (const auto error = world.setControl(commands)) {

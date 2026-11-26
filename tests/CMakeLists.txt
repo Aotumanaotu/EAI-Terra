@@ -462,6 +462,42 @@ target_link_libraries(test_components PRIVATE terra::library terra::core terra_m
 target_compile_definitions(test_components PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
 terra_configure_target(test_components)
 add_test(NAME library.components COMMAND test_components "${CMAKE_CURRENT_BINARY_DIR}/components_tmp")
+# M4-10a：策略（说明文件、ONNX 信息、推理后端、控制器、自动配置）；夹具 assets/tests/policy/（由 scripts/policy/make_fixture_onnx.py 生成 ONNX）
+add_executable(test_policy_file policy/test_policy_file.cpp)
+target_link_libraries(test_policy_file PRIVATE terra::policy)
+target_compile_definitions(test_policy_file PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_policy_file)
+add_test(NAME policy.file COMMAND test_policy_file "${CMAKE_CURRENT_BINARY_DIR}/policy_file_tmp")
+add_executable(test_policy_controller policy/test_policy_controller.cpp)
+target_link_libraries(test_policy_controller PRIVATE terra::policy terra::scene terra::physics_mujoco)
+target_compile_definitions(test_policy_controller PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_policy_controller)
+add_test(NAME policy.controller COMMAND test_policy_controller "${CMAKE_CURRENT_BINARY_DIR}/policy_controller_tmp")
+# ONNX Runtime 组件装在构建目录中的资源库（验证脚本用 terra_headless --install-component 安装，需要网络）；没有时跳过
+set(TERRA_POLICY_LIBRARY "${CMAKE_BINARY_DIR}/policy_library/library.db" CACHE FILEPATH "策略测试用的资源库（其 components/ 中装 ONNX Runtime）")
+get_filename_component(TERRA_POLICY_COMPONENTS "${TERRA_POLICY_LIBRARY}" DIRECTORY)
+set(TERRA_POLICY_COMPONENTS "${TERRA_POLICY_COMPONENTS}/components")
+add_executable(test_policy_onnxruntime policy/test_policy_onnxruntime.cpp)
+target_link_libraries(test_policy_onnxruntime PRIVATE terra::policy terra::library terra::scene terra::physics_mujoco)
+target_compile_definitions(test_policy_onnxruntime PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_policy_onnxruntime)
+add_test(NAME policy.onnxruntime COMMAND test_policy_onnxruntime "${TERRA_POLICY_COMPONENTS}")
+set_tests_properties(policy.onnxruntime PROPERTIES SKIP_RETURN_CODE 77)
+# 用户的 Go2 策略（只读，不在仓库中）；没有时跳过
+set(TERRA_GO2_POLICY "${PROJECT_SOURCE_DIR}/others/supermimic/go2_supermimic/2026-11-25_00-02-04_246580/policy.onnx" CACHE FILEPATH "用户的 Go2 策略（policy.go2_walk）")
+add_executable(test_policy_go2 policy/test_policy_go2.cpp)
+target_link_libraries(test_policy_go2 PRIVATE terra::policy terra::library terra::scene terra::physics_mujoco)
+target_compile_definitions(test_policy_go2 PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
+terra_configure_target(test_policy_go2)
+add_test(NAME policy.go2_walk COMMAND test_policy_go2 "${TERRA_POLICY_COMPONENTS}" "${TERRA_GO2_POLICY}" "${CMAKE_CURRENT_BINARY_DIR}/policy_go2_metrics.json")
+set_tests_properties(policy.go2_walk PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+# Headless 的 --policy、--command、记录与复现、组件命令（线性夹具总是运行；ONNX Runtime 与用户策略的部分在组件已安装时运行）
+find_program(TERRA_PYTHON3_EXE python3 REQUIRED)
+add_test(NAME headless.policy
+    COMMAND "${TERRA_PYTHON3_EXE}" "${CMAKE_CURRENT_SOURCE_DIR}/policy/check_policy.py" --headless $<TARGET_FILE:terra_headless>
+            --assets "${PROJECT_SOURCE_DIR}/assets" --work "${CMAKE_CURRENT_BINARY_DIR}/headless_policy"
+            --library "${TERRA_POLICY_LIBRARY}" --go2 "${TERRA_GO2_POLICY}")
+set_tests_properties(headless.policy PROPERTIES TIMEOUT 600)
 # M4-08d：显示配置（.terviz 往返、保留不认识的内容、导出器注册表、.rviz 导出）；不需要 ROS2
 add_executable(test_viz viz/test_viz.cpp)
 target_link_libraries(test_viz PRIVATE terra::viz)
@@ -756,6 +792,13 @@ if(TERRA_BUILD_RENDER)
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --viz-self-test
                 --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_viz/library.sqlite3")
     set_tests_properties(graphics.viewer_viz_selftest PROPERTIES LABELS graphics)
+    # M4-10a：策略——命令行 --policy 打开后运行（线性夹具，不需要 ONNX Runtime）、速度指令面板、面板中的指令传给策略、停止
+    add_test(NAME graphics.viewer_policy_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/policy/policy_bench.terra-scene.json" --policy-self-test
+                --policy "${PROJECT_SOURCE_DIR}/assets/tests/policy/bench.terra-policy.json"
+                --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_policy/library.sqlite3")
+    set_tests_properties(graphics.viewer_policy_selftest PROPERTIES LABELS graphics)
     # M4-07：第 6 帧开始记录（保存相机图像），中间停止并回放到一帧有图像的时刻；资源库在构建目录中
     add_test(NAME graphics.viewer_sensor_record_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe

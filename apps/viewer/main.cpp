@@ -97,6 +97,8 @@
 #include "terra/viz/exporter.hpp"
 #include "terra/viz/viz_config.hpp"
 #include "viz_panel.hpp"
+#include "policy_panel.hpp"
+#include "terra/policy/controller.hpp"
 #include "scene_view.hpp"
 #include "viewer_settings.hpp"
 #ifdef TERRA_WITH_ROS2
@@ -136,6 +138,9 @@ struct Options {
     bool vizSelfTest = false;           // M4-08d：自检显示配置与 ROS2 面板
     std::string ros2Profile;      // M4-06a：开启 ROS2 桥接的通信配置
     bool demoDrive = false;
+    std::string policyPath;               // M4-10a：打开场景后运行的策略（.terra-policy.json 或 .onnx）
+    std::optional<std::array<float, 3>> policyCommand;  // M4-10a：策略的速度指令
+    bool policySelfTest = false;          // M4-10a：自检策略的运行、速度指令面板与停止
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -175,6 +180,14 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.vizSelfTest = true;
         } else if (a == "--ros2" && hasValue) {
             o.ros2Profile = argv[++i];
+        } else if (a == "--policy" && hasValue) {
+            o.policyPath = argv[++i];
+        } else if (a == "--policy-command" && hasValue) {
+            std::array<float, 3> c{};
+            if (std::sscanf(argv[++i], "%f,%f,%f", &c[0], &c[1], &c[2]) != 3) return false;
+            o.policyCommand = c;
+        } else if (a == "--policy-self-test") {
+            o.policySelfTest = true;
         } else if (a == "--demo-drive") {
             o.demoDrive = true;
         } else if (a == "--expect-renderer" && hasValue) {
@@ -377,6 +390,12 @@ struct AppState {
     ui::FileBrowser packBrowser;
     // M4-08d：显示配置（ROS2 面板、消息、曲线、图像、TF 树窗口）
     vw::VizPanelState viz;
+    vw::PolicyPanelState policy;  // M4-10a：运行策略、组件、速度指令面板
+    struct PolicyTest {
+        bool started = false, panel = false, commanded = false, stopped = false;
+        std::uint64_t inferences = 0;
+        double forward = 0.0;
+    } policyTest;
     ui::FileBrowser vizBrowser;
     std::optional<std::pair<terra::viz::VizConfig, std::string>> pendingDisplay;  // 打开场景后应用：配置（导入）或文件（以某一份打开）
     struct VizTest {
@@ -620,6 +639,8 @@ struct SimulatedScene {
     // M3-03：显示哪些 MJCF 几何体分组（默认 0–2，Menagerie 的可见几何在 2、碰撞几何在 3），是否叠加碰撞几何体
     std::array<bool, 6> groups{true, true, true, false, false, false};
     bool collision = false;
+    // M4-10a：正在运行的策略（接管对应的执行器；同一执行器以策略为准）
+    std::unique_ptr<terra::policy::PolicyController> policy;
 #ifdef TERRA_WITH_ROS2
     // M4-06a：ROS2 桥接（开启时非空）。引用 instance 与 pd，放在最后，最先析构
     std::unique_ptr<terra::ros2::Bridge> ros2;
@@ -666,6 +687,7 @@ struct SimulatedScene {
         // M4-06b：宇树 LowCmd 换算的力矩在 PD 层之后，同一执行器以它为准（PD 层让位）
         if (ros2) commands = terra::ros2::mergeCommands(std::move(commands), ros2->directCommands());
 #endif
+        if (policy && !policy->failed()) commands = terra::policy::overrideCommands(std::move(commands), policy->commands(*instance.world->snapshot()));
         return commands;
     }
 
@@ -741,6 +763,7 @@ void closeScene(Frame& f) {
 // 打开场景：成功时替换当前场景（打开后暂停，按播放开始）；失败时保留当前场景，弹窗列出诊断。
 void startRos2(Frame& f);
 void restoreDisplay(Frame& f);  // M4-08d
+void stopPolicy(Frame& f);      // M4-10a
 
 bool openScene(Frame& f, const std::string& requested) {
     std::error_code ec;
@@ -1476,6 +1499,13 @@ void startRecording(Frame& f) {
     auto header = terra::simulation::makeRecordHeader(d, sim.recordSampleEvery);
     terra::simulation::describeSensors(header, sim.instance);  // M4-07
     header.sensorNoise = sim.noise.active();                    // M4-09
+    if (sim.policy) {                                           // M4-10a
+        const auto& p = sim.policy->policy();
+        header.policyPath = p.path.empty() ? p.model : p.path;
+        header.policySha256 = terra::sha256File(header.policyPath).value_or("");
+        header.policyModelSha256 = terra::sha256File(p.model).value_or("");
+        header.policyBackend = sim.policy->model().describe();
+    }
     const terra::BuildInfo& info = terra::buildInfo();
     header.terraVersion = std::string{info.version};
     header.compiler = std::string{info.compilerId} + " " + std::string{info.compilerVersion};
@@ -1962,6 +1992,13 @@ void menuBar(Frame& f) {
         }
         if (ImGui::MenuItem(tr(TextId::SimStep), key(st::Command::SimStep), false, sim.runner->paused())) sim.runner->stepOnce();
         if (ImGui::MenuItem(tr(TextId::SimReset), "Ctrl+R")) simReset(f);
+        // M4-10a：策略
+        ImGui::Separator();
+        if (ImGui::MenuItem(tr(TextId::SimRunPolicy))) {
+            f.state.policy.dialogOpen = true;
+            f.state.policy.preparedKey.clear();
+        }
+        if (ImGui::MenuItem(tr(TextId::SimStopPolicy), nullptr, false, sim.policy != nullptr)) stopPolicy(f);
         // M4-06a：ROS2 桥接（默认通用配置）；构建时没有 ROS2 时禁用，悬停提示安装
         ImGui::Separator();
         if (ImGui::MenuItem(tr(TextId::SimRos2), nullptr, ros2Running(f), ros2Available())) {
@@ -2111,6 +2148,9 @@ void menuBar(Frame& f) {
     if (ImGui::BeginMenu(tr(TextId::MenuSettings))) {
         if (ImGui::MenuItem(tr(TextId::MenuSettingsPreferences), "Ctrl+,", f.state.settingsWindow.open)) {
             openSettingsWindow(f, !f.state.settingsWindow.open);
+        }
+        if (ImGui::MenuItem(tr(TextId::MenuSettingsComponents), nullptr, f.state.policy.componentsOpen)) {  // M4-10a
+            f.state.policy.componentsOpen = !f.state.policy.componentsOpen;
         }
         if (ImGui::BeginMenu(tr(TextId::MenuSettingsLanguage))) {
             using Choice = std::pair<const char*, ui::Language>;
@@ -3364,6 +3404,7 @@ void sensorsPanel(Frame& f) {
                 if (ImGui::Checkbox(tr(TextId::SensorsNoise), &on)) {
                     f.state.sensorNoise = on;
                     sim.noise.setEnabled(on);
+                    if (sim.policy) sim.policy->setNoise(on);  // M4-10a
 #ifdef TERRA_WITH_ROS2
                     if (sim.ros2) sim.ros2->setSensorNoise(on);
 #endif
@@ -3634,6 +3675,90 @@ void libraryPanel(Frame& f) {
     if (action) handleLibraryAction(f, *action);
 }
 
+// ---- 策略（M4-10a）----
+
+constexpr const char* kComponentCatalog = TERRA_ASSETS_DIR "/components/components.json";
+
+void stopPolicy(Frame& f) {
+    if (!f.simulated || !f.simulated->policy) return;
+    f.state.log.push_back(std::string{tr(TextId::LogPolicyStopped)} + f.simulated->policy->policy().name);
+    std::printf("INFO 策略已停止：%s\n", f.simulated->policy->policy().name.c_str());
+    f.simulated->policy.reset();
+    f.simulated->pd.clearTargets();  // PD 层（若有）以当前姿态为目标接回
+}
+
+vw::PolicyContext policyContext(const Frame& f) {
+    vw::PolicyContext ctx;
+    if (f.simulated) {
+        ctx.scene = &f.simulated->instance;
+        ctx.scenePath = f.simulated->path;
+        ctx.running = f.simulated->policy.get();
+    }
+    ctx.componentsDirectory = terra::library::componentsDirectory(libraryFilePath(f));
+    ctx.catalogPath = kComponentCatalog;
+    ctx.noise = f.state.sensorNoise;
+    ctx.viewportMin = f.state.viewportImageMin;
+    ctx.viewportMax = f.state.viewportImageMax;
+    ctx.viewportHovered = f.state.viewportHovered;
+    ctx.keyboardFree = !f.uiCtx.wantsTextInput() && !f.state.settingsWindow.capturingKey();
+    return ctx;
+}
+
+void policyPanels(Frame& f) {
+    auto action = vw::drawPolicyUi(f.state.policy, policyContext(f));
+    for (auto& line : f.state.policy.log) {
+        std::printf("INFO 策略：%s\n", line.c_str());
+        f.state.log.push_back(std::move(line));
+    }
+    f.state.policy.log.clear();
+    if (action.type == vw::PolicyAction::Type::Start && f.simulated) {
+        f.simulated->policy = std::move(action.controller);
+        const auto& c = *f.simulated->policy;
+        f.state.log.push_back(std::string{tr(TextId::LogPolicyStarted)} + action.name);
+        std::printf("INFO 策略开始运行：%s（%s；降频 %d；接管 %zu 个执行器）\n", action.name.c_str(), c.model().describe().c_str(), c.decimation(),
+                    c.actuators().size());
+    }
+    if (f.simulated && f.simulated->policy && f.simulated->policy->failed()) {
+        f.state.log.push_back(std::string{tr(TextId::LogPolicyStopped)} + f.simulated->policy->error());
+        std::printf("INFO 策略出错：%s\n", f.simulated->policy->error().c_str());
+        stopPolicy(f);
+    }
+}
+
+// M4-10a 自检：命令行 --policy 打开后运行；第 20 帧设速度指令；倒数第 5 帧停止
+void policySelfTestScript(Frame& f, int frames, int total) {
+    auto& t = f.state.policyTest;
+    if (!f.simulated) return;
+    auto& sim = *f.simulated;
+    if (sim.policy) {
+        t.started = true;
+        t.inferences = sim.policy->inferences();
+    }
+    t.panel = f.state.policy.commandPanelFrames > 0;
+    if (frames == 20) f.state.policy.command = {0.4f, 0.0f, 0.0f};
+    if (frames == 22 && sim.policy) t.commanded = std::fabs(sim.policy->command()[0] - 0.4) < 1e-6;
+    if (frames == total - 5) stopPolicy(f);
+    if (frames == total - 3) t.stopped = sim.policy == nullptr && t.started;
+}
+
+int policySelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    const auto& t = f.state.policyTest;
+    std::printf("INFO 策略自检：推理 %llu 次；速度指令面板绘制 %d 帧\n", static_cast<unsigned long long>(t.inferences), f.state.policy.commandPanelFrames);
+    check(t.started, "命令行 --policy：打开场景后自动配置并运行");
+    check(t.inferences >= 5, "运行中按控制周期推理");
+    check(t.panel, "视口上方的速度指令面板");
+    check(t.commanded, "面板中的速度指令传给策略");
+    check(t.stopped, "停止策略");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "策略自检通过\n" : "策略自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 void buildUi(Frame& f) {
     syncLibraryLocation(f);  // M4-08c
     copyLibraryIfRequested(f);
@@ -3658,6 +3783,7 @@ void buildUi(Frame& f) {
     statsPanel(f);
     timelinePanel(f);  // 在日志之后：首次显示时并入日志所在的停靠组
     vizPanels(f);      // M4-08d：显示配置中的窗口（ROS2 面板、消息、曲线、图像、TF 树）
+    policyPanels(f);   // M4-10a：运行策略、组件、速度指令面板
     helpWindows(f);
     vw::drawSettingsWindow(f.state.settingsWindow, f.settings.current, f.state.monitors, f.uiCtx.scale(), f.settings.path,
                            f.state.log);
@@ -4810,6 +4936,14 @@ int main(int argc, char** argv) {
             }
             simulated->runner->resume();
         }
+        // M4-10a：命令行给出策略时打开后直接运行（需要的组件不在时弹出下载窗口）
+        if (!options.policyPath.empty()) {
+            vw::requestPolicy(state.policy, options.policyPath);
+            state.policy.dialogOpen = false;
+            state.policy.startRequested = true;
+            if (options.policyCommand) state.policy.command = *options.policyCommand;
+            simulated->runner->resume();
+        }
     } else if (options.motionPath.empty()) {
         ensureDemoAssets(frame);
     }
@@ -4874,6 +5008,7 @@ int main(int argc, char** argv) {
             else if (ends(".terra-motion.json")) state.motionRequest = dropped;
             else if (ends(terra::library::kPackSuffix)) importPackFile(frame, dropped);  // M4-08c
             else if (ends(terra::viz::kVizSuffix)) importDisplay(frame, dropped);    // M4-08d
+            else if (ends(terra::policy::kPolicySuffix) || ends(".onnx") || ends(".pt") || ends(".pth")) vw::requestPolicy(state.policy, dropped);  // M4-10a
             else vw::beginImport(state.importWizard, dropped, importDirectory(frame));
         }
         const double now = platform.time();
@@ -4899,7 +5034,7 @@ int main(int argc, char** argv) {
             if (keyboardFree && input.state(simStepAction).pressed && simulated->runner->paused()) simulated->runner->stepOnce();
             if (keyboardFree && input.state(simResetAction).pressed) simReset(frame);
             if (keyboardFree && input.state(simRecordAction).pressed) toggleRecording(frame);
-            if (options.selfTest) sceneSelfTestScript(frame, frames, options.frames);
+            if (options.selfTest && !options.policySelfTest) sceneSelfTestScript(frame, frames, options.frames);  // M4-10a：策略自检自己运行
             handleRos2Requests(frame);  // M4-06a
             if (simulated && simulated->replay) {
                 // 回放：不推进物理，只推进回放时间
@@ -4928,6 +5063,7 @@ int main(int argc, char** argv) {
 
         if (options.selfTest && options.librarySelfTest) librarySelfTestScript(frame, frames);  // M4-08c
         if (options.selfTest && options.vizSelfTest) vizSelfTestScript(frame, frames);          // M4-08d
+        if (options.selfTest && options.policySelfTest) policySelfTestScript(frame, frames, options.frames);  // M4-10a
         if (options.selfTest && options.frames > 0) {
             // 自检脚本：第 4–7 帧依次打开偏好设置的四个页面，第 7 帧打开按键录制弹窗，第 8 帧取消录制、第 9 帧关闭窗口；
             // 中间帧切换为英文（经由设置）。
@@ -5000,7 +5136,8 @@ int main(int argc, char** argv) {
         const bool lastFrame = (options.frames > 0 && frames >= options.frames && !vizWaiting) ||
                                (options.seconds > 0.0 && now - start >= options.seconds);
         if (lastFrame && options.selfTest) {
-            result = options.vizSelfTest                   ? vizSelfTest(frame)
+            result = options.policySelfTest                ? policySelfTest(frame)
+                     : options.vizSelfTest                 ? vizSelfTest(frame)
                      : options.librarySelfTest             ? librarySelfTest(frame)
                      : !options.importSelfTestPath.empty() ? importSelfTest(frame)
                      : simulated                        ? sceneSelfTest(frame, options)

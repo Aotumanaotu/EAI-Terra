@@ -1,0 +1,21 @@
+{
+  "format": "terra.policy",
+  "version": 1,
+  "name": "策略控制器夹具（M4-10a）",
+  "scene": "policy_bench.terra-scene.json",
+  "model": {"file": "linear_policy.json", "backend": "linear"},
+  "controlPeriod": 0.01,
+  "history": {"length": 2, "order": "oldestFirst", "reset": "repeatInitial"},
+  "command": {"default": [0, 0, 0], "range": [[-1, 1], [-1, 1], [-2, 2]]},
+  "observation": [
+    {"term": "baseAngularVelocity", "sensor": "bench/imu"},
+    {"term": "projectedGravity", "sensor": "bench/imu"},
+    {"term": "jointPositions", "offset": [0.1, -0.1]},
+    {"term": "jointVelocities", "scale": 0.5},
+    {"term": "lastAction"},
+    {"term": "command"},
+    {"term": "phase", "period": 0.04, "standingThreshold": 0.1}
+  ],
+  "action": {"type": "positionPd", "joints": ["bench/j1", "bench/j2"], "scale": 0.5, "offset": [0.1, -0.1],
+             "kp": 10, "kd": 1, "torqueLimit": 2}
+}

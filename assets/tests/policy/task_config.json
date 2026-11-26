@@ -1,0 +1,12 @@
+{
+  "comment": "策略自动配置夹具（M4-10a）：与用户训练配置相同的结构（config.control 按关节组给出 PD 增益与力矩上限），关节组为 policy_bench 的 j1、j2",
+  "config": {
+    "control": {
+      "stiffness": {"j1": 10.0, "j2": 20.0},
+      "damping": {"j1": 1.0, "j2": 2.0},
+      "effort_limit": {"j1": 2.0, "j2": 3.0}
+    },
+    "commands": {"initial_ranges": [[-0.5, 0.8], [-0.4, 0.4], [-1.0, 1.0]]},
+    "sim": {"timestep": 0.005}
+  }
+}

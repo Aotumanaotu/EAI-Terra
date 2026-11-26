@@ -167,6 +167,29 @@ void testRecord() {
     expectError({"--list-assets", "--scene", "s.json"}, "--list-assets 只能与");
     expectError({"--list-assets", "--list-records"}, "--list-assets 只能与");
     expectError({"--scene", "s.json", "--steps", "1", "--kind", "scene"}, "--kind 只用于");
+    // M4-10a：--policy、--command、--install-component、--from、--list-components
+    {
+        const ParseResult r = parse({"--policy", "p.terra-policy.json", "--duration", "5", "--command", "0.5,-0.25,1e-1", "--library", "lib.db"});
+        check(r.ok() && r.options.policyPath == "p.terra-policy.json" && r.options.command && (*r.options.command)[0] == 0.5 &&
+                  (*r.options.command)[1] == -0.25 && (*r.options.command)[2] == 0.1 && r.options.libraryPath == "lib.db",
+              "--policy（不给 --scene）+ --command + --library：" + r.error);
+        const ParseResult onnx = parse({"--scene", "s.json", "--policy", "p.onnx", "--steps", "10", "--command=-0.3,0,0"});
+        check(onnx.ok() && onnx.options.command && (*onnx.options.command)[0] == -0.3, "--scene + .onnx + 负的指令：" + onnx.error);
+        const ParseResult install = parse({"--install-component", "onnxruntime-cpu", "--from", "pkg.nupkg", "--library", "lib.db"});
+        check(install.ok() && install.options.installComponent == "onnxruntime-cpu" && install.options.installFrom == "pkg.nupkg", "--install-component --from：" + install.error);
+        const ParseResult list = parse({"--list-components"});
+        check(list.ok() && list.options.listComponents, "--list-components：" + list.error);
+    }
+    expectError({"--scene", "s.json", "--steps", "1", "--command", "0.5,0,0"}, "--command 只用于 --policy");
+    expectError({"--policy", "p.json", "--steps", "1", "--command", "0.5,0"}, "--command 需要");
+    expectError({"--policy", "p.json", "--steps", "1", "--command", "0.5,0,0,1"}, "--command 需要");
+    expectError({"--policy", "p.json", "--steps", "1", "--command", "a,0,0"}, "--command 需要");
+    expectError({"--policy", "p.json", "--model", "a.xml", "--steps", "1"}, "--policy 需要场景");
+    expectError({"--policy", "p.json", "--motion", "m.json"}, "--policy 需要场景");
+    expectError({"--policy", "p.json"}, "需要 --steps 或 --duration");
+    expectError({"--install-component", "x", "--scene", "s.json"}, "--install-component 只能与");
+    expectError({"--list-components", "--install-component", "x"}, "--install-component 只能与");
+    expectError({"--scene", "s.json", "--steps", "1", "--from", "a.zip"}, "--from 只用于");
 }
 
 void testUsageErrors() {

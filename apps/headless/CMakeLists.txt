@@ -11,9 +11,9 @@ terra_configure_target(terra_headless_cli)
 add_executable(terra_headless
     main.cpp)
 target_link_libraries(terra_headless PRIVATE
-    terra_headless_cli terra::core terra::physics terra::physics_mujoco terra::scene terra::simulation terra::library)
+    terra_headless_cli terra::core terra::physics terra::physics_mujoco terra::scene terra::simulation terra::library terra::policy)
 terra_configure_target(terra_headless)
-# M4-08c：--list-assets 扫描的内置资产目录
+# M4-08c：--list-assets 扫描的内置资产目录；M4-10a：组件清单 assets/components/components.json
 target_compile_definitions(terra_headless PRIVATE TERRA_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets")
 # M4-06a：ROS2 桥接（只在 TERRA_BUILD_ROS2=ON 且找到 ROS2 时）。Headless 仍不链接任何图形库
 if(TERRA_ROS2_ENABLED)

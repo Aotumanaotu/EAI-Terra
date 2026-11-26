@@ -3,6 +3,7 @@
 // terra_headless 命令行解析、校验与 JSON Lines 输出格式（M0-03 起）。
 // 只依赖标准库与 Terra 数据契约，不涉及物理后端，便于单元测试。
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -49,6 +50,11 @@ struct RunOptions {
     bool sensors = false;                   // M4-02：输出传感器读数（sensor_list 与 sensor 行），按各传感器的频率采样
     std::string ros2Profile;                // M4-06a：ROS2 通信配置文件（*.terra-ros2.json）；需要场景；隐含 --realtime
     bool realtime = false;                  // M4-06a：按墙钟节奏推进（1 秒仿真时间 = 1 秒），供外部程序实时交互
+    std::string policyPath;                 // M4-10a：策略（*.terra-policy.json，或 .onnx 时按场景自动配置）
+    std::optional<std::array<double, 3>> command;  // M4-10a：--command vx,vy,偏航角速度（只用于 --policy）
+    std::string installComponent;           // M4-10a：安装组件（如 onnxruntime-cpu）后退出
+    std::string installFrom;                // M4-10a：--from 本地压缩包（离线安装）
+    bool listComponents = false;            // M4-10a：列出组件与安装状态后退出
 };
 
 struct ParseResult {

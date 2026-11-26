@@ -58,6 +58,21 @@ std::optional<double> parsePositiveFinite(std::string_view text) {
     return value;
 }
 
+// 有限实数（可为负数或 0），整个字符串必须被消费，拒绝 nan/inf 与空白（M4-10a，--command）
+std::optional<double> parseFinite(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    for (const char c : text) {
+        const bool allowed = (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-';
+        if (!allowed) return std::nullopt;
+    }
+    const std::string buffer{text};
+    char* end = nullptr;
+    errno = 0;
+    const double value = std::strtod(buffer.c_str(), &end);
+    if (errno != 0 || end != buffer.c_str() + buffer.size() || !std::isfinite(value)) return std::nullopt;
+    return value;
+}
+
 std::string quoted(std::string_view text) {
     return "'" + std::string{text} + "'";
 }
@@ -120,6 +135,14 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             options.listAssets = true;
             continue;
         }
+        if (arg == "--list-components") {
+            if (options.listComponents) {
+                result.error = "重复的参数 --list-components";
+                return result;
+            }
+            options.listComponents = true;
+            continue;
+        }
         if (arg == "--realtime") {
             if (options.realtime) {
                 result.error = "重复的参数 --realtime";
@@ -155,7 +178,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
 
         const bool takesValue = name == "--model" || name == "--scene" || name == "--motion" || name == "--steps" ||
                                 name == "--duration" || name == "--sample-every" || name == "--record" || name == "--rerun" ||
-                                name == "--tolerance" || name == "--library" || name == "--ros2" || name == "--kind";
+                                name == "--tolerance" || name == "--library" || name == "--ros2" || name == "--kind" || name == "--policy" ||
+                                name == "--command" || name == "--install-component" || name == "--from";
         if (!takesValue) {
             result.error = "未知参数 " + quoted(arg);
             return result;
@@ -185,6 +209,46 @@ ParseResult parseArguments(int argc, const char* const* argv) {
             }
             options.ros2Profile = std::string{*value};
             options.realtime = true;
+            continue;
+        }
+        if (name == "--policy" || name == "--install-component" || name == "--from") {
+            std::string& target = name == "--policy" ? options.policyPath : name == "--from" ? options.installFrom : options.installComponent;
+            if (!target.empty()) {
+                result.error = "重复的参数 " + std::string{name};
+                return result;
+            }
+            if (value->empty()) {
+                result.error = std::string{name} + " 的值不能为空";
+                return result;
+            }
+            target = std::string{*value};
+            continue;
+        }
+        if (name == "--command") {
+            if (options.command) {
+                result.error = "重复的参数 --command";
+                return result;
+            }
+            std::array<double, 3> c{};
+            std::string_view rest = *value;
+            bool ok = true;
+            for (std::size_t k = 0; k < 3 && ok; ++k) {
+                const auto comma = rest.find(',');
+                if ((k < 2) == (comma == std::string_view::npos)) {
+                    ok = false;
+                    break;
+                }
+                const auto part = rest.substr(0, comma);
+                const auto v = parseFinite(part);
+                ok = v.has_value();
+                if (ok) c[k] = *v;
+                rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+            }
+            if (!ok) {
+                result.error = "--command 需要“vx,vy,偏航角速度”三个数（m/s、m/s、rad/s），如 0.5,0,0，实际为 " + quoted(*value);
+                return result;
+            }
+            options.command = c;
             continue;
         }
         if (name == "--kind") {
@@ -304,6 +368,29 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         }
     }
 
+    const bool policyGiven = !options.policyPath.empty();
+    if (!options.installComponent.empty() || options.listComponents) {
+        // 组件（M4-10a）：只能配合 --library（与安装时的 --from）
+        if (options.listRecords || options.listAssets || seenModel || seenScene || seenMotion || seenRecord || seenRerun || seenTolerance ||
+            options.steps || options.durationSeconds || options.dryRun || seenSampleEvery || options.sensors || !options.ros2Profile.empty() ||
+            options.realtime || options.noNoise || policyGiven || options.command || (options.listComponents && !options.installComponent.empty()) ||
+            (options.listComponents && !options.installFrom.empty())) {
+            result.error = "--install-component 只能与 --library、--from 同用；--list-components 只能与 --library 同用";
+        }
+        return result;
+    }
+    if (!options.installFrom.empty()) {
+        result.error = "--from 只用于 --install-component";
+        return result;
+    }
+    if (options.command && !policyGiven) {
+        result.error = "--command 只用于 --policy";
+        return result;
+    }
+    if (policyGiven && (seenModel || seenMotion || seenRerun || options.listRecords || options.listAssets)) {
+        result.error = "--policy 需要场景（--scene，或说明文件中的推荐场景），不能与 --model、--motion、--rerun、--list-records、--list-assets 同用";
+        return result;
+    }
     if (options.listAssets) {
         // 列出资产（M4-08c）：只能配合 --library 与 --kind
         if (options.listRecords || seenModel || seenScene || seenMotion || seenRecord || seenRerun || seenTolerance || options.steps ||
@@ -325,8 +412,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         }
         return result;
     }
-    if (!options.libraryPath.empty() && !seenRecord) {
-        result.error = "--library 只用于 --record、--list-records 与 --list-assets";
+    if (!options.libraryPath.empty() && !seenRecord && !policyGiven) {
+        result.error = "--library 只用于 --record、--policy（组件所在的资源库）、--list-records、--list-assets 与组件的安装、列出";
         return result;
     }
     if (seenRerun) {
@@ -352,8 +439,8 @@ ParseResult parseArguments(int argc, const char* const* argv) {
         result.error = "--record 不能与 --dry-run 同用";
     } else if (seenModel && seenMotion) {
         result.error = "--motion 需要场景文件（--scene，或动作文件中的推荐场景），不能与 --model 同用";
-    } else if (!seenModel && !seenScene && !seenMotion) {
-        result.error = "缺少 --model（或 --scene、--motion）";
+    } else if (!seenModel && !seenScene && !seenMotion && !policyGiven) {
+        result.error = "缺少 --model（或 --scene、--motion、--policy）";
     } else if (options.steps && options.durationSeconds) {
         result.error = "--steps 与 --duration 不能同时使用";
     } else if (!options.steps && !options.durationSeconds && !seenMotion) {
@@ -370,6 +457,9 @@ std::string usageText() {
            "  terra_headless --rerun <记录文件> [--tolerance 位置,姿态]\n"
            "  terra_headless --list-records [--scene <场景文件>] [--library <库文件>]\n"
            "  terra_headless --list-assets [--kind scene|motion|robot|environment|display] [--library <库文件>]\n"
+           "  terra_headless [--scene <场景文件>] --policy <策略> [--command vx,vy,yaw] (--steps N | --duration 秒) [--library <库文件>]\n"
+           "  terra_headless --install-component <组件> [--from <压缩包>] [--library <库文件>]\n"
+           "  terra_headless --list-components [--library <库文件>]\n"
            "  terra_headless --help | --version\n"
            "\n"
            "参数:\n"
@@ -402,6 +492,14 @@ std::string usageText() {
            "  --sensors            输出传感器读数（M4-02）：model 之后一行 sensor_list（清单与频率），之后按各传感器的频率\n"
            "                       输出 sensor 行（第 0 步总是输出）；频率来自场景文件的 sensors，默认等于物理频率\n"
            "  --no-noise           不加传感器噪声（M4-09）：IMU 与雷达输出真值；实验记录中写明没有加噪声\n"
+           "  --policy <路径>      运行策略（M4-10a）：*.terra-policy.json（不给 --scene 时用其中的推荐场景），或 .onnx\n"
+           "                       （需要 --scene，按 ONNX 元数据与训练配置自动配置）。观测取带噪声的传感器读数；\n"
+           "                       策略的命令在 PD 层之后，同一执行器以策略为准。需要的推理组件没有安装时退出码 3\n"
+           "  --command vx,vy,yaw  策略的速度指令（机身 m/s、m/s，偏航 rad/s），默认取说明文件中的值\n"
+           "  --install-component <组件>  下载并安装推理组件（如 onnxruntime-cpu，184 MB，需要网络）到资源库目录下的\n"
+           "                       components/，校验 sha256；进度写 stderr，结果一行 {\"type\":\"component\",...}\n"
+           "  --from <压缩包>      与 --install-component 同用：从本地文件安装（离线时在别处下载后拷来）\n"
+           "  --list-components    列出组件清单与安装状态（每行一个 {\"type\":\"component\",...}）\n"
            "  --dry-run            校验参数并加载模型，输出解析后的配置，不运行仿真\n"
            "  -h, --help           显示本帮助\n"
            "      --version        显示版本与构建信息\n"
@@ -640,6 +738,11 @@ std::string configToJson(const RunOptions& options, const ResolvedRun& resolved)
                        "\",\"model_resolved\":\"" + jsonEscape(resolved.modelPath) + "\"";
     if (!options.scenePath.empty()) json += ",\"scene\":\"" + jsonEscape(options.scenePath) + "\"";
     if (!options.motionPath.empty()) json += ",\"motion\":\"" + jsonEscape(options.motionPath) + "\"";
+    if (!options.policyPath.empty()) json += ",\"policy\":\"" + jsonEscape(options.policyPath) + "\"";
+    if (options.command) {
+        json += ",\"command\":[" + formatNumber((*options.command)[0]) + "," + formatNumber((*options.command)[1]) + "," +
+                formatNumber((*options.command)[2]) + "]";
+    }
     if (options.steps) {
         json += ",\"steps\":" + std::to_string(*options.steps);
     }

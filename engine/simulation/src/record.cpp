@@ -187,6 +187,9 @@ Json headerJson(const RecordHeader& h) {
     Json cameras = Json::array();
     for (const auto& c : h.cameras) cameras.push_back({{"name", c.name}, {"rate_hz", c.rateHz}, {"width", c.width}, {"height", c.height}});
     j["sensors"] = {{"imus", h.imus}, {"lidars", std::move(lidars)}, {"cameras", std::move(cameras)}, {"noise", h.sensorNoise}};
+    if (!h.policyPath.empty()) {  // M4-10a
+        j["policy"] = {{"path", h.policyPath}, {"sha256", h.policySha256}, {"model_sha256", h.policyModelSha256}, {"backend", h.policyBackend}};
+    }
     return j;
 }
 
@@ -224,6 +227,14 @@ RecordHeader readHeader(const Json& j) {
         for (const auto& c : s.at("cameras")) {
             h.cameras.push_back({c.at("name").get<std::string>(), c.at("rate_hz").get<double>(), c.at("width").get<int>(), c.at("height").get<int>()});
         }
+    }
+    if (j.contains("policy") && j.at("policy").is_object()) {  // M4-10a
+        const auto& p = j.at("policy");
+        const auto text = [&](const char* key) { return p.contains(key) && p.at(key).is_string() ? p.at(key).get<std::string>() : std::string{}; };
+        h.policyPath = text("path");
+        h.policySha256 = text("sha256");
+        h.policyModelSha256 = text("model_sha256");
+        h.policyBackend = text("backend");
     }
     return h;
 }

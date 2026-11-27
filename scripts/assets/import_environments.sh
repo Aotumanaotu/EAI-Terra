@@ -3,6 +3,8 @@
 # 写到 assets/environments/<名字>/（不提交）；再各写一个“Go2 巡检”场景：Go2 放在推荐巡检路线的起点，机身 IMU、
 # 正装在机身上方的 Livox Mid-360（含内置 IMU 与外观；用户 2026-11-26：不用倒置）与前方的 FLIR Lepton 3.5 热像仪。资源库启动时扫描 assets/environments/，
 # 两个导入的场景与两个 Go2 巡检场景都出现在“场景”分页。
+# M5-13a：另写一个“X02C 巡检”场景：X02C 运动学替身（assets/robots/kinematic/x02c_kinematic.xml，平面底盘、头顶倒装的 Mid-360）
+# 放在同一起点，配合 EAI-Nexus（eai_nexus_x02c）等接入档案使用。
 # 用法：scripts/assets/import_environments.sh <terra_import 程序> [--collision boxes|hulls]
 set -euo pipefail
 
@@ -27,10 +29,12 @@ for spec in "substation_110kv|blender/substation_110kv/exports/substation_110kv_
         continue
     fi
     # Go2 巡检场景：在导入的场景上加 Go2 与传感器（起点取清单的推荐巡检路线第一点）
-    python3 -I - "$out/$name/$name.terra-scene.json" "$root/blender/$name/manifest.json" "$root/assets/robots/unitree_go2/go2.xml" <<'PY'
-import json, os, sys
-scene_path, manifest_path, go2 = sys.argv[1:4]
+    python3 -I - "$out/$name/$name.terra-scene.json" "$root/blender/$name/manifest.json" "$root/assets/robots/unitree_go2/go2.xml" \
+        "$root/assets/robots/kinematic/x02c_kinematic.xml" <<'PY'
+import copy, json, os, sys
+scene_path, manifest_path, go2, x02c = sys.argv[1:5]
 scene = json.load(open(scene_path, encoding="utf-8"))
+base_scene = copy.deepcopy(scene)
 manifest = json.load(open(manifest_path, encoding="utf-8")) if os.path.exists(manifest_path) else {}
 route = manifest.get("recommended_inspection_route_xyz") or manifest.get("recommended_inspection_route") or [[0, 0]]
 start = list(route[0]) + [0.0] * (3 - len(route[0]))
@@ -70,6 +74,24 @@ with open(out, "w", encoding="utf-8") as f:
     json.dump(scene, f, ensure_ascii=False, indent=1)
     f.write("\n")
 print("已写 Go2 巡检场景：%s（起点 (%.2f, %.2f, %.3f)，脚下表面 %s）" % (out, start[0], start[1], start[2], "%.3f m" % support if support is not None else "未知"))
+# M5-13a：X02C 运动学替身（脚底在模型原点，放在脚下表面上方 5 mm）
+scene = base_scene
+scene["name"] = scene["name"].replace("环境（M5-02b 导入）：", "X02C 巡检（M5-13a）：") + "；X02C 运动学替身在推荐巡检路线的起点（平面底盘，头顶倒装 Mid-360），配合 EAI-Nexus 等接入档案"
+scene["title"] = scene["title"] + "（X02C 巡检）"
+scene["models"] = [{"name": "x02c", "mjcf": os.path.relpath(x02c, base), "position": [start[0], start[1], start[2]],
+                    "rotation": {"rpyDeg": [0, 0, round(yaw, 3)]}}]
+scene.pop("initialKeyframe", None)
+scene["noise"] = {"seed": 1}
+scene["sensors"] = [
+    {"type": "lidar3d", "name": "x02c/mid360", "entity": "x02c/lidar_head_center_link", "preset": "livox_mid360", "imu": True},
+]
+scene["view"] = {"camera": {"position": [start[0] - 4.0 * c + 1.5 * s, start[1] - 4.0 * s - 1.5 * c, start[2] + 3.0],
+                            "target": [start[0] + 1.5 * c, start[1] + 1.5 * s, start[2] + 1.0]}}
+out = scene_path.replace(".terra-scene.json", "_x02c.terra-scene.json")
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(scene, f, ensure_ascii=False, indent=1)
+    f.write("\n")
+print("已写 X02C 巡检场景：%s" % out)
 PY
     done_count=$((done_count + 1))
 done

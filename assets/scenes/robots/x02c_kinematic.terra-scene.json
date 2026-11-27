@@ -1,0 +1,16 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "X02C 运动学替身（M5-13a）：机身按 EAI-Nexus 的 X02C 机器人描述（连杆名与位置相同），平面底盘按速度指令在地面上移动（不走步态）；头顶倒装 Livox Mid-360（离地约 1.64 m，含内置 IMU）。在房间里接通导航与定位，配合 eai_nexus_x02c、standard_nav2、fast_lio 等接入档案使用",
+  "title": "X02C 运动学替身",
+  "models": [
+    {"name": "x02c", "mjcf": "../../robots/kinematic/x02c_kinematic.xml"},
+    {"name": "floor", "mjcf": "../common/floor.xml"},
+    {"name": "room", "mjcf": "../common/room.xml"}
+  ],
+  "noise": {"seed": 1},
+  "sensors": [
+    {"type": "lidar3d", "name": "x02c/mid360", "entity": "x02c/lidar_head_center_link", "preset": "livox_mid360", "imu": true}
+  ],
+  "view": {"camera": {"position": [-3.2, -2.4, 2.6], "target": [0.4, 0, 0.9]}}
+}

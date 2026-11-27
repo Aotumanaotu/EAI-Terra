@@ -1,0 +1,24 @@
+{
+  "format": "terra.ros2",
+  "version": 1,
+  "name": "标准 Nav2：仿真时间（/clock，算法 use_sim_time 为 true）；3D 雷达点云 /points、IMU /imu；Terra 发布本体 TF 与底盘的 odom → 机身（/odom）；速度指令 /cmd_vel（Twist）。定位（map → odom）由算法发布",
+  "kind": "generic",
+  "time": "sim",
+  "clock": true,
+  "jointStatesHz": 50,
+  "tfHz": 50,
+  "sensors": true,
+  "commands": false,
+  "services": true,
+  "frames": {"stripPrefix": "*/"},
+  "topics": {
+    "/*/mid360/points": "/points",
+    "/*/mid360_imu/imu": "/imu"
+  },
+  "tf": {"robot": "tree", "sensorMounts": true, "odom": true},
+  "cmdVel": [
+    {"topic": "/cmd_vel", "type": "Twist", "priority": 0, "timeout": 0.5}
+  ],
+  "planarBase": {"optional": true, "odom": "/odom"},
+  "groundTruth": {"entity": "auto", "topic": "/terra/ground_truth/odom", "frame": "world", "rateHz": 50}
+}

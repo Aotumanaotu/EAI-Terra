@@ -1,7 +1,10 @@
 // 通信配置文件的读取与校验（M4-06a）。nlohmann/json 只在本文件中使用，不进入公共头。
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <initializer_list>
 #include <fstream>
 #include <iterator>
 #include <set>
@@ -9,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "terra/ros2/bridge.hpp"
+#include "terra/ros2/integration.hpp"
 
 namespace terra::ros2 {
 
@@ -100,6 +104,205 @@ UnitreeProfile readUnitree(const Json& u, ErrorFn&& error) {
     return p;
 }
 
+// ---- M5-13a：接入档案的字段 ----
+
+bool validTopic(const std::string& t) { return !t.empty() && t[0] == '/' && topicName(t) == t; }
+
+// 话题名或含 “*” 的话题名模式（“*” 只能是一整段或一段的一部分，其余字符同话题名）
+bool validTopicPattern(const std::string& t) {
+    std::string probe = t;
+    std::replace(probe.begin(), probe.end(), '*', 'x');
+    return validTopic(probe);
+}
+
+template <class ErrorFn>
+void readTopicSettings(const Json& v, std::map<std::string, TopicSettings>& out, ErrorFn&& error) {
+    if (!v.is_object()) {
+        error("/topicSettings", "应为对象（话题名 → 设置）");
+        return;
+    }
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        const std::string at = "/topicSettings/" + it.key();
+        if (!validTopicPattern(it.key())) {
+            error(at, "话题名应以 “/” 开头，只含字母、数字、下划线、“/” 与 “*”");
+            continue;
+        }
+        const Json& o = it.value();
+        if (!o.is_object()) {
+            error(at, "应为对象");
+            continue;
+        }
+        TopicSettings t;
+        const std::set<std::string> keys{"reliability", "durability", "depth", "rateHz", "accelUnit", "pointLayout"};
+        for (auto f = o.begin(); f != o.end(); ++f) {
+            if (keys.count(f.key()) == 0) error(at + "/" + f.key(), "未知字段“" + f.key() + "”");
+        }
+        const auto choice = [&](const char* key, std::string& field, std::initializer_list<const char*> allowed) {
+            if (!o.contains(key)) return;
+            std::string list;
+            for (const char* a : allowed) list += (list.empty() ? "" : "、") + std::string{a};
+            const Json& x = o[key];
+            const bool ok = x.is_string() && std::any_of(allowed.begin(), allowed.end(), [&](const char* a) { return x.get<std::string>() == a; });
+            if (!ok) error(at + "/" + key, "应为 " + list + " 之一");
+            else field = x.get<std::string>();
+        };
+        choice("reliability", t.reliability, {"reliable", "best_effort"});
+        choice("durability", t.durability, {"volatile", "transient_local"});
+        choice("accelUnit", t.accelUnit, {"mps2", "g"});
+        choice("pointLayout", t.pointLayout, {"livox", "xyzi", "velodyne", "ouster"});
+        if (o.contains("depth")) {
+            const Json& x = o["depth"];
+            if (!x.is_number_integer() || x.get<long long>() < 1 || x.get<long long>() > 10000) error(at + "/depth", "应为 1～10000 的整数");
+            else t.depth = static_cast<int>(x.get<long long>());
+        }
+        if (o.contains("rateHz")) {
+            const Json& x = o["rateHz"];
+            if (!x.is_number() || !std::isfinite(x.get<double>()) || !(x.get<double>() > 0)) error(at + "/rateHz", "频率应为正数（Hz）");
+            else t.rateHz = x.get<double>();
+        }
+        out[it.key()] = t;
+    }
+}
+
+template <class ErrorFn>
+void readTf(const Json& v, TfSettings& out, ErrorFn&& error) {
+    if (!v.is_object()) {
+        error("/tf", "应为对象");
+        return;
+    }
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        const std::string at = "/tf/" + it.key();
+        if (it.key() == "robot") {
+            const Json& x = it.value();
+            const bool ok = x.is_string() && (x == "auto" || x == "world" || x == "tree" || x == "none");
+            if (!ok) error(at, "应为 auto、world、tree 或 none");
+            else out.robot = x.get<std::string>();
+        } else if (it.key() == "sensorMounts" || it.key() == "odom") {
+            if (!it.value().is_boolean()) error(at, "应为 true 或 false");
+            else (it.key() == "odom" ? out.odom : out.sensorMounts) = it.value().get<bool>();
+        } else {
+            error(at, "未知字段“" + it.key() + "”");
+        }
+    }
+}
+
+template <class ErrorFn>
+void readCommandInputs(const Json& v, std::vector<CommandInput>& out, ErrorFn&& error) {
+    if (!v.is_array() || v.empty()) {
+        error("/cmdVel", "应为非空数组（每项一路速度指令输入）");
+        return;
+    }
+    std::set<std::string> seen;
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        const std::string at = "/cmdVel/" + std::to_string(i);
+        const Json& o = v[i];
+        if (!o.is_object()) {
+            error(at, "应为对象");
+            continue;
+        }
+        const std::set<std::string> keys{"topic", "type", "priority", "timeout"};
+        for (auto f = o.begin(); f != o.end(); ++f) {
+            if (keys.count(f.key()) == 0) error(at + "/" + f.key(), "未知字段“" + f.key() + "”");
+        }
+        CommandInput c;
+        if (!o.contains("topic") || !o["topic"].is_string() || !validTopic(o["topic"].get<std::string>())) {
+            error(at + "/topic", "应为话题名（以 “/” 开头，只含字母、数字、下划线与 “/”）");
+        } else {
+            c.topic = o["topic"].get<std::string>();
+            if (!seen.insert(c.topic).second) error(at + "/topic", "话题“" + c.topic + "”重复");
+        }
+        if (o.contains("type")) {
+            if (!o["type"].is_string() || (o["type"] != "Twist" && o["type"] != "TwistStamped")) error(at + "/type", "应为 Twist 或 TwistStamped");
+            else c.type = o["type"].get<std::string>();
+        }
+        if (o.contains("priority")) {
+            if (!o["priority"].is_number_integer() || std::llabs(o["priority"].get<long long>()) > 1000) error(at + "/priority", "应为 −1000～1000 的整数");
+            else c.priority = static_cast<int>(o["priority"].get<long long>());
+        }
+        if (o.contains("timeout")) {
+            const Json& x = o["timeout"];
+            if (!x.is_number() || !std::isfinite(x.get<double>()) || !(x.get<double>() > 0)) error(at + "/timeout", "应为正数（秒）");
+            else c.timeout = x.get<double>();
+        }
+        out.push_back(c);
+    }
+}
+
+template <class ErrorFn>
+void readPlanarBase(const Json& v, PlanarBaseSettings& out, ErrorFn&& error) {
+    if (v.is_string()) {
+        if (v != "auto") error("/planarBase", "应为 “auto”（场景中有平面底盘的关节时使用）或对象");
+        out.optional = true;
+        return;
+    }
+    if (!v.is_object()) {
+        error("/planarBase", "应为 “auto” 或对象");
+        return;
+    }
+    const std::set<std::string> keys{"optional", "xJoint", "yJoint", "yawJoint", "baseEntity", "limits", "odom", "odomFrame", "odomHz"};
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        if (keys.count(it.key()) == 0) error("/planarBase/" + it.key(), "未知字段“" + it.key() + "”");
+    }
+    const auto text = [&](const char* key, std::string& field, bool allowEmpty) {
+        if (!v.contains(key)) return;
+        if (!v[key].is_string() || (!allowEmpty && v[key].get<std::string>().empty())) error(std::string{"/planarBase/"} + key, "应为非空字符串");
+        else field = v[key].get<std::string>();
+    };
+    text("xJoint", out.xJoint, false);
+    text("yJoint", out.yJoint, false);
+    text("yawJoint", out.yawJoint, false);
+    text("baseEntity", out.baseEntity, false);
+    text("odom", out.odom, true);
+    text("odomFrame", out.odomFrame, false);
+    if (!out.odom.empty() && !validTopic(out.odom)) error("/planarBase/odom", "应为话题名（以 “/” 开头）或空字符串（不发里程计）");
+    if (v.contains("optional")) {
+        if (!v["optional"].is_boolean()) error("/planarBase/optional", "应为 true 或 false");
+        else out.optional = v["optional"].get<bool>();
+    }
+    if (v.contains("limits")) {
+        const Json& l = v["limits"];
+        bool ok = l.is_array() && l.size() == 3;
+        for (std::size_t i = 0; ok && i < 3; ++i) ok = l[i].is_number() && std::isfinite(l[i].get<double>()) && l[i].get<double>() >= 0;
+        if (!ok) error("/planarBase/limits", "应为 3 个非负数 [vx, vy, wz]（m/s、m/s、rad/s；0 表示不限）");
+        else out.limits = {l[0].get<double>(), l[1].get<double>(), l[2].get<double>()};
+    }
+    if (v.contains("odomHz")) {
+        const Json& x = v["odomHz"];
+        if (!x.is_number() || !std::isfinite(x.get<double>()) || !(x.get<double>() > 0)) error("/planarBase/odomHz", "频率应为正数（Hz）");
+        else out.odomHz = x.get<double>();
+    }
+}
+
+template <class ErrorFn>
+void readGroundTruth(const Json& v, GroundTruthSettings& out, ErrorFn&& error) {
+    if (!v.is_object()) {
+        error("/groundTruth", "应为对象（至少有 entity）");
+        return;
+    }
+    const std::set<std::string> keys{"entity", "topic", "frame", "childFrame", "rateHz"};
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        if (keys.count(it.key()) == 0) error("/groundTruth/" + it.key(), "未知字段“" + it.key() + "”");
+    }
+    const auto text = [&](const char* key, std::string& field, bool required) {
+        if (!v.contains(key)) {
+            if (required) error(std::string{"/groundTruth/"} + key, "缺少字段");
+            return;
+        }
+        if (!v[key].is_string() || v[key].get<std::string>().empty()) error(std::string{"/groundTruth/"} + key, "应为非空字符串");
+        else field = v[key].get<std::string>();
+    };
+    text("entity", out.entity, true);
+    text("topic", out.topic, false);
+    text("frame", out.frame, false);
+    text("childFrame", out.childFrame, false);
+    if (!validTopic(out.topic)) error("/groundTruth/topic", "应为话题名（以 “/” 开头）");
+    if (v.contains("rateHz")) {
+        const Json& x = v["rateHz"];
+        if (!x.is_number() || !std::isfinite(x.get<double>()) || !(x.get<double>() > 0)) error("/groundTruth/rateHz", "频率应为正数（Hz）");
+        else out.rateHz = x.get<double>();
+    }
+}
+
 }  // namespace
 
 std::string topicName(const std::string& name) {
@@ -136,7 +339,9 @@ ProfileResult parseProfile(const std::string& text, const std::string& path) {
         return result;
     }
     const std::set<std::string> allowed{"format", "version", "name", "kind", "topicPrefix", "clock", "jointStatesHz", "tfHz",
-                                        "sensors", "commands", "services", "unitree", "topics", "frames", "depthEncoding", "diffDrive"};
+                                        "sensors", "commands", "services", "unitree", "topics", "frames", "depthEncoding", "diffDrive",
+                                        // M5-13a
+                                        "time", "topicSettings", "tf", "groundTruth", "cmdVel", "planarBase"};
     for (auto it = root.begin(); it != root.end(); ++it) {
         if (allowed.count(it.key()) == 0) error("/" + it.key(), "未知字段“" + it.key() + "”");
     }
@@ -190,9 +395,9 @@ ProfileResult parseProfile(const std::string& text, const std::string& path) {
         if (!t.is_object()) error("/topics", "应为对象（默认话题名 → 新的话题名）");
         else {
             for (auto it = t.begin(); it != t.end(); ++it) {
-                const bool valid = it.value().is_string() && !it.value().get<std::string>().empty() && it.value().get<std::string>()[0] == '/' &&
-                                   topicName(it.value().get<std::string>()) == it.value().get<std::string>();
-                if (it.key().empty() || it.key()[0] != '/') error("/topics/" + it.key(), "默认话题名应以 “/” 开头");
+                const bool valid = it.value().is_string() && validTopic(it.value().get<std::string>());
+                // M5-13a：默认话题名可含 “*”（如 “/*/mid360/points”）
+                if (!validTopicPattern(it.key())) error("/topics/" + it.key(), "默认话题名应以 “/” 开头，只含字母、数字、下划线、“/” 与 “*”");
                 else if (!valid) error("/topics/" + it.key(), "新的话题名应以 “/” 开头，只含字母、数字、下划线与 “/”");
                 else p.topics[it.key()] = it.value().get<std::string>();
             }
@@ -209,6 +414,17 @@ ProfileResult parseProfile(const std::string& text, const std::string& path) {
                 } else if (it.key() == "sensorsUseLinkFrames") {
                     if (!it.value().is_boolean()) error("/frames/sensorsUseLinkFrames", "应为 true 或 false");
                     else p.sensorsUseLinkFrames = it.value().get<bool>();
+                } else if (it.key() == "rename") {  // M5-13a
+                    const Json& r = it.value();
+                    if (!r.is_object()) {
+                        error("/frames/rename", "应为对象（Terra 的坐标系全名 → 新名字）");
+                    } else {
+                        for (auto q = r.begin(); q != r.end(); ++q) {
+                            if (q.key().empty()) error("/frames/rename/", "坐标系名为空");
+                            else if (!q.value().is_string() || q.value().get<std::string>().empty()) error("/frames/rename/" + q.key(), "新名字应为非空字符串");
+                            else p.frameRename[q.key()] = q.value().get<std::string>();
+                        }
+                    }
                 } else {
                     error("/frames/" + it.key(), "未知字段“" + it.key() + "”");
                 }
@@ -263,6 +479,35 @@ ProfileResult parseProfile(const std::string& text, const std::string& path) {
             positive("timeout", dd.timeout, false, false);
             p.diffDrive = dd;
         }
+    }
+    // ---- M5-13a：接入档案 ----
+    readString("time", p.time);
+    if (p.time != "sim" && p.time != "wall") error("/time", "应为 “sim”（仿真时间）或 “wall”（墙钟）");
+    if (p.time == "wall") {
+        // 墙钟时间戳时不发 /clock（订阅 /clock 的节点会把时间拨回仿真时间）
+        if (root.contains("clock") && p.clock) error("/clock", "时间戳为墙钟（time 为 wall）时不能发布 /clock");
+        p.clock = false;
+    }
+    if (root.contains("topicSettings")) readTopicSettings(root["topicSettings"], p.topicSettings, error);
+    if (root.contains("tf")) readTf(root["tf"], p.tf, error);
+    if (root.contains("groundTruth")) {
+        GroundTruthSettings g;
+        readGroundTruth(root["groundTruth"], g, error);
+        p.groundTruth = g;
+    }
+    if (root.contains("cmdVel")) readCommandInputs(root["cmdVel"], p.cmdVel, error);
+    if (root.contains("planarBase")) {
+        PlanarBaseSettings b;
+        readPlanarBase(root["planarBase"], b, error);
+        p.planarBase = b;
+    }
+    if (p.diffDrive && p.planarBase && !p.planarBase->optional) error("/planarBase", "不能同时有差速底盘（diffDrive）与平面底盘（planarBase）");
+    if (p.diffDrive && !p.cmdVel.empty() && root["diffDrive"].is_object() &&
+        (root["diffDrive"].contains("cmdVel") || root["diffDrive"].contains("timeout"))) {
+        error("/diffDrive/cmdVel", "有 cmdVel 时，差速底盘的速度指令由 cmdVel 给出，diffDrive 中不能再有 cmdVel、timeout");
+    }
+    if (p.tf.robot == "world" && p.tf.odom && (p.diffDrive || (p.planarBase && !p.planarBase->optional))) {
+        error("/tf/robot", "实体 TF 为 world 时机身已有父坐标系 world，不能再发布 odom → 机身（把 tf.odom 设为 false，或 robot 设为 tree）");
     }
     if (result.errors.empty()) result.profile = p;
     return result;

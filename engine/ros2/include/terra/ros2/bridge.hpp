@@ -69,6 +69,62 @@ struct DiffDriveProfile {
     double timeout = 0.5;                       // s
 };
 
+// ---- M5-13a 算法接入档案：通用的接入设置（不针对某个算法；EAI-Nexus 等的约定写在各自的内置档案中）----
+// 名字匹配：topics、frames.rename、topicSettings、planarBase、groundTruth 中的名字可以含 “*”（匹配一段中任意个字符，不跨 “/”），
+// 例如 “/*/mid360/points” 匹配任一实例上名为 mid360 的雷达。这样同一份档案可以用于不同的机器人。
+
+// 每个话题的设置（topicSettings，键为最终的话题名，可含 “*”）
+struct TopicSettings {
+    std::string reliability{};  // "reliable" / "best_effort"；空表示用默认
+    std::string durability{};   // "volatile" / "transient_local"；空表示用默认
+    int depth = 0;              // 队列深度；0 表示用默认
+    double rateHz = 0.0;        // 降频（不高于传感器本身的频率才有意义）；0 表示不降
+    std::string accelUnit{};    // IMU：“mps2”（默认，m/s²）或 “g”（标准重力 9.80665 m/s²，与 Livox 等设备的原生输出相同）
+    std::string pointLayout{};  // 点云：“livox”（默认）、“xyzi”、“velodyne”、“ouster”，见 integration.hpp
+};
+
+// TF 的归属：哪些变换由 Terra 发布（其余由算法发布，如 SLAM 的 odom → base、robot_state_publisher 的本体变换）
+struct TfSettings {
+    std::string robot = "auto";  // 实体位姿：“world”（每个实体相对 world）、“tree”（父子之间的相对位姿，根实体相对 world）、
+                                 // “none”（不发布）；“auto”：有底盘（diffDrive、planarBase）时为 tree，否则为 world
+    bool sensorMounts = true;    // /tf_static：传感器安装位姿与相机光学坐标系
+    bool odom = true;            // 底盘的 odom → 机身（diffDrive、planarBase）
+};
+
+// 真值（groundTruth）：nav_msgs/Odometry，实体在世界中的位姿，速度在实体坐标系中。只发话题，不进 TF（不与算法的 TF 冲突），
+// 供评测（M5-07）与调试
+struct GroundTruthSettings {
+    std::string entity{};                          // 实体全名（可含 “*”，须恰好匹配一个）
+    std::string topic = "/terra/ground_truth/odom";
+    std::string frame = "world";
+    std::string childFrame{};                      // 空表示用实体的坐标系名（按 frames 的设置换算）
+    double rateHz = 50.0;
+};
+
+// 速度指令的输入（cmdVel）：可以有多路，按优先级仲裁——取没有超时的输入中优先级最高的（相同时取最近收到的）；
+// 全部超时后指令归零（与真机的超时停车相同）。消息中的速度在机身坐标系中（linear.x、linear.y、angular.z）
+struct CommandInput {
+    std::string topic{};
+    std::string type = "Twist";  // “Twist” 或 “TwistStamped”
+    int priority = 0;            // 越大越优先
+    double timeout = 0.5;        // s（墙钟）
+};
+
+// 平面运动学底盘（planarBase）：机身由两个滑动关节（x、y）与一个转动关节（yaw）在地面上移动，各有一个速度执行器，
+// 速度指令换算成这三个关节的速度（不走步态）。用于先接通导航与定位，与具体机器人的步态策略无关。
+// 关节名可含 “*”；机身实体默认为这些关节所在的刚体
+struct PlanarBaseSettings {
+    bool optional = false;        // true（档案中写 "planarBase": "auto"）：场景中没有这样的关节时不使用，不报错
+    std::string xJoint = "*/planar_x";
+    std::string yJoint = "*/planar_y";
+    std::string yawJoint = "*/planar_yaw";
+    std::string baseEntity{};
+    std::array<double, 3> limits{0.0, 0.0, 0.0};  // |vx|、|vy|、|wz| 的上限；0 表示不限
+    std::string odom{};                           // 里程计话题（nav_msgs/Odometry）；空表示不发
+    std::string odomFrame = "odom";
+    double odomHz = 20.0;
+};
+
 // 通信配置文件（*.terra-ros2.json，format "terra.ros2"、version 1；严格校验，未知字段报错）
 struct Profile {
     std::string path;
@@ -88,6 +144,14 @@ struct Profile {
     bool sensorsUseLinkFrames = false;           // 传感器安装位姿与连杆重合时，消息的 frame_id 直接用连杆（与真机相同），不另发静态 TF
     std::string depthEncoding = "32FC1";         // 深度图：32FC1（米）或 16UC1（毫米，没有命中为 0；与 OAK-D 等真机相同）
     std::optional<DiffDriveProfile> diffDrive;
+    // M5-13a：接入档案
+    std::string time = "sim";                           // 时间戳：“sim”（仿真时间，配 /clock）或 “wall”（墙钟，算法 use_sim_time 为 false 时）
+    std::map<std::string, std::string> frameRename;     // 坐标系改名（frames.rename：Terra 的坐标系全名 → 新名字，可含 “*”），先于 stripPrefix
+    std::map<std::string, TopicSettings> topicSettings;
+    TfSettings tf;
+    std::optional<GroundTruthSettings> groundTruth;
+    std::vector<CommandInput> cmdVel;                   // 空表示没有配置（差速底盘用自己的 cmdVel；策略用 /cmd_vel）
+    std::optional<PlanarBaseSettings> planarBase;
 };
 
 struct ProfileResult {
@@ -109,6 +173,7 @@ struct Stats {
     std::uint64_t commandsRejected = 0;  // 拒绝的命令条目数（未知执行器、缺字段、越界、非有限值；宇树配置：CRC 不对等）
     std::string lastRejection;           // 最近一次拒绝的原因
     std::size_t subscribers = 0;         // 当前订阅了任一话题的订阅者数（界面显示）
+    std::string commandSource;           // M5-13a：当前生效的速度指令输入（话题名；没有时为空）
 };
 
 // 相机的一帧（查看器渲染后交给桥接；行 0 为图像顶部；内参为 M4-03a 的约定）
@@ -151,7 +216,8 @@ public:
     std::vector<Request> takeRequests();
     // M4-10b：策略的速度指令。enableVelocityCommand 之后订阅 topic（geometry_msgs/Twist：linear.x、linear.y、angular.z，
     // 机身坐标系）；差速底盘已经订阅同一话题时返回 false。velocityCommand：收到过消息时返回最近一条，
-    // 超过 timeout 秒（墙钟）没有新消息时返回 0（与真机的超时停止相同）；从未收到时返回空（保留界面或命令行的指令）
+    // 超过 timeout 秒（墙钟）没有新消息时返回 0（与真机的超时停止相同）；从未收到时返回空（保留界面或命令行的指令）。
+    // M5-13a：档案中配置了 cmdVel 时用它的输入与仲裁（忽略参数）；cmdVel 已经给了底盘（diffDrive、planarBase）时返回 false
     bool enableVelocityCommand(const std::string& topic = "/cmd_vel", double timeout = 0.5);
     std::optional<std::array<double, 3>> velocityCommand();
 

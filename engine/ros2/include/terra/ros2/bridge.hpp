@@ -94,7 +94,8 @@ struct TfSettings {
 // 真值（groundTruth）：nav_msgs/Odometry，实体在世界中的位姿，速度在实体坐标系中。只发话题，不进 TF（不与算法的 TF 冲突），
 // 供评测（M5-07）与调试
 struct GroundTruthSettings {
-    std::string entity{};                          // 实体全名（可含 “*”，须恰好匹配一个）
+    std::string entity{};                          // 实体全名（可含 “*”，须恰好匹配一个）；“auto” 为机器人的机身（底盘的机身，
+                                                   // 没有底盘时为第一个带自由关节的实体）
     std::string topic = "/terra/ground_truth/odom";
     std::string frame = "world";
     std::string childFrame{};                      // 空表示用实体的坐标系名（按 frames 的设置换算）
@@ -140,7 +141,8 @@ struct Profile {
     std::optional<UnitreeProfile> unitree;
     // M4-08b：与真机一致的话题名与坐标系（可复用）
     std::map<std::string, std::string> topics;  // 默认话题名（如 /turtlebot4/rplidar/scan）→ 真机的话题名（如 /scan）
-    std::string stripFramePrefix;                // 坐标系名与关节名去掉的前缀（如 "turtlebot4/"，真机的坐标系没有实例名）
+    std::string stripFramePrefix;                // 坐标系名与关节名去掉的前缀（如 "turtlebot4/"，真机的坐标系没有实例名）；
+                                                 // M5-13a："*/" 表示去掉实例名（第一段），与具体的实例名无关
     bool sensorsUseLinkFrames = false;           // 传感器安装位姿与连杆重合时，消息的 frame_id 直接用连杆（与真机相同），不另发静态 TF
     std::string depthEncoding = "32FC1";         // 深度图：32FC1（米）或 16UC1（毫米，没有命中为 0；与 OAK-D 等真机相同）
     std::optional<DiffDriveProfile> diffDrive;

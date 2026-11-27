@@ -1,6 +1,8 @@
-// ROS2 桥接（M4-06a 通用配置；M4-06b 宇树配置在 unitree.cpp）。rclcpp 与 ROS 消息只在 engine/ros2/src 中使用，不进入公共头。
+// ROS2 桥接（M4-06a 通用配置；M4-06b 宇树配置在 unitree.cpp；M5-13a 算法接入档案：时间戳、TF 归属、话题设置、
+// 速度指令的多路输入、平面底盘、真值）。rclcpp 与 ROS 消息只在 engine/ros2/src 中使用，不进入公共头。
 
 #include "terra/ros2/bridge.hpp"
+#include "terra/ros2/integration.hpp"
 #include "runtime.hpp"
 
 #include <algorithm>
@@ -18,6 +20,7 @@
 #include <builtin_interfaces/msg/time.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rosgraph_msgs/msg/clock.hpp>
@@ -77,6 +80,20 @@ geometry_msgs::msg::Transform transformOf(const td::Pose& p) {
     return t;
 }
 
+double steadyNow() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+double wallNow() { return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count(); }
+
+// M5-13a：同一组名字中，名字（或模式）name 匹配的项：先找完全相同的，再找含 “*” 的模式（按键的顺序取第一个）
+template <class Map>
+auto findMatch(const Map& map, const std::string& name) -> decltype(map.end()) {
+    const auto exact = map.find(name);
+    if (exact != map.end()) return exact;
+    for (auto it = map.begin(); it != map.end(); ++it) {
+        if (hasGlob(it->first) && globMatch(it->first, name)) return it;
+    }
+    return map.end();
+}
+
 }  // namespace
 
 struct Bridge::Impl {
@@ -94,6 +111,8 @@ struct Bridge::Impl {
     rclcpp::Publisher<tf2_msgs::msg::TFMessage>::SharedPtr tfStatic;
     std::vector<rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr> imus;  // 与模型描述的 sensors 一一对应
     std::vector<double> imuRates;
+    std::vector<double> imuAccelScale;  // M5-13a：1（m/s²）或 1 / 9.80665（g）
+    std::vector<PointLayout> cloudLayouts;  // M5-13a：与 clouds 一一对应
     std::vector<rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr> scans;  // 与 SceneInstance::lidars 一一对应
     std::vector<rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr> clouds;  // M5-11：与 SceneInstance::lidars3d 一一对应
     struct CameraTopics {
@@ -123,12 +142,11 @@ struct Bridge::Impl {
     std::map<std::uint32_t, double> pendingCommands;  // 执行器 ID → 值（同一执行器以最后一条为准）
     std::vector<Request> requests;
     Stats stats;
-    // M4-10b：策略的速度指令（受 mutex 保护）
-    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocitySub;
-    std::array<double, 3> velocity{0.0, 0.0, 0.0};
-    std::chrono::steady_clock::time_point velocityAt;
-    bool haveVelocity = false;
-    double velocityTimeout = 0.5;
+    // M4-10b / M5-13a：速度指令的输入与仲裁（受 mutex 保护）。consumer 为使用它的一方：差速底盘、平面底盘或策略
+    enum class Consumer { None, Drive, Planar, Policy };
+    Consumer consumer = Consumer::None;
+    CommandArbiter arbiter;
+    std::vector<rclcpp::SubscriptionBase::SharedPtr> commandInputs;
     std::atomic<std::uint64_t> published{0};
 
     Impl(const terra::scene::SceneInstance& s, const terra::simulation::PdLayer& p, Profile pr) : scene(s), pd(p), profile(std::move(pr)), noise(s) {}
@@ -139,18 +157,66 @@ struct Bridge::Impl {
 
     // ---- M4-08b：话题名映射、坐标系名、差速底盘 ----
     std::set<std::string> defaultTopics;  // 本场景的全部默认话题名（检查 topics 映射中的拼写）
+    std::map<std::string, std::vector<std::string>> patternUses;  // M5-13a：含 “*” 的映射 → 它匹配的默认话题名
     std::string mapped(const std::string& defaultName) {
         defaultTopics.insert(defaultName);
-        const auto it = profile.topics.find(defaultName);
-        return it == profile.topics.end() ? defaultName : it->second;
+        const auto it = findMatch(profile.topics, defaultName);
+        if (it == profile.topics.end()) return defaultName;
+        if (hasGlob(it->first)) patternUses[it->first].push_back(defaultName);
+        return it->second;
     }
     std::string frame(const std::string& name) const {
+        // M5-13a：先按 frames.rename 改名，没有改名的再去掉前缀
+        if (const auto it = findMatch(profile.frameRename, name); it != profile.frameRename.end()) return it->second;
         const auto& p = profile.stripFramePrefix;
+        if (p == "*/") {  // M5-13a：去掉实例名（第一段），与具体的实例名无关
+            const auto slash = name.find('/');
+            return slash != std::string::npos && slash + 1 < name.size() ? name.substr(slash + 1) : name;
+        }
         return !p.empty() && name.size() > p.size() && name.compare(0, p.size(), p) == 0 ? name.substr(p.size()) : name;
     }
+
+    // ---- M5-13a：话题设置（QoS、降频）、时间戳 ----
+    std::map<std::string, std::string> createdTopics;  // 最终的话题名 → 消息类别（imu、cloud、other），检查 topicSettings
+    const TopicSettings* settings(const std::string& name) const {
+        const auto it = findMatch(profile.topicSettings, name);
+        return it == profile.topicSettings.end() ? nullptr : &it->second;
+    }
+    rclcpp::QoS qos(const std::string& name, rclcpp::QoS q, const char* kind = "other") {
+        createdTopics[name] = kind;
+        if (const auto* t = settings(name)) {
+            if (t->depth > 0) q.keep_last(static_cast<std::size_t>(t->depth));
+            if (t->reliability == "reliable") q.reliable();
+            if (t->reliability == "best_effort") q.best_effort();
+            if (t->durability == "volatile") q.durability_volatile();
+            if (t->durability == "transient_local") q.transient_local();
+        }
+        return q;
+    }
+    // 降频：按仿真时间，平均频率为 rateHz（不高于原频率）；仿真时间倒退（重置）时从头开始
+    struct Gate {
+        double next = 0.0;
+        double last = -1.0;
+    };
+    std::map<std::string, Gate> gates;
+    bool due(const char* name, double t) {
+        const auto* s = settings(name);
+        if (s == nullptr || s->rateHz <= 0.0) return true;
+        Gate& g = gates[name];
+        const double period = 1.0 / s->rateHz;
+        if (g.last < 0.0 || t < g.last) g.next = t;
+        g.last = t;
+        if (t + 1e-9 < g.next) return false;
+        g.next = std::max(g.next + period, t);
+        return true;
+    }
+    bool wallTime = false;
+    WallStamps wall;
+    double outTime(double simTime) const { return wallTime ? wall.map(simTime) : simTime; }
+    builtin_interfaces::msg::Time stamp(double simTime) const { return stampOf(outTime(simTime)); }
     std::string entityFrame(td::EntityId e) const {
         const auto* entity = scene.world->description().entity(e);
-        return entity != nullptr && !entity->name.empty() ? frame(entity->name) : std::string{"world"};
+        return entity != nullptr && !entity->name.empty() ? frame(entity->name) : frame("world");
     }
     static bool identity(const td::Pose& p) {
         const auto& q = p.orientation;
@@ -174,13 +240,80 @@ struct Bridge::Impl {
         std::uint64_t epoch = 0;
         std::uint64_t lastStep = 0;
         bool started = false;
-        double v = 0.0, w = 0.0;  // 最近一条 cmd_vel
-        std::chrono::steady_clock::time_point lastCommand;
-        bool haveCommand = false;
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom;
-        rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd;
     };
     std::optional<Drive> drive;
+
+    // M5-13a：平面运动学底盘（关节下标、执行器、机身）；里程计相对每次运行开始时的位姿
+    struct Planar {
+        std::size_t x = 0, y = 0, yaw = 0;  // 关节下标
+        td::ActuatorId ax, ay, ayaw;
+        std::size_t base = 0;               // 机身实体下标
+        std::string baseFrame;
+        double x0 = 0.0, y0 = 0.0, yaw0 = 0.0;
+        std::uint64_t epoch = 0;
+        bool started = false;
+        rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom;
+    };
+    std::optional<Planar> planar;
+
+    // M5-13a：真值
+    struct Truth {
+        std::size_t entity = 0;
+        std::string childFrame;
+        rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub;
+    };
+    std::optional<Truth> truth;
+
+    // 实体 TF 的方式（tf.robot 的 auto 已换算）
+    std::string robotTf = "world";
+
+    // 速度指令的一路输入收到消息（执行器线程）
+    void onVelocity(std::size_t input, double vx, double vy, double wz) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(wz)) {
+            reject("速度指令不是有限值：" + arbiter.inputs()[input].topic);
+            return;
+        }
+        arbiter.receive(input, {vx, vy, wz}, steadyNow());
+        ++stats.commandsAccepted;
+    }
+    // 订阅速度指令的各路输入（Twist 或 TwistStamped）
+    void subscribeInputs(std::vector<CommandInput> inputs, Consumer who) {
+        arbiter.configure(std::move(inputs));
+        consumer = who;
+        Impl* self = this;
+        for (std::size_t i = 0; i < arbiter.inputs().size(); ++i) {
+            const auto& in = arbiter.inputs()[i];
+            const std::string name = profile.topicPrefix + in.topic;
+            if (in.type == "TwistStamped") {
+                commandInputs.push_back(node->create_subscription<geometry_msgs::msg::TwistStamped>(
+                    name, qos(name, rclcpp::QoS(10)), [self, i](const geometry_msgs::msg::TwistStamped::SharedPtr m) {
+                        self->onVelocity(i, m->twist.linear.x, m->twist.linear.y, m->twist.angular.z);
+                    }));
+            } else {
+                commandInputs.push_back(node->create_subscription<geometry_msgs::msg::Twist>(
+                    name, qos(name, rclcpp::QoS(10)),
+                    [self, i](const geometry_msgs::msg::Twist::SharedPtr m) { self->onVelocity(i, m->linear.x, m->linear.y, m->angular.z); }));
+            }
+        }
+    }
+
+    // 名字（或模式）匹配的唯一一项；没有或不唯一时报错（what 为说明）
+    template <class Items, class NameOf>
+    std::optional<std::size_t> unique(const Items& items, const std::string& pattern, NameOf&& nameOf, const std::string& what, bool optional) const {
+        std::vector<std::size_t> hits;
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            const std::string& n = nameOf(items[i]);
+            if (!n.empty() && globMatch(pattern, n)) hits.push_back(i);
+        }
+        if (hits.size() == 1) return hits[0];
+        if (hits.empty() && optional) return std::nullopt;
+        if (hits.empty()) throw std::runtime_error(what + "：没有名字匹配“" + pattern + "”的");
+        std::string list;
+        for (const auto i : hits) list += (list.empty() ? "" : "、") + nameOf(items[i]);
+        throw std::runtime_error(what + "：“" + pattern + "”匹配了多个（" + list + "）");
+    }
 
     void reject(const std::string& reason) {
         ++stats.commandsRejected;
@@ -228,6 +361,7 @@ struct Bridge::Impl {
     }
 
     void publishStatic() {
+        if (!profile.tf.sensorMounts) return;  // M5-13a：传感器安装位姿由算法一侧发布（如 robot_state_publisher）
         const auto& d = scene.world->description();
         tf2_msgs::msg::TFMessage msg;
         const auto add = [&](const std::string& parent, const std::string& child, const td::Pose& pose) {
@@ -296,14 +430,28 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
         b.node = std::make_shared<rclcpp::Node>("terra_simulator");
         const auto& d = scene.world->description();
         // QoS（设计稿第 3 节）：/clock 为 ClockQoS；关节与 TF 为可靠、深度 10 / 100；传感器为 sensor data（best effort、深度 5）；
-        // /tf_static 为 transient local（后连上的订阅者也能收到）
+        // /tf_static 为 transient local（后连上的订阅者也能收到）。M5-13a：topicSettings 可以按话题改 QoS
+        b.wallTime = profile.time == "wall";
         if (profile.clock) b.clock = b.node->create_publisher<rosgraph_msgs::msg::Clock>("/clock", rclcpp::ClockQoS());
-        b.jointStates = b.node->create_publisher<sensor_msgs::msg::JointState>(b.mapped(profile.topicPrefix + "/joint_states"), rclcpp::QoS(10).reliable());
-        b.tf = b.node->create_publisher<tf2_msgs::msg::TFMessage>("/tf", rclcpp::QoS(100).reliable());
-        b.tfStatic = b.node->create_publisher<tf2_msgs::msg::TFMessage>("/tf_static", rclcpp::QoS(1).reliable().transient_local());
+        const std::string jointTopic = b.mapped(profile.topicPrefix + "/joint_states");
+        b.jointStates = b.node->create_publisher<sensor_msgs::msg::JointState>(jointTopic, b.qos(jointTopic, rclcpp::QoS(10).reliable()));
+        b.tf = b.node->create_publisher<tf2_msgs::msg::TFMessage>("/tf", b.qos("/tf", rclcpp::QoS(100).reliable()));
+        b.tfStatic = b.node->create_publisher<tf2_msgs::msg::TFMessage>("/tf_static", b.qos("/tf_static", rclcpp::QoS(1).reliable().transient_local()));
+        const auto sensorQos = rclcpp::SensorDataQoS();
+        const auto image = [&](const std::string& defaultName) {
+            const std::string name = b.mapped(defaultName);
+            return b.node->create_publisher<sensor_msgs::msg::Image>(name, b.qos(name, sensorQos));
+        };
+        const auto info = [&](const std::string& defaultName) {
+            const std::string name = b.mapped(defaultName);
+            return b.node->create_publisher<sensor_msgs::msg::CameraInfo>(name, b.qos(name, sensorQos));
+        };
         if (profile.sensors) {
             for (std::size_t k = 0; k < d.sensors.size(); ++k) {
-                b.imus.push_back(b.node->create_publisher<sensor_msgs::msg::Imu>(b.mapped(b.topic(d.sensors[k].name) + "/imu"), rclcpp::SensorDataQoS()));
+                const std::string name = b.mapped(b.topic(d.sensors[k].name) + "/imu");
+                b.imus.push_back(b.node->create_publisher<sensor_msgs::msg::Imu>(name, b.qos(name, sensorQos, "imu")));
+                const auto* ts = b.settings(name);
+                b.imuAccelScale.push_back(ts != nullptr && ts->accelUnit == "g" ? 1.0 / kStandardGravity : 1.0);
                 double rate = 1.0 / d.timestep;
                 for (const auto& c : scene.sensors) {
                     if (c.sensor == d.sensors[k].id) rate = c.rateHz;
@@ -311,27 +459,29 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
                 b.imuRates.push_back(rate);
             }
             for (const auto& l : scene.lidars) {
-                b.scans.push_back(b.node->create_publisher<sensor_msgs::msg::LaserScan>(b.mapped(b.topic(l.name) + "/scan"), rclcpp::SensorDataQoS()));
+                const std::string name = b.mapped(b.topic(l.name) + "/scan");
+                b.scans.push_back(b.node->create_publisher<sensor_msgs::msg::LaserScan>(name, b.qos(name, sensorQos)));
             }
             for (const auto& l : scene.lidars3d) {  // M5-11：<雷达名>/points（可用 topics 映射成真机的 /livox/lidar）
-                b.clouds.push_back(b.node->create_publisher<sensor_msgs::msg::PointCloud2>(b.mapped(b.topic(l.name) + "/points"), rclcpp::SensorDataQoS()));
+                const std::string name = b.mapped(b.topic(l.name) + "/points");
+                b.clouds.push_back(b.node->create_publisher<sensor_msgs::msg::PointCloud2>(name, b.qos(name, sensorQos, "cloud")));
+                const auto* ts = b.settings(name);
+                b.cloudLayouts.push_back(pointLayoutFromName(ts != nullptr ? ts->pointLayout : "").value_or(PointLayout::Livox));
             }
             for (const auto& c : scene.cameras) {
                 Impl::CameraTopics t;
-                if (c.rgb) t.color = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/image_raw"), rclcpp::SensorDataQoS());
+                if (c.rgb) t.color = image(b.topic(c.name) + "/image_raw");
                 if (c.thermal.enabled) {  // M5-06
-                    t.thermalRaw = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/thermal/image_raw"), rclcpp::SensorDataQoS());
-                    t.thermalColor = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/thermal/image_color"), rclcpp::SensorDataQoS());
-                    t.thermalInfo = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.mapped(b.topic(c.name) + "/thermal/camera_info"),
-                                                                                          rclcpp::SensorDataQoS());
+                    t.thermalRaw = image(b.topic(c.name) + "/thermal/image_raw");
+                    t.thermalColor = image(b.topic(c.name) + "/thermal/image_color");
+                    t.thermalInfo = info(b.topic(c.name) + "/thermal/camera_info");
                 }
-                if (c.depth) t.depth = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/depth/image_raw"), rclcpp::SensorDataQoS());
-                t.info = b.node->create_publisher<sensor_msgs::msg::CameraInfo>(b.mapped(b.topic(c.name) + "/camera_info"), rclcpp::SensorDataQoS());
+                if (c.depth) t.depth = image(b.topic(c.name) + "/depth/image_raw");
+                t.info = info(b.topic(c.name) + "/camera_info");
                 if (c.segmentation) {  // M4-09
-                    t.segmentation = b.node->create_publisher<sensor_msgs::msg::Image>(b.mapped(b.topic(c.name) + "/segmentation/image_raw"),
-                                                                                      rclcpp::SensorDataQoS());
-                    t.labels = b.node->create_publisher<std_msgs::msg::String>(b.mapped(b.topic(c.name) + "/segmentation/labels"),
-                                                                               rclcpp::QoS(1).reliable().transient_local());
+                    t.segmentation = image(b.topic(c.name) + "/segmentation/image_raw");
+                    const std::string labelsTopic = b.mapped(b.topic(c.name) + "/segmentation/labels");
+                    t.labels = b.node->create_publisher<std_msgs::msg::String>(labelsTopic, b.qos(labelsTopic, rclcpp::QoS(1).reliable().transient_local()));
                     std_msgs::msg::String labels;
                     labels.data = terra::scene::segmentationLabelsJson(b.scene);
                     t.labels->publish(labels);
@@ -415,26 +565,123 @@ std::unique_ptr<Bridge> Bridge::create(const terra::scene::SceneInstance& scene,
             drive.right = ra->id;
             drive.base = base->id.value - 1;
             drive.baseFrame = b.frame(base->name);
-            drive.odom = b.node->create_publisher<nav_msgs::msg::Odometry>(profile.topicPrefix + dd.odom, rclcpp::QoS(10).reliable());
-            drive.cmd = b.node->create_subscription<geometry_msgs::msg::Twist>(
-                profile.topicPrefix + dd.cmdVel, rclcpp::QoS(10), [self](const geometry_msgs::msg::Twist::SharedPtr msg) {
-                    std::lock_guard<std::mutex> lock(self->mutex);
-                    if (!self->drive) return;
-                    self->drive->v = msg->linear.x;
-                    self->drive->w = msg->angular.z;
-                    self->drive->lastCommand = std::chrono::steady_clock::now();
-                    self->drive->haveCommand = true;
-                    ++self->stats.commandsAccepted;
-                });
+            const std::string odomTopic = profile.topicPrefix + dd.odom;
+            drive.odom = b.node->create_publisher<nav_msgs::msg::Odometry>(odomTopic, b.qos(odomTopic, rclcpp::QoS(10).reliable()));
             b.drive = std::move(drive);
+            // 速度指令：档案的 cmdVel（M5-13a），没有时为差速底盘自己的 cmdVel 与超时
+            b.subscribeInputs(profile.cmdVel.empty() ? std::vector<CommandInput>{{dd.cmdVel, "Twist", 0, dd.timeout}} : profile.cmdVel, Impl::Consumer::Drive);
         }
-        // 话题名映射中的每一项都应是本场景的默认话题（防止拼写错误使映射不生效）
+        // M5-13a：平面运动学底盘
+        if (profile.planarBase) {
+            const auto& pb = *profile.planarBase;
+            const auto jointName = [](const td::JointDescription& j) -> const std::string& { return j.name; };
+            const auto xj = b.unique(d.joints, pb.xJoint, jointName, "平面底盘的 x 关节", pb.optional);
+            if (xj) {
+                const auto yj = b.unique(d.joints, pb.yJoint, jointName, "平面底盘的 y 关节", false);
+                const auto wj = b.unique(d.joints, pb.yawJoint, jointName, "平面底盘的 yaw 关节", false);
+                if (d.joints[*xj].type != td::JointType::Slide || d.joints[*yj].type != td::JointType::Slide || d.joints[*wj].type != td::JointType::Hinge) {
+                    throw std::runtime_error("平面底盘：x、y 应为滑动关节，yaw 应为转动关节（" + d.joints[*xj].name + "、" + d.joints[*yj].name + "、" +
+                                             d.joints[*wj].name + "）");
+                }
+                const auto velocityActuator = [&](std::size_t joint) {
+                    for (const auto& a : d.actuators) {
+                        if (a.joint == d.joints[joint].id && a.kind == td::ActuatorKind::Velocity && a.inputs.size() == 1) return a.id;
+                    }
+                    throw std::runtime_error("平面底盘：关节 " + d.joints[joint].name + " 上没有速度执行器（MJCF 的 <velocity joint=...>）");
+                };
+                Impl::Planar planar;
+                planar.x = *xj;
+                planar.y = *yj;
+                planar.yaw = *wj;
+                planar.ax = velocityActuator(*xj);
+                planar.ay = velocityActuator(*yj);
+                planar.ayaw = velocityActuator(*wj);
+                std::size_t base = d.joints[*wj].entity.value - 1;
+                if (!pb.baseEntity.empty()) {
+                    base = *b.unique(d.entities, pb.baseEntity, [](const td::EntityDescription& e) -> const std::string& { return e.name; },
+                                     "平面底盘的机身实体", false);
+                }
+                planar.base = base;
+                planar.baseFrame = b.frame(d.entities[base].name);
+                if (!pb.odom.empty()) {
+                    const std::string odomTopic = profile.topicPrefix + pb.odom;
+                    planar.odom = b.node->create_publisher<nav_msgs::msg::Odometry>(odomTopic, b.qos(odomTopic, rclcpp::QoS(10).reliable()));
+                }
+                b.planar = std::move(planar);
+                b.subscribeInputs(profile.cmdVel.empty() ? std::vector<CommandInput>{{"/cmd_vel", "Twist", 0, 0.5}} : profile.cmdVel,
+                                  Impl::Consumer::Planar);
+            }
+        }
+        // M5-13a：档案给了速度指令、但没有底盘时，给策略用（策略开启时取它）
+        if (!profile.cmdVel.empty() && b.consumer == Impl::Consumer::None) b.subscribeInputs(profile.cmdVel, Impl::Consumer::Policy);
+        // M5-13a：实体 TF 的方式；有底盘且发布 odom 时，机身的父坐标系是 odom
+        b.robotTf = profile.tf.robot;
+        if (b.robotTf == "auto") b.robotTf = b.drive || b.planar ? "tree" : "world";
+        if (b.robotTf == "world" && profile.tf.odom && (b.drive || b.planar)) {
+            throw std::runtime_error("实体 TF 为 world 时机身已有父坐标系 world，不能再发布 odom → 机身（tf.odom 设为 false，或 tf.robot 设为 tree）");
+        }
+        // M5-13a：真值
+        if (profile.groundTruth) {
+            const auto& g = *profile.groundTruth;
+            Impl::Truth t;
+            if (g.entity == "auto") {
+                // 机器人的机身：平面底盘或差速底盘的机身，否则为第一个有自由关节的实体
+                std::optional<std::size_t> base;
+                if (b.planar) base = b.planar->base;
+                else if (b.drive) base = b.drive->base;
+                for (std::size_t j = 0; !base && j < d.joints.size(); ++j) {
+                    if (d.joints[j].type == td::JointType::Free && d.joints[j].entity.valid()) base = d.joints[j].entity.value - 1;
+                }
+                if (!base) throw std::runtime_error("真值的实体为 auto，但场景中没有底盘，也没有带自由关节的实体");
+                t.entity = *base;
+            } else {
+                t.entity = *b.unique(d.entities, g.entity, [](const td::EntityDescription& e) -> const std::string& { return e.name; }, "真值的实体", false);
+            }
+            t.childFrame = g.childFrame.empty() ? b.frame(d.entities[t.entity].name) : g.childFrame;
+            const std::string name = profile.topicPrefix + g.topic;
+            t.pub = b.node->create_publisher<nav_msgs::msg::Odometry>(name, b.qos(name, rclcpp::QoS(10).reliable()));
+            b.truth = std::move(t);
+        }
+        // 话题名映射中的每一项都应是本场景的默认话题（防止拼写错误使映射不生效）；含 “*” 的应恰好匹配一个（M5-13a）
         for (const auto& [from, to] : profile.topics) {
-            if (b.defaultTopics.count(from) == 0) {
+            const bool used = hasGlob(from) ? b.patternUses.count(from) > 0 : b.defaultTopics.count(from) > 0;
+            if (!used) {
                 std::string available;
                 for (const auto& t : b.defaultTopics) available += (available.empty() ? "" : "、") + t;
                 throw std::runtime_error("通信配置 topics 中的“" + from + "”不是本场景的话题（可映射的：" + available + "）");
             }
+            if (hasGlob(from) && b.patternUses[from].size() > 1) {
+                std::string list;
+                for (const auto& t : b.patternUses[from]) list += (list.empty() ? "" : "、") + t;
+                throw std::runtime_error("通信配置 topics 中的“" + from + "”匹配了多个话题（" + list + "），它们会被映射到同一个名字");
+            }
+        }
+        // M5-13a：topicSettings 的每一项都应匹配本场景的话题；IMU 单位只用于 IMU，点云布局只用于点云
+        for (const auto& [name, t] : profile.topicSettings) {
+            std::vector<std::string> kinds;
+            for (const auto& [topic, kind] : b.createdTopics) {
+                if (topic == name || (hasGlob(name) && globMatch(name, topic))) kinds.push_back(kind);
+            }
+            if (kinds.empty()) {
+                std::string available;
+                for (const auto& [topic, kind] : b.createdTopics) available += (available.empty() ? "" : "、") + topic;
+                throw std::runtime_error("通信配置 topicSettings 中的“" + name + "”不是本场景的话题（有：" + available + "）");
+            }
+            for (const auto& kind : kinds) {
+                if (!t.accelUnit.empty() && kind != "imu") throw std::runtime_error("通信配置 topicSettings 中的“" + name + "”：accelUnit 只用于 IMU 话题");
+                if (!t.pointLayout.empty() && kind != "cloud") throw std::runtime_error("通信配置 topicSettings 中的“" + name + "”：pointLayout 只用于点云话题");
+            }
+        }
+        // M5-13a：frames.rename 的每一项都应匹配本场景的坐标系
+        for (const auto& [from, to] : profile.frameRename) {
+            bool found = from == "world";
+            const auto matches = [&](const std::string& n) { return n == from || (hasGlob(from) && globMatch(from, n)); };
+            for (const auto& e : d.entities) found = found || matches(e.name);
+            for (const auto& x : d.sensors) found = found || matches(x.name);
+            for (const auto& x : scene.lidars) found = found || matches(x.name);
+            for (const auto& x : scene.lidars3d) found = found || matches(x.name);
+            for (const auto& x : scene.cameras) found = found || matches(x.name) || matches(x.name + "_optical");
+            if (!found) throw std::runtime_error("通信配置 frames.rename 中的“" + from + "”不是本场景的坐标系（实体、传感器的全名）");
         }
         b.publishStatic();
         b.executor = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
@@ -468,23 +715,27 @@ std::vector<terra::physics::ActuatorCommand> Bridge::takeCommands() {
     std::vector<terra::physics::ActuatorCommand> out;
     out.reserve(pending.size() + 2);
     for (const auto& [id, value] : pending) out.push_back({td::ActuatorId{id}, {value}});
+    // 速度指令（M5-13a：多路输入按优先级仲裁；超时停车）
+    std::array<double, 3> command{0.0, 0.0, 0.0};
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (const auto c = impl_->arbiter.current(steadyNow())) command = *c;
+    }
+    // M5-13a：平面底盘——机身坐标系的速度换算为 x、y、yaw 三个关节的速度
+    if (impl_->planar) {
+        const auto& pl = *impl_->planar;
+        const auto snap = impl_->scene.world->snapshot();
+        const double yaw = pl.yaw < snap->joints.size() ? snap->joints[pl.yaw].position[0] : 0.0;
+        const auto q = planarJointVelocities(command, yaw, impl_->profile.planarBase->limits);
+        out.push_back({pl.ax, {q[0]}});
+        out.push_back({pl.ay, {q[1]}});
+        out.push_back({pl.ayaw, {q[2]}});
+    }
     // M4-08b：差速底盘——最近一条 cmd_vel 换算为两轮角速度；超时（墙钟）停车，与 Create 3 相同
-    if (impl_->profile.diffDrive) {
+    if (impl_->profile.diffDrive && impl_->drive) {
         const auto& dd = *impl_->profile.diffDrive;
-        double v = 0.0, w = 0.0;
-        td::ActuatorId left, right;
-        {
-            std::lock_guard<std::mutex> lock(impl_->mutex);
-            if (!impl_->drive) return out;
-            const auto& drive = *impl_->drive;
-            const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - drive.lastCommand).count();
-            if (drive.haveCommand && age <= dd.timeout) {
-                v = drive.v;
-                w = drive.w;
-            }
-            left = drive.left;
-            right = drive.right;
-        }
+        const double v = command[0], w = command[2];
+        const td::ActuatorId left = impl_->drive->left, right = impl_->drive->right;
         double wl = (v - w * dd.wheelSeparation / 2.0) / dd.wheelRadius;
         double wr = (v + w * dd.wheelSeparation / 2.0) / dd.wheelRadius;
         if (dd.maxWheelSpeed > 0.0) {
@@ -518,14 +769,16 @@ void Bridge::publish(const td::PhysicsSnapshot& truth) {
     const td::PhysicsSnapshot& snapshot = b.noise.active() ? noisy : truth;
     const auto& d = b.scene.world->description();
     const double dt = snapshot.fixedTimestep;
-    const auto stamp = stampOf(snapshot.simulationTime);
+    if (b.wallTime) b.wall.sync(snapshot.simulationTime, snapshot.runEpoch, wallNow());  // M5-13a
+    const double now = snapshot.simulationTime;
+    const auto stamp = b.stamp(now);
     if (b.clock) {
         rosgraph_msgs::msg::Clock msg;
         msg.clock = stamp;
         b.clock->publish(msg);
         ++b.published;
     }
-    if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.jointStatesHz)) {
+    if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.jointStatesHz) && b.due(b.jointStates->get_topic_name(), now)) {
         sensor_msgs::msg::JointState msg;
         msg.header.stamp = stamp;
         for (std::size_t k = 0; k < b.publishedJoints.size(); ++k) {
@@ -560,7 +813,7 @@ void Bridge::publish(const td::PhysicsSnapshot& truth) {
         }
         drive.lastStep = snapshot.stepIndex;
         if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, dd.odomHz) && drive.leftJoint < snapshot.joints.size() &&
-            drive.rightJoint < snapshot.joints.size()) {
+            drive.rightJoint < snapshot.joints.size() && b.due(drive.odom->get_topic_name(), now)) {
             const double wl = snapshot.joints[drive.leftJoint].velocity[0];
             const double wr = snapshot.joints[drive.rightJoint].velocity[0];
             nav_msgs::msg::Odometry odom;
@@ -577,54 +830,137 @@ void Bridge::publish(const td::PhysicsSnapshot& truth) {
             ++b.published;
         }
     }
-    if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.tfHz)) {
-        tf2_msgs::msg::TFMessage msg;
-        if (b.drive) {
-            // M4-08b：与真机相同的 TF 树：odom → 机身（轮式里程计），连杆之间为相对位姿（真机由 robot_state_publisher 发布）
-            const auto& drive = *b.drive;
-            geometry_msgs::msg::TransformStamped root;
-            root.header.stamp = stamp;
-            root.header.frame_id = b.profile.diffDrive->odomFrame;
-            root.child_frame_id = drive.baseFrame;
-            root.transform.translation.x = drive.x;
-            root.transform.translation.y = drive.y;
-            root.transform.rotation.w = std::cos(drive.theta / 2.0);
-            root.transform.rotation.z = std::sin(drive.theta / 2.0);
-            msg.transforms.push_back(root);
-            for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
-                const auto& entity = d.entities[e];
-                if (entity.name.empty() || !entity.parent.valid() || entity.parent.value - 1 >= snapshot.entities.size()) continue;
-                geometry_msgs::msg::TransformStamped t;
-                t.header.stamp = stamp;
-                t.header.frame_id = b.entityFrame(entity.parent);
-                t.child_frame_id = b.frame(entity.name);
-                t.transform = transformOf(terra::scene::multiply(terra::scene::inverse(snapshot.entities[entity.parent.value - 1].pose), snapshot.entities[e].pose));
-                msg.transforms.push_back(t);
+    // M5-13a：平面底盘的里程计（关节位置相对每次运行开始时；odom 坐标系为开始时的机身坐标系）
+    std::optional<td::Pose> planarOdom;
+    std::array<double, 3> planarTwist{0.0, 0.0, 0.0};
+    if (b.planar) {
+        auto& pl = *b.planar;
+        const bool ok = pl.x < snapshot.joints.size() && pl.y < snapshot.joints.size() && pl.yaw < snapshot.joints.size();
+        if (ok) {
+            const double qx = snapshot.joints[pl.x].position[0], qy = snapshot.joints[pl.y].position[0], qw = snapshot.joints[pl.yaw].position[0];
+            if (!pl.started || snapshot.runEpoch != pl.epoch || snapshot.stepIndex == 0) {
+                pl.x0 = qx;
+                pl.y0 = qy;
+                pl.yaw0 = qw;
+                pl.started = true;
+                pl.epoch = snapshot.runEpoch;
             }
-        } else {
-            for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
-                if (d.entities[e].name.empty()) continue;
-                geometry_msgs::msg::TransformStamped t;
-                t.header.stamp = stamp;
-                t.header.frame_id = "world";
-                t.child_frame_id = b.frame(d.entities[e].name);
-                t.transform = transformOf(snapshot.entities[e].pose);
-                msg.transforms.push_back(t);
-            }
+            const double c0 = std::cos(pl.yaw0), s0 = std::sin(pl.yaw0);
+            const double dx = qx - pl.x0, dy = qy - pl.y0, yaw = qw - pl.yaw0;
+            td::Pose pose;
+            pose.position = {c0 * dx + s0 * dy, -s0 * dx + c0 * dy, 0.0};
+            pose.orientation = {std::cos(yaw / 2.0), 0.0, 0.0, std::sin(yaw / 2.0)};
+            planarOdom = pose;
+            const double vx = snapshot.joints[pl.x].velocity[0], vy = snapshot.joints[pl.y].velocity[0];
+            const double c = std::cos(qw), sn = std::sin(qw);
+            planarTwist = {c * vx + sn * vy, -sn * vx + c * vy, snapshot.joints[pl.yaw].velocity[0]};
         }
-        b.tf->publish(msg);
+        if (planarOdom && pl.odom && terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.planarBase->odomHz) &&
+            b.due(pl.odom->get_topic_name(), now)) {
+            nav_msgs::msg::Odometry odom;
+            odom.header.stamp = stamp;
+            odom.header.frame_id = b.profile.planarBase->odomFrame;
+            odom.child_frame_id = pl.baseFrame;
+            odom.pose.pose.position.x = planarOdom->position.x;
+            odom.pose.pose.position.y = planarOdom->position.y;
+            odom.pose.pose.orientation.w = planarOdom->orientation.w;
+            odom.pose.pose.orientation.z = planarOdom->orientation.z;
+            odom.twist.twist.linear.x = planarTwist[0];
+            odom.twist.twist.linear.y = planarTwist[1];
+            odom.twist.twist.angular.z = planarTwist[2];
+            pl.odom->publish(odom);
+            ++b.published;
+        }
+    }
+    // M5-13a：真值（世界中的位姿；速度在实体坐标系中）
+    if (b.truth && b.truth->entity < snapshot.entities.size() &&
+        terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.groundTruth->rateHz) && b.due(b.truth->pub->get_topic_name(), now)) {
+        const auto& e = truth.entities[b.truth->entity];  // 真值不加噪声
+        const auto inv = terra::scene::conjugate(e.pose.orientation);
+        const auto v = terra::scene::rotate(inv, e.linearVelocity);
+        const auto w = terra::scene::rotate(inv, e.angularVelocity);
+        nav_msgs::msg::Odometry odom;
+        odom.header.stamp = stamp;
+        odom.header.frame_id = b.profile.groundTruth->frame;
+        odom.child_frame_id = b.truth->childFrame;
+        odom.pose.pose.position.x = e.pose.position.x;
+        odom.pose.pose.position.y = e.pose.position.y;
+        odom.pose.pose.position.z = e.pose.position.z;
+        odom.pose.pose.orientation.w = e.pose.orientation.w;
+        odom.pose.pose.orientation.x = e.pose.orientation.x;
+        odom.pose.pose.orientation.y = e.pose.orientation.y;
+        odom.pose.pose.orientation.z = e.pose.orientation.z;
+        odom.twist.twist.linear.x = v.x;
+        odom.twist.twist.linear.y = v.y;
+        odom.twist.twist.linear.z = v.z;
+        odom.twist.twist.angular.x = w.x;
+        odom.twist.twist.angular.y = w.y;
+        odom.twist.twist.angular.z = w.z;
+        b.truth->pub->publish(odom);
         ++b.published;
     }
+    if (terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.profile.tfHz) && b.due("/tf", now)) {
+        tf2_msgs::msg::TFMessage msg;
+        const auto add = [&](const std::string& parent, const std::string& child, const geometry_msgs::msg::Transform& t) {
+            geometry_msgs::msg::TransformStamped ts;
+            ts.header.stamp = stamp;
+            ts.header.frame_id = parent;
+            ts.child_frame_id = child;
+            ts.transform = t;
+            msg.transforms.push_back(ts);
+        };
+        // 底盘的 odom → 机身（M4-08b 差速底盘、M5-13a 平面底盘），tf.odom 为 false 时由算法发布（如 SLAM）
+        std::optional<std::size_t> odomChild;
+        if (b.profile.tf.odom && b.drive) {
+            const auto& drive = *b.drive;
+            geometry_msgs::msg::Transform t;
+            t.translation.x = drive.x;
+            t.translation.y = drive.y;
+            t.rotation.w = std::cos(drive.theta / 2.0);
+            t.rotation.z = std::sin(drive.theta / 2.0);
+            add(b.profile.diffDrive->odomFrame, drive.baseFrame, t);
+            odomChild = drive.base;
+        }
+        if (b.profile.tf.odom && b.planar && planarOdom) {
+            add(b.profile.planarBase->odomFrame, b.planar->baseFrame, transformOf(*planarOdom));
+            odomChild = b.planar->base;
+        }
+        if (b.robotTf == "tree") {
+            // 与真机相同：连杆之间为相对位姿（真机由 robot_state_publisher 发布）；根实体相对 world（机身已由 odom 给出时除外）
+            for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
+                const auto& entity = d.entities[e];
+                if (entity.name.empty()) continue;
+                if (!entity.parent.valid()) {
+                    if (odomChild && *odomChild == e) continue;
+                    if (b.drive) continue;  // M4-08b 的行为：差速底盘的 TF 树没有 world
+                    add(b.frame("world"), b.frame(entity.name), transformOf(snapshot.entities[e].pose));
+                    continue;
+                }
+                if (entity.parent.value - 1 >= snapshot.entities.size()) continue;
+                add(b.entityFrame(entity.parent), b.frame(entity.name),
+                    transformOf(terra::scene::multiply(terra::scene::inverse(snapshot.entities[entity.parent.value - 1].pose), snapshot.entities[e].pose)));
+            }
+        } else if (b.robotTf == "world") {
+            for (std::size_t e = 0; e < d.entities.size() && e < snapshot.entities.size(); ++e) {
+                if (d.entities[e].name.empty()) continue;
+                add(b.frame("world"), b.frame(d.entities[e].name), transformOf(snapshot.entities[e].pose));
+            }
+        }
+        if (!msg.transforms.empty()) {
+            b.tf->publish(msg);
+            ++b.published;
+        }
+    }
     for (std::size_t k = 0; k < b.imus.size() && k < snapshot.sensors.size(); ++k) {
-        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.imuRates[k])) continue;
+        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, b.imuRates[k]) || !b.due(b.imus[k]->get_topic_name(), now)) continue;
         const auto& v = snapshot.sensors[k].values;
         if (v.size() < 10) continue;
         sensor_msgs::msg::Imu msg;
         msg.header.stamp = stamp;
         msg.header.frame_id = b.sensorFrame(d.sensors[k].name, d.sensors[k].entity, d.sensors[k].mount);
-        msg.linear_acceleration.x = v[0];
-        msg.linear_acceleration.y = v[1];
-        msg.linear_acceleration.z = v[2];
+        msg.linear_acceleration.x = v[0] * b.imuAccelScale[k];  // M5-13a：单位可以是 g
+        msg.linear_acceleration.y = v[1] * b.imuAccelScale[k];
+        msg.linear_acceleration.z = v[2] * b.imuAccelScale[k];
         msg.angular_velocity.x = v[3];
         msg.angular_velocity.y = v[4];
         msg.angular_velocity.z = v[5];
@@ -637,7 +973,7 @@ void Bridge::publish(const td::PhysicsSnapshot& truth) {
     }
     for (std::size_t k = 0; k < b.scans.size(); ++k) {
         const auto& lidar = b.scene.lidars[k];
-        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz)) continue;
+        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz) || !b.due(b.scans[k]->get_topic_name(), now)) continue;
         auto scan = terra::simulation::scanLidar(*b.scene.world, lidar);
         b.noise.lidar(k, scan);  // M4-09
         sensor_msgs::msg::LaserScan msg;
@@ -654,53 +990,33 @@ void Bridge::publish(const td::PhysicsSnapshot& truth) {
         b.scans[k]->publish(msg);
         ++b.published;
     }
-    // M5-11：3D 激光雷达 → PointCloud2。字段与 livox_ros_driver2 的 PointCloud2 格式相同：
-    // x、y、z、intensity（float32），tag、line（uint8），timestamp（float64，每点的测量时刻，纳秒）；
-    // 消息头的时刻为第一点的测量时刻；intensity 固定为 100（Terra 不模拟反射率），tag 为 0
+    // M5-11：3D 激光雷达 → PointCloud2。默认与 livox_ros_driver2 的 PointCloud2 格式相同（M5-13a：可选 xyzi、velodyne、ouster，
+    // 见 integration.hpp）；消息头的时刻为第一点的测量时刻
     for (std::size_t k = 0; k < b.clouds.size(); ++k) {
         const auto& lidar = b.scene.lidars3d[k];
-        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz)) continue;
+        if (!terra::simulation::sensorSampleDue(snapshot.stepIndex, dt, lidar.rateHz) || !b.due(b.clouds[k]->get_topic_name(), now)) continue;
         auto scan = terra::simulation::scanLidar3d(*b.scene.world, lidar);
         b.noise.lidar3d(k, scan);
+        const double header = b.outTime(std::max(0.0, scan.frameStart));
+        auto packed = packPoints(b.cloudLayouts[k], scan, header);
         sensor_msgs::msg::PointCloud2 msg;
-        msg.header.stamp = stampOf(std::max(0.0, scan.frameStart));
+        msg.header.stamp = stampOf(header);
         msg.header.frame_id = b.sensorFrame(lidar.name, lidar.entity, lidar.mount);
-        const auto field = [&](const char* name, std::uint32_t offset, std::uint8_t type) {
-            sensor_msgs::msg::PointField f;
-            f.name = name;
-            f.offset = offset;
-            f.datatype = type;
-            f.count = 1;
-            msg.fields.push_back(f);
-        };
-        using PF = sensor_msgs::msg::PointField;
-        field("x", 0, PF::FLOAT32);
-        field("y", 4, PF::FLOAT32);
-        field("z", 8, PF::FLOAT32);
-        field("intensity", 12, PF::FLOAT32);
-        field("tag", 16, PF::UINT8);
-        field("line", 17, PF::UINT8);
-        field("timestamp", 18, PF::FLOAT64);
-        msg.point_step = 26;
+        for (const auto& f : packed.fields) {
+            sensor_msgs::msg::PointField pf;
+            pf.name = f.name;
+            pf.offset = f.offset;
+            pf.datatype = f.datatype;
+            pf.count = 1;
+            msg.fields.push_back(pf);
+        }
+        msg.point_step = packed.pointStep;
         msg.height = 1;
         msg.width = static_cast<std::uint32_t>(scan.points.size());
         msg.row_step = msg.point_step * msg.width;
         msg.is_bigendian = false;
         msg.is_dense = true;
-        msg.data.resize(static_cast<std::size_t>(msg.row_step));
-        std::uint8_t* out = msg.data.data();
-        const float intensity = 100.0f;
-        for (const auto& p : scan.points) {
-            const double t = (std::max(0.0, scan.frameStart) + static_cast<double>(p.time)) * 1e9;
-            std::memcpy(out, &p.x, 4);
-            std::memcpy(out + 4, &p.y, 4);
-            std::memcpy(out + 8, &p.z, 4);
-            std::memcpy(out + 12, &intensity, 4);
-            out[16] = 0;
-            out[17] = p.line;
-            std::memcpy(out + 18, &t, 8);
-            out += msg.point_step;
-        }
+        msg.data = std::move(packed.data);
         b.clouds[k]->publish(msg);
         ++b.published;
     }
@@ -714,7 +1030,8 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
     if (camera >= b.cameras.size() || camera >= b.scene.cameras.size()) return;
     const auto& topics = b.cameras[camera];
     const std::string frame = b.cameraFrame(b.scene.cameras[camera]);
-    const auto stamp = stampOf(image.time);
+    const auto stamp = b.stamp(image.time);
+    if (topics.info && !b.due(topics.info->get_topic_name(), image.time)) return;  // M5-13a：降频（相机的话题一起降）
     const auto w = static_cast<std::uint32_t>(image.width);
     const auto h = static_cast<std::uint32_t>(image.height);
     if (topics.color && !image.rgb.empty()) {
@@ -823,28 +1140,17 @@ void Bridge::publishCamera(std::size_t camera, const CameraImage& image) {
 
 bool Bridge::enableVelocityCommand(const std::string& topic, double timeout) {
     Impl* self = impl_.get();
-    const std::string name = self->profile.topicPrefix + topic;
-    if (self->profile.diffDrive && self->profile.topicPrefix + self->profile.diffDrive->cmdVel == name) return false;
-    std::lock_guard<std::mutex> lock(self->mutex);
-    self->velocityTimeout = timeout;
-    if (self->velocitySub) return true;
-    self->velocitySub = self->node->create_subscription<geometry_msgs::msg::Twist>(
-        name, rclcpp::QoS(10), [self](const geometry_msgs::msg::Twist::SharedPtr msg) {
-            std::lock_guard<std::mutex> guard(self->mutex);
-            self->velocity = {msg->linear.x, msg->linear.y, msg->angular.z};
-            self->velocityAt = std::chrono::steady_clock::now();
-            self->haveVelocity = true;
-            ++self->stats.commandsAccepted;
-        });
+    // 速度指令已经给了底盘（差速、平面）：策略只取面板或命令行
+    if (self->consumer == Impl::Consumer::Drive || self->consumer == Impl::Consumer::Planar) return false;
+    if (self->consumer == Impl::Consumer::Policy) return true;  // M5-13a：档案的 cmdVel，或已经订阅过
+    self->subscribeInputs({{topic, "Twist", 0, timeout}}, Impl::Consumer::Policy);
     return true;
 }
 
 std::optional<std::array<double, 3>> Bridge::velocityCommand() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (!impl_->haveVelocity) return std::nullopt;
-    const double age = std::chrono::duration<double>(std::chrono::steady_clock::now() - impl_->velocityAt).count();
-    if (age > impl_->velocityTimeout) return std::array<double, 3>{0.0, 0.0, 0.0};
-    return impl_->velocity;
+    if (impl_->consumer != Impl::Consumer::Policy) return std::nullopt;
+    return impl_->arbiter.current(steadyNow());
 }
 
 std::vector<Request> Bridge::takeRequests() {
@@ -861,6 +1167,10 @@ Stats Bridge::stats() const {
         s = impl_->stats;
     }
     s.published = impl_->published.load();
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (const auto i = impl_->arbiter.active(steadyNow())) s.commandSource = impl_->arbiter.inputs()[*i].topic;
+    }
     std::size_t subscribers = 0;
     if (impl_->jointStates) subscribers += impl_->jointStates->get_subscription_count();
     if (impl_->tf) subscribers += impl_->tf->get_subscription_count();

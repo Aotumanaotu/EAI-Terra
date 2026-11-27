@@ -1,8 +1,10 @@
 # terra_ros2：ROS2 桥接（M4-06，D-104：进程内的可选模块）。只有 TERRA_BUILD_ROS2=ON 且找到 ROS2 Humble 时构建（cmake/TerraRos2.cmake）。
 # 公共头不含 ROS 类型；rclcpp 与消息包 PRIVATE 链接。查看器与 Headless 在 TERRA_ROS2_ENABLED 时链接本库并定义 TERRA_WITH_ROS2。
 # M4-08d：ROS2 监视器（monitor.cpp，ROS2 面板用）与共用的 rclcpp 运行时（runtime.cpp）
+# M5-13a：算法接入档案中与 ROS 无关的部分（integration.cpp：名字匹配、点云布局、墙钟时间戳、速度指令仲裁）
 add_library(terra_ros2 STATIC
     src/bridge.cpp
+    src/integration.cpp
     src/profile.cpp
     src/runtime.cpp
     src/monitor.cpp)

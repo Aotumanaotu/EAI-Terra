@@ -3,7 +3,8 @@
 # 不得包含 MuJoCo 头文件（由 boundary.no_mujoco_in_public_headers 测试检查）。
 add_library(terra_physics_mujoco STATIC
     src/backend_info.cpp
-    src/mujoco_world.cpp)
+    src/mujoco_world.cpp
+    src/ray_index.cpp)
 add_library(terra::physics_mujoco ALIAS terra_physics_mujoco)
 
 target_include_directories(terra_physics_mujoco

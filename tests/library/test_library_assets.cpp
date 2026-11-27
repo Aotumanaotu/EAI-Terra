@@ -218,12 +218,14 @@ int main(int argc, char** argv) {
 
     // 默认扫描范围
     const auto defaults = lib::defaultScanRoots("/a", "/x/library.sqlite3");
-    check(defaults.size() == 9 && defaults[0].directory == "/a/scenes" && defaults[4].directory == "/a/elements" && defaults[5].directory == "/x/assets" &&
-              defaults[5].source == lib::AssetSource::Imported && defaults[6].directory == "/x/displays" && defaults[6].source == lib::AssetSource::User &&
-              defaults[7].directory == "/x/policies" && defaults[7].source == lib::AssetSource::Imported && defaults[8].directory == "/x/elements" &&
-              defaults[8].source == lib::AssetSource::Imported,
-          "默认扫描范围：内置 5 个目录（M5-02a 加 elements/）与资源库目录下的 assets/、displays/、policies/（M4-10b）、elements/（M5-02a）");
-    check(lib::defaultScanRoots("/a", ":memory:").size() == 5, "内存中的库：只扫描内置目录");
+    check(defaults.size() == 11 && defaults[0].directory == "/a/scenes" && defaults[4].directory == "/a/elements" && defaults[5].directory == "/a/environments" &&
+              defaults[6].directory == "/x/assets" && defaults[6].source == lib::AssetSource::Imported && defaults[7].directory == "/x/displays" &&
+              defaults[7].source == lib::AssetSource::User && defaults[8].directory == "/x/policies" && defaults[8].source == lib::AssetSource::Imported &&
+              defaults[9].directory == "/x/elements" && defaults[9].source == lib::AssetSource::Imported && defaults[10].directory == "/x/environments" &&
+              defaults[10].source == lib::AssetSource::Imported,
+          "默认扫描范围：内置 6 个目录（M5-02a 加 elements/，M5-02b 加 environments/）与资源库目录下的 assets/、displays/、policies/（M4-10b）、"
+          "elements/（M5-02a）、environments/（M5-02b）");
+    check(lib::defaultScanRoots("/a", ":memory:").size() == 6, "内存中的库：只扫描内置目录");
 
     // 内存中的库
     {

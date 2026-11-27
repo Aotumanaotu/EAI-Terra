@@ -291,10 +291,10 @@ import sys
 path, name = sys.argv[1], sys.argv[2]
 mutations = {
     "元素的质量不分配": (
-        "            if (dynamic && volume > 0) geoms += \" mass=\\\"\" + num(e.mass * 8.0 * b.halfSize.x * b.halfSize.y * b.halfSize.z / volume) + \"\\\"\";",
+        "            if (dynamic && volume > 0) out += \" mass=\\\"\" + num(e.mass * volumeOf(b) / volume) + \"\\\"\";",
         "            (void)volume;"),
     "dynamic 没有自由关节": (
-        "    if (dynamic) xml += \"      <freejoint name=\\\"free\\\"/>\\n\";",
+        "    if (dynamic) body += \"      <freejoint name=\\\"free\\\"/>\\n\";",
         "    (void)dynamic;"),
     "元素的放置位姿丢失": (
         "        m.placement = e.placement;",

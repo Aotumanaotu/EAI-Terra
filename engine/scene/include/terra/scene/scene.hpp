@@ -45,6 +45,8 @@ struct VisualBindingSpec {
     std::string where;  // JSON 指针，如 "/visuals/0"
     // M5-11：传感器的外观模型（由预设给出，如 Mid-360 的外壳）；不影响所属实体的 MJCF 几何体是否隐藏
     bool sensorModel = false;
+    // M5-02b：不画这些节点（名字）的子树——元素的部件另有绑定
+    std::vector<std::string> excludeNodes{};
 };
 
 struct ViewSpec {

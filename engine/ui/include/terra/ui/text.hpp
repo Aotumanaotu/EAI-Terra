@@ -604,6 +604,14 @@ enum class TextId : int {
     LibraryTagFixed,
     LibraryTagDynamic,
     ElementPreviewFailed,
+    // M5-02b：环境导入
+    MenuFileImportEnvironment,
+    EnvironmentBrowserTitle,
+    LogEnvironmentImported,
+    LogEnvironmentImportFailed,
+    // 2026-11-26：视口点云的显示
+    SensorsPointHideRadius,
+    SensorsPointSize,
     Count,
 };
 

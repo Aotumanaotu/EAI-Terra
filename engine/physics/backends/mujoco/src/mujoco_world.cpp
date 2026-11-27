@@ -1,5 +1,7 @@
 #include "mujoco_world.hpp"
 
+#include "ray_index.hpp"
+
 #include "terra/physics/mujoco/mujoco_backend.hpp"
 
 #include <algorithm>
@@ -461,6 +463,11 @@ struct MujocoWorld::Impl {
     std::optional<SimulationError> checkAfterStep(std::uint64_t step, double previousTime) const;
 
     std::shared_ptr<const terra::data::PhysicsSnapshot> buildSnapshot() const;
+
+    // 射线检测的空间索引（静止几何体的包围盒树），第一次射线检测时建立；静止几何体不动，之后一直可用
+    mutable std::unique_ptr<RayIndex> rayIndex;
+    mutable bool rayIndexChecked = false;
+    mutable std::mutex rayMutex;
 };
 
 std::shared_ptr<const terra::data::PhysicsSnapshot> MujocoWorld::Impl::buildSnapshot() const {
@@ -1051,7 +1058,34 @@ std::vector<double> MujocoWorld::castRays(const RayQuery& query) const {
         exclude = impl_->entityToBody[query.exclude.value - 1];
     }
     const mjtByte visualGroups[mjNGROUP] = {1, 1, 1, 0, 0, 0};
+    // 包围盒树（2026-11-26，M5-02b 之后）：与原来的 mj_multiRay + 逐条跳过不参与碰撞的几何体结果相同（同样的过滤与求交函数），
+    // 但每条射线只检查与它相交的静止几何体。模型中有 SDF 几何体时退回原来的做法
     const mjtByte* groups = query.hits == RayTargets::Visual ? visualGroups : nullptr;
+    const mjtNum origin[3] = {query.origin.x, query.origin.y, query.origin.z};
+    const mjtNum cutoff = query.maxRange > 0 ? query.maxRange : mjMAXVAL;
+    bool indexed = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->rayMutex);
+        if (!impl_->rayIndexChecked) {
+            impl_->rayIndexChecked = true;
+            if (RayIndex::usable(m)) impl_->rayIndex = std::make_unique<RayIndex>(m, d);
+        }
+        indexed = impl_->rayIndex != nullptr;
+    }
+    if (indexed) {
+        RayIndex::Filter filter;
+        filter.exclude = exclude;
+        filter.groups = groups;
+        filter.collidingOnly = query.hits != RayTargets::Visual;
+        for (std::size_t i = 0; i < n; ++i) {
+            const terra::data::Vec3& dir = query.directions[i];
+            const mjtNum v[3] = {dir.x, dir.y, dir.z};
+            const mjtNum dist = impl_->rayIndex->cast(m, d, origin, v, filter, cutoff);
+            if (dist < 0 || dist > query.maxRange) continue;
+            out[i] = dist;
+        }
+        return out;
+    }
     constexpr double kStepPast = 1e-9;
     std::vector<mjtNum> vec(3 * n), dist(n), normal(3 * n);
     std::vector<int> geom(n, -1);
@@ -1060,8 +1094,6 @@ std::vector<double> MujocoWorld::castRays(const RayQuery& query) const {
         vec[3 * i + 1] = query.directions[i].y;
         vec[3 * i + 2] = query.directions[i].z;
     }
-    const mjtNum origin[3] = {query.origin.x, query.origin.y, query.origin.z};
-    const mjtNum cutoff = query.maxRange > 0 ? query.maxRange : mjMAXVAL;
     mj_multiRay(m, d, origin, vec.data(), groups, 1, exclude, geom.data(), dist.data(), normal.data(), static_cast<int>(n), cutoff);
     for (std::size_t i = 0; i < n; ++i) {
         if (dist[i] < 0 || geom[i] < 0 || dist[i] > query.maxRange) continue;
@@ -1075,8 +1107,7 @@ std::vector<double> MujocoWorld::castRays(const RayQuery& query) const {
         const mjtNum v[3] = {dir.x, dir.y, dir.z};
         double travelled = dist[i] + kStepPast;
         for (int hop = 1; hop < 64; ++hop) {
-            const mjtNum pnt[3] = {query.origin.x + travelled * dir.x, query.origin.y + travelled * dir.y,
-                                   query.origin.z + travelled * dir.z};
+            const mjtNum pnt[3] = {query.origin.x + travelled * dir.x, query.origin.y + travelled * dir.y, query.origin.z + travelled * dir.z};
             int g = -1;
             const mjtNum dd = mj_ray(m, d, pnt, v, groups, 1, exclude, &g, nullptr);
             if (dd < 0 || g < 0) break;

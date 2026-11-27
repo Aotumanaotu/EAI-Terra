@@ -1,0 +1,100 @@
+{
+ "project": "env_fixture",
+ "description": "M5-02b 环境导入的测试夹具",
+ "elements": [
+  {
+   "id": "Plinth",
+   "name": "基座",
+   "category": "test/plinth",
+   "movable": "fixed",
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   }
+  },
+  {
+   "id": "Rack",
+   "name": "机柜",
+   "category": "test/rack",
+   "movable": "layout",
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   },
+   "thermal": {
+    "default": 40.0,
+    "parts": {
+     "Rack_hot": 75.0
+    }
+   },
+   "inspection": [
+    {
+     "name": "仪表",
+     "node": "Rack_hot",
+     "view": {
+      "distance": 1.5,
+      "heightDeg": 10
+     }
+    }
+   ]
+  },
+  {
+   "id": "Stairs",
+   "name": "楼梯",
+   "category": "building/staircase",
+   "movable": "fixed",
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   }
+  },
+  {
+   "id": "Ramp_Main",
+   "name": "坡道",
+   "category": "outdoor/ramp",
+   "movable": "fixed",
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   }
+  },
+  {
+   "id": "Crate",
+   "name": "箱子",
+   "category": "test/crate",
+   "movable": "dynamic",
+   "mass": 3.0,
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   }
+  },
+  {
+   "id": "Fence",
+   "name": "围栏",
+   "category": "test/fence",
+   "movable": "fixed",
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   }
+  },
+  {
+   "id": "Doorway",
+   "name": "门框",
+   "category": "building/door_frame",
+   "movable": "fixed",
+   "license": {
+    "source": "EAI Terra 测试夹具",
+    "license": "CC0-1.0",
+    "author": "EAI Terra"
+   }
+  }
+ ]
+}

@@ -453,6 +453,15 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
             const std::size_t i = body->id.value - 1;
             if (e.thermal) t.entities[i] = *e.thermal;
             else if (matched[i] == 0 && e.element.thermalDefault) t.entities[i] = *e.element.thermalDefault;
+            // M5-02b：部件——场景按实体全名写的温度最优先；其次部件自己的温度；都没有时与元素本身相同
+            for (const ElementPart& part : e.element.parts) {
+                const td::EntityDescription* pe = d.findEntity(e.id + "/" + part.name);
+                if (pe == nullptr) continue;
+                const std::size_t j = pe->id.value - 1;
+                if (matched[j] == 3) continue;
+                if (part.temperature) t.entities[j] = *part.temperature;
+                else t.entities[j] = t.entities[i];
+            }
             for (const HotspotSpec& h : e.element.hotspots) {
                 ThermalModel::Hotspot spot;
                 spot.entity = body->id;

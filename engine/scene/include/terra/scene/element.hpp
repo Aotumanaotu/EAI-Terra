@@ -54,8 +54,23 @@ struct ElementMesh {
 enum class ElementCollision { Boxes, Mesh, None };
 enum class ElementMovable { Layout, Fixed, Dynamic };
 
+// M5-02b：元素的部件——glTF 的一个子节点（如变压器的套管、表计），单独成为一个刚体，焊在元素的刚体上（随元素移动），
+// 有自己的温度、分割 ID 与碰撞体。实体全名为 “<id>/<部件名>”。元素的外观绑定排除部件的节点，部件另有一个绑定。
+//   "parts": [{"name": "T1_bushing_HV_A", "node": "T1_bushing_HV_A", "position": [...], "rotation": {...}, "visualScale": 1.0,
+//              "boxes": [...（部件坐标系）], "temperature": 68.0}]
+struct ElementPart {
+    std::string name;
+    std::string node;                    // glTF 节点名
+    terra::data::Pose pose;              // 部件坐标系在元素坐标系中的位姿
+    double visualScale = 1.0;            // 节点的世界缩放（统一缩放；外观绑定的 scale）
+    std::vector<ElementBox> boxes;       // 部件坐标系（collision.mode 为 boxes 时）
+    std::vector<ElementMesh> meshes;     // 部件坐标系（collision.mode 为 mesh 时）
+    std::optional<TemperatureCurve> temperature;
+};
+
 struct ElementInspection {
     std::string name;
+    std::string node;                     // M5-02b：glTF 节点名（导入时记下，位置已换算好）
     terra::data::Vec3 position{0, 0, 0};  // 元素坐标系
     double distance = 2.0;                // 推荐的拍摄距离（米）
     double heightDeg = 0.0;               // 推荐的俯仰（度）
@@ -84,6 +99,7 @@ struct ElementDocument {
     std::vector<HotspotSpec> hotspots;  // entity 为空，位置在元素坐标系
     // 检查点（M5-07 使用）
     std::vector<ElementInspection> inspection;
+    std::vector<ElementPart> parts;  // M5-02b
     // 许可
     std::string licenseSource;
     std::string licenseName;

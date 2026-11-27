@@ -169,7 +169,14 @@ std::unique_ptr<SceneView> SceneView::create(const sc::SceneInstance& scene, std
                         continue;
                     }
                 }
+                for (const std::string& name : other.spec.excludeNodes) {  // M5-02b：找不到的排除节点只提示
+                    std::string error;
+                    const int x = as::findNode(*loaded.asset, name, error);
+                    if (x >= 0) draw.exclude.push_back(x);
+                    else messages.push_back({SceneMessage::Kind::AssetWarning, other.spec.where + "：排除的节点 " + error});
+                }
                 draw.asset = it->second.get();
+                draw.parts = draw.asset->subtreeParts(draw.node, draw.exclude);
             }
         }
     }
@@ -237,7 +244,7 @@ std::vector<r::RenderItem> SceneView::items(const sc::SceneInstance& scene, cons
             if (part.binding < 0 || static_cast<std::size_t>(part.binding) >= bindings_.size()) continue;
             const BindingDraw& b = bindings_[static_cast<std::size_t>(part.binding)];
             if (b.asset == nullptr) continue;
-            auto parts = b.asset->subtreeItems(poseMatrix(pose.pose, pose.scale), b.node, b.frame, options.armOcclusion);
+            auto parts = b.asset->partItems(poseMatrix(pose.pose, pose.scale), b.node, b.frame, options.armOcclusion, b.parts);
             for (auto& item : parts) item.id = part.entity.valid() ? part.entity.value : 0u;  // M4-09
             if (selected) {
                 for (auto& item : parts) highlight(item);

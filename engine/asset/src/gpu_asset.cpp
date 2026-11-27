@@ -69,12 +69,32 @@ std::vector<r::RenderItem> GpuAsset::items(const r::Matrix4& placement, bool arm
     return out;
 }
 
+std::vector<int> GpuAsset::subtreeParts(int root, const std::vector<int>& exclude) const {
+    std::vector<int> out;
+    for (std::size_t k = 0; k < parts_.size(); ++k) {
+        const Part& part = parts_[k];
+        if (root >= 0 && !inSubtree(nodes_, part.node, root)) continue;
+        // M5-02b：排除的节点子树（元素的部件另有绑定）
+        bool excluded = false;
+        for (const int x : exclude) excluded = excluded || inSubtree(nodes_, part.node, x);
+        if (!excluded) out.push_back(static_cast<int>(k));
+    }
+    return out;
+}
+
 std::vector<r::RenderItem> GpuAsset::subtreeItems(const r::Matrix4& placement, int root, NodeFrame frame,
-                                                   bool armOcclusion) const {
+                                                   bool armOcclusion, const std::vector<int>& exclude) const {
+    return partItems(placement, root, frame, armOcclusion, subtreeParts(root, exclude));
+}
+
+std::vector<r::RenderItem> GpuAsset::partItems(const r::Matrix4& placement, int root, NodeFrame frame, bool armOcclusion,
+                                               const std::vector<int>& parts) const {
     const r::Matrix4 base = multiply(placement, bindingBase(nodes_, root, frame));
     std::vector<r::RenderItem> out;
-    for (const Part& part : parts_) {
-        if (root >= 0 && !inSubtree(nodes_, part.node, root)) continue;
+    out.reserve(parts.size());
+    for (const int k : parts) {
+        if (k < 0 || static_cast<std::size_t>(k) >= parts_.size()) continue;
+        const Part& part = parts_[static_cast<std::size_t>(k)];
         r::RenderItem item;
         item.mesh = &meshes_[static_cast<std::size_t>(part.mesh)];
         item.model = multiply(base, part.nodeWorld);

@@ -70,6 +70,8 @@ private:
         const terra::asset::GpuAsset* asset = nullptr;  // 为空：绑定已放弃
         int node = -1;
         terra::asset::NodeFrame frame = terra::asset::NodeFrame::Node;
+        std::vector<int> exclude;  // M5-02b：不画的节点子树（元素的部件）
+        std::vector<int> parts;    // 子树中（去掉排除的）图元下标，加载时算一次
     };
 
     const terra::render::GpuMesh* mesh(const std::string& key, const terra::render::MeshData& data);

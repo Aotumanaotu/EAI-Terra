@@ -34,3 +34,7 @@ compile_commands.json
 /assets/sensors/livox/
 # M5-11：传感器外观模型，由 scripts/assets/fetch_sensor_models.sh 下载并转换（记录见 assets/sensors/sensor_models.lock）
 /assets/sensors/models/
+# M5-02b：scripts/assets/import_environments.sh 从 blender/ 导入的场景元素（可以重新生成）
+/assets/environments/
+# Blender 环境素材（.blend、导出的 .glb、预览图等）：体积大，属于用户/美术资产，不提交
+/blender/

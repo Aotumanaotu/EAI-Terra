@@ -382,6 +382,21 @@ add_test(NAME import.cli_broken
             "-DSTDERR_REGEX=missing_mesh：[^\n]*no_such_mesh[^\n]*  → .*unknown_package：[^\n]*nonexistent_pkg[^\n]*  → "
             -P "${_terra_check_exit}" "${PROJECT_SOURCE_DIR}/assets/tests/import/broken.urdf"
             --output "${CMAKE_CURRENT_BINARY_DIR}/import_cli_broken")
+# M5-02b：glTF 环境导入（不需要图形）：夹具 assets/tests/environment/（scripts/assets/make_environment_fixture.py 生成）；
+# 用户的变电站与办公楼（blender/；没有时跳过，返回 77）；命令行程序 terra_import --environment
+add_executable(test_environment_import import/test_environment_import.cpp)
+target_link_libraries(test_environment_import PRIVATE terra::import terra::scene terra::physics_mujoco)
+target_compile_definitions(test_environment_import PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_environment_import)
+add_test(NAME import.environment COMMAND test_environment_import fixture "${CMAKE_CURRENT_BINARY_DIR}/environment_import")
+add_test(NAME import.environment_assets COMMAND test_environment_import assets "${CMAKE_CURRENT_BINARY_DIR}/environment_assets" "${PROJECT_SOURCE_DIR}/blender")
+set_tests_properties(import.environment_assets PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+add_test(NAME import.cli_environment
+    COMMAND "${CMAKE_COMMAND}" -DEXPECTED=0 -DCOMMAND=$<TARGET_FILE:terra_import_cli>
+            "-DSTDOUT_REGEX=[{].type.:.environment.,.ok.:true,[^\n]*.elements.:8,[^\n]*.parts.:1,"
+            -P "${_terra_check_exit}" --environment "${PROJECT_SOURCE_DIR}/assets/tests/environment/env_fixture.gltf"
+            --output "${CMAKE_CURRENT_BINARY_DIR}/import_cli_environment" --overwrite)
+
 # M4-08c：命令行导入后登记到资源库；资产包导出再解包到另一个资源库（逐字节相同）；Headless 列出解包后的机器人
 add_test(NAME import.cli_pack
     COMMAND "${CMAKE_COMMAND}" -DIMPORT=$<TARGET_FILE:terra_import_cli> -DHEADLESS=$<TARGET_FILE:terra_headless>
@@ -824,6 +839,14 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 120 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/elements/elements_bench.terra-scene.json" --elements-self-test)
     set_tests_properties(graphics.viewer_elements_selftest PROPERTIES LABELS graphics)
+    # M5-02b：环境导入（与菜单同一路径）：先打开元素夹具，启动时导入 env_fixture.gltf 到资源库目录的 environments/ 并打开；
+    # 全部绑定可用（机柜的绑定排除部件节点，部件另有绑定）
+    add_test(NAME graphics.viewer_environment_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 100 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/elements/elements_bench.terra-scene.json"
+                --environment-self-test "${PROJECT_SOURCE_DIR}/assets/tests/environment/env_fixture.gltf"
+                --library "${CMAKE_CURRENT_BINARY_DIR}/viewer_environment/library.sqlite3")
+    set_tests_properties(graphics.viewer_environment_selftest PROPERTIES LABELS graphics)
     add_test(NAME graphics.viewer_sensor_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)

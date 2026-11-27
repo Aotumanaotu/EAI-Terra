@@ -209,9 +209,10 @@ void readPhysics(Reader& r, const Json& v, PhysicsOverrides& out) {
     }
 }
 
-void readModels(Reader& r, const Json& v, std::vector<SceneModel>& out) {
-    if (!v.is_array() || v.empty()) {
-        r.error("/models", "models 应为至少有一个模型实例的数组");
+// allowEmpty（M5-02b）：场景有 elements 时 models 可以为空（导入的环境只有元素）
+void readModels(Reader& r, const Json& v, std::vector<SceneModel>& out, bool allowEmpty) {
+    if (!v.is_array() || (v.empty() && !allowEmpty)) {
+        r.error("/models", "models 应为至少有一个模型实例的数组（有 elements 时可以为空）");
         return;
     }
     for (std::size_t i = 0; i < v.size(); ++i) {
@@ -640,8 +641,54 @@ void readThermalScene(Reader& r, const Json& j, ThermalSceneSpec& out) {
 
 // ---- 场景元素（M5-02a）----
 
+void readMeshes(Reader& r, const Json& list, const std::string& where, std::vector<ElementMesh>& out) {
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        const std::string w = where + "/" + std::to_string(i);
+        const Json& m = list[i];
+        if (!r.object(m, w, {"file", "position", "rotation", "scale", "node"})) continue;
+        ElementMesh mesh;
+        if (!m.contains("file")) {
+            r.error(w, "缺少 file（OBJ 或 STL，相对元素文件）");
+            continue;
+        }
+        if (const auto f = r.string(m["file"], w + "/file")) mesh.file = r.path(*f);
+        std::error_code ec;
+        const std::string ext = fs::path{mesh.file}.extension().string();
+        if (ext != ".obj" && ext != ".stl" && ext != ".OBJ" && ext != ".STL") {
+            r.error(w + "/file", "碰撞网格应为 .obj 或 .stl：" + mesh.file);
+        } else if (!fs::is_regular_file(mesh.file, ec)) {
+            r.error(w + "/file", "碰撞网格不存在：" + mesh.file);
+        }
+        r.pose(m, w, mesh.pose);
+        if (m.contains("scale")) {
+            if (const auto d = r.number(m["scale"], w + "/scale")) {
+                if (*d > 0) mesh.scale = *d;
+                else r.error(w + "/scale", "缩放必须大于 0");
+            }
+        }
+        out.push_back(mesh);
+    }
+}
+
+void readBoxes(Reader& r, const Json& list, const std::string& where, std::vector<ElementBox>& out) {
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        const std::string w = where + "/" + std::to_string(i);
+        const Json& b = list[i];
+        if (!r.object(b, w, {"position", "rotation", "halfSize", "node"})) continue;
+        ElementBox box;
+        r.pose(b, w, box.pose);
+        if (!b.contains("halfSize")) {
+            r.error(w, "缺少 halfSize（半边长，米）");
+        } else if (const auto h = r.vec3(b["halfSize"], w + "/halfSize")) {
+            if (h->x > 0 && h->y > 0 && h->z > 0) box.halfSize = *h;
+            else r.error(w + "/halfSize", "半边长必须都大于 0");
+        }
+        out.push_back(box);
+    }
+}
+
 void readElementBody(Reader& r, const Json& root, ElementDocument& e) {
-    if (!r.object(root, "", {"format", "version", "name", "category", "visual", "collision", "physics", "thermal", "inspection", "license"})) return;
+    if (!r.object(root, "", {"format", "version", "name", "category", "visual", "collision", "physics", "thermal", "inspection", "license", "parts"})) return;
     if (!root.contains("format")) {
         r.error("", "缺少 format（应为 “terra.element”）");
     } else if (const auto f = r.string(root["format"], "/format"); f && *f != "terra.element") {
@@ -689,60 +736,67 @@ void readElementBody(Reader& r, const Json& root, ElementDocument& e) {
             }
             if (mode == "boxes") {
                 e.collision = ElementCollision::Boxes;
-                if (!c.contains("boxes") || !c["boxes"].is_array() || c["boxes"].empty()) {
+                // 有部件时，元素本身的盒体可以为空（碰撞体都在部件上）
+                const bool partBoxes = root.contains("parts") && root["parts"].is_array() && !root["parts"].empty();
+                if (!c.contains("boxes") || !c["boxes"].is_array() || (c["boxes"].empty() && !partBoxes)) {
                     r.error("/collision", "mode 为 boxes 时需要 boxes（至少一个盒体：position、rotation、halfSize）");
                 } else {
-                    for (std::size_t i = 0; i < c["boxes"].size(); ++i) {
-                        const std::string w = "/collision/boxes/" + std::to_string(i);
-                        const Json& b = c["boxes"][i];
-                        if (!r.object(b, w, {"position", "rotation", "halfSize", "node"})) continue;
-                        ElementBox box;
-                        r.pose(b, w, box.pose);
-                        if (!b.contains("halfSize")) {
-                            r.error(w, "缺少 halfSize（半边长，米）");
-                        } else if (const auto h = r.vec3(b["halfSize"], w + "/halfSize")) {
-                            if (h->x > 0 && h->y > 0 && h->z > 0) box.halfSize = *h;
-                            else r.error(w + "/halfSize", "半边长必须都大于 0");
-                        }
-                        e.boxes.push_back(box);
-                    }
+                    readBoxes(r, c["boxes"], "/collision/boxes", e.boxes);
                 }
             } else if (mode == "mesh") {
                 e.collision = ElementCollision::Mesh;
-                if (!c.contains("meshes") || !c["meshes"].is_array() || c["meshes"].empty()) {
+                const bool partMeshes = root.contains("parts") && root["parts"].is_array() && !root["parts"].empty();
+                if (!c.contains("meshes") || !c["meshes"].is_array() || (c["meshes"].empty() && !partMeshes)) {
                     r.error("/collision", "mode 为 mesh 时需要 meshes（至少一个：file、position、rotation、scale）");
                 } else {
-                    for (std::size_t i = 0; i < c["meshes"].size(); ++i) {
-                        const std::string w = "/collision/meshes/" + std::to_string(i);
-                        const Json& m = c["meshes"][i];
-                        if (!r.object(m, w, {"file", "position", "rotation", "scale"})) continue;
-                        ElementMesh mesh;
-                        if (!m.contains("file")) {
-                            r.error(w, "缺少 file（OBJ 或 STL，相对元素文件）");
-                            continue;
-                        }
-                        if (const auto f = r.string(m["file"], w + "/file")) mesh.file = r.path(*f);
-                        std::error_code ec;
-                        const std::string ext = fs::path{mesh.file}.extension().string();
-                        if (ext != ".obj" && ext != ".stl" && ext != ".OBJ" && ext != ".STL") {
-                            r.error(w + "/file", "碰撞网格应为 .obj 或 .stl：" + mesh.file);
-                        } else if (!fs::is_regular_file(mesh.file, ec)) {
-                            r.error(w + "/file", "碰撞网格不存在：" + mesh.file);
-                        }
-                        r.pose(m, w, mesh.pose);
-                        if (m.contains("scale")) {
-                            if (const auto d = r.number(m["scale"], w + "/scale")) {
-                                if (*d > 0) mesh.scale = *d;
-                                else r.error(w + "/scale", "缩放必须大于 0");
-                            }
-                        }
-                        e.meshes.push_back(mesh);
-                    }
+                    readMeshes(r, c["meshes"], "/collision/meshes", e.meshes);
                 }
             } else if (mode == "none") {
                 e.collision = ElementCollision::None;
             } else if (!mode.empty()) {
                 r.error("/collision/mode", "mode 应为 boxes、mesh 或 none（auto-boxes、auto-hulls 由导入生成，见 M5-02b）");
+            }
+        }
+    }
+    if (root.contains("parts")) {  // M5-02b
+        const Json& list = root["parts"];
+        if (!list.is_array()) {
+            r.error("/parts", "应为数组");
+        } else {
+            std::set<std::string> names;
+            for (std::size_t i = 0; i < list.size(); ++i) {
+                const std::string w = "/parts/" + std::to_string(i);
+                const Json& p = list[i];
+                if (!r.object(p, w, {"name", "node", "position", "rotation", "visualScale", "boxes", "meshes", "temperature"})) continue;
+                ElementPart part;
+                if (p.contains("name")) {
+                    if (const auto n = r.string(p["name"], w + "/name")) part.name = *n;
+                }
+                if (part.name.empty() || part.name == kElementBody || part.name.find('/') != std::string::npos) {
+                    r.error(w + "/name", "部件名不能为空、不能是 “body”、不能含 “/”");
+                } else if (!names.insert(part.name).second) {
+                    r.error(w + "/name", "部件名“" + part.name + "”重复");
+                }
+                if (p.contains("node")) {
+                    if (const auto n = r.string(p["node"], w + "/node")) part.node = *n;
+                }
+                r.pose(p, w, part.pose);
+                if (p.contains("visualScale")) {
+                    if (const auto d = r.number(p["visualScale"], w + "/visualScale")) {
+                        if (*d > 0) part.visualScale = *d;
+                        else r.error(w + "/visualScale", "缩放必须大于 0");
+                    }
+                }
+                if (p.contains("boxes")) {
+                    if (p["boxes"].is_array()) readBoxes(r, p["boxes"], w + "/boxes", part.boxes);
+                    else r.error(w + "/boxes", "应为数组");
+                }
+                if (p.contains("meshes")) {
+                    if (p["meshes"].is_array()) readMeshes(r, p["meshes"], w + "/meshes", part.meshes);
+                    else r.error(w + "/meshes", "应为数组");
+                }
+                if (p.contains("temperature")) part.temperature = readTemperature(r, p["temperature"], w + "/temperature");
+                e.parts.push_back(std::move(part));
             }
         }
     }
@@ -818,6 +872,9 @@ void readElementBody(Reader& r, const Json& root, ElementDocument& e) {
                 const std::string w = "/inspection/" + std::to_string(i);
                 if (!r.object(list[i], w, {"name", "position", "distance", "heightDeg", "node"})) continue;
                 ElementInspection point;
+                if (list[i].contains("node")) {
+                    if (const auto n = r.string(list[i]["node"], w + "/node")) point.node = *n;
+                }
                 if (list[i].contains("name")) {
                     if (const auto n = r.string(list[i]["name"], w + "/name")) point.name = *n;
                 }
@@ -1307,8 +1364,12 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
             if (const auto s = r.string(root["title"], "/title")) doc.title = *s;
         }
         if (root.contains("physics")) readPhysics(r, root["physics"], doc.physics);
-        if (!root.contains("models")) r.error("", "缺少 models（模型实例列表）");
-        else readModels(r, root["models"], doc.models);
+        const bool hasElements = root.contains("elements") && root["elements"].is_array() && !root["elements"].empty();
+        if (!root.contains("models")) {
+            if (!hasElements) r.error("", "缺少 models（模型实例列表）");
+        } else {
+            readModels(r, root["models"], doc.models, hasElements);
+        }
         if (root.contains("visuals")) readVisuals(r, root["visuals"], doc.visuals);
         if (root.contains("view")) readView(r, root["view"], doc.view);
         if (root.contains("controllers")) readControllers(r, root["controllers"], doc.controllers);
@@ -1325,7 +1386,21 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
             b.scale = e.element.visualScale;
             b.frame = VisualFrame::Node;
             b.where = e.where + "/element";
+            for (const ElementPart& p : e.element.parts) {  // M5-02b：部件的节点另有绑定
+                if (!p.node.empty()) b.excludeNodes.push_back(p.node);
+            }
             doc.visuals.push_back(std::move(b));
+            for (const ElementPart& p : e.element.parts) {
+                if (p.node.empty()) continue;
+                VisualBindingSpec part;
+                part.entity = e.id + "/" + p.name;
+                part.gltf = e.element.gltf;
+                part.node = p.node;
+                part.scale = p.visualScale;
+                part.frame = VisualFrame::Node;
+                part.where = e.where + "/element/parts(" + p.name + ")";
+                doc.visuals.push_back(std::move(part));
+            }
         }
         // M5-11：传感器的外观模型作为 glTF 绑定加到 visuals 末尾（跟随安装的实体）
         for (const SensorSpec& s : doc.sensors) {

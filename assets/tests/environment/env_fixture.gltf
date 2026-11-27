@@ -1,0 +1,496 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "EAI Terra scripts/assets/make_environment_fixture.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "nodes": [
+    0,
+    1,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "Plinth",
+   "mesh": 0,
+   "translation": [
+    2,
+    0,
+    -1
+   ]
+  },
+  {
+   "name": "Rack",
+   "rotation": [
+    0,
+    0.7071067811865475,
+    0,
+    0.7071067811865475
+   ],
+   "scale": [
+    1.5,
+    1.5,
+    1.5
+   ],
+   "children": [
+    2,
+    3
+   ]
+  },
+  {
+   "name": "Rack_body",
+   "mesh": 1
+  },
+  {
+   "name": "Rack_hot",
+   "mesh": 2,
+   "translation": [
+    0,
+    0.8,
+    0.3
+   ]
+  },
+  {
+   "name": "Stairs",
+   "mesh": 3,
+   "translation": [
+    -2,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "Ramp_Main",
+   "mesh": 4,
+   "translation": [
+    0,
+    0,
+    3
+   ]
+  },
+  {
+   "name": "Crate",
+   "mesh": 5,
+   "translation": [
+    2,
+    1,
+    -1
+   ]
+  },
+  {
+   "name": "Lamp",
+   "translation": [
+    0,
+    3,
+    0
+   ]
+  },
+  {
+   "name": "Fence",
+   "mesh": 6,
+   "translation": [
+    -6,
+    0,
+    4
+   ]
+  },
+  {
+   "name": "Doorway",
+   "mesh": 7,
+   "translation": [
+    0,
+    0,
+    -4
+   ]
+  }
+ ],
+ "meshes": [
+  {
+   "name": "Plinth",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0
+     },
+     "indices": 1,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Rack_body",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 2
+     },
+     "indices": 3,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Rack_hot",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 4
+     },
+     "indices": 5,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Stairs",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 6
+     },
+     "indices": 7,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Ramp_Main",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 8
+     },
+     "indices": 9,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Crate",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 10
+     },
+     "indices": 11,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Fence",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 12
+     },
+     "indices": 13,
+     "mode": 4
+    }
+   ]
+  },
+  {
+   "name": "Doorway",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 14
+     },
+     "indices": 15,
+     "mode": 4
+    }
+   ]
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 8,
+   "type": "VEC3",
+   "min": [
+    -0.5,
+    0.0,
+    -0.5
+   ],
+   "max": [
+    0.5,
+    0.5,
+    0.5
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5123,
+   "count": 36,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 8,
+   "type": "VEC3",
+   "min": [
+    -0.20000000298023224,
+    0.0,
+    -0.20000000298023224
+   ],
+   "max": [
+    0.20000000298023224,
+    1.0,
+    0.20000000298023224
+   ]
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5123,
+   "count": 36,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 8,
+   "type": "VEC3",
+   "min": [
+    -0.05000000074505806,
+    -0.05000000074505806,
+    -0.05000000074505806
+   ],
+   "max": [
+    0.05000000074505806,
+    0.05000000074505806,
+    0.05000000074505806
+   ]
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5123,
+   "count": 36,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 6,
+   "componentType": 5126,
+   "count": 32,
+   "type": "VEC3",
+   "min": [
+    -0.006157867610454559,
+    0.0,
+    -0.5
+   ],
+   "max": [
+    0.9061578512191772,
+    1.3664953708648682,
+    0.5
+   ]
+  },
+  {
+   "bufferView": 7,
+   "componentType": 5123,
+   "count": 144,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 8,
+   "componentType": 5126,
+   "count": 6,
+   "type": "VEC3",
+   "min": [
+    0.0,
+    0.0,
+    -0.6000000238418579
+   ],
+   "max": [
+    2.0,
+    0.30000001192092896,
+    0.6000000238418579
+   ]
+  },
+  {
+   "bufferView": 9,
+   "componentType": 5123,
+   "count": 24,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 10,
+   "componentType": 5126,
+   "count": 8,
+   "type": "VEC3",
+   "min": [
+    -0.10000000149011612,
+    0.0,
+    -0.10000000149011612
+   ],
+   "max": [
+    0.10000000149011612,
+    0.20000000298023224,
+    0.10000000149011612
+   ]
+  },
+  {
+   "bufferView": 11,
+   "componentType": 5123,
+   "count": 36,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 12,
+   "componentType": 5126,
+   "count": 240,
+   "type": "VEC3",
+   "min": [
+    -0.02500000037252903,
+    0.0,
+    -0.02500000037252903
+   ],
+   "max": [
+    11.625,
+    1.2000000476837158,
+    0.02500000037252903
+   ]
+  },
+  {
+   "bufferView": 13,
+   "componentType": 5123,
+   "count": 1080,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 14,
+   "componentType": 5126,
+   "count": 24,
+   "type": "VEC3",
+   "min": [
+    -1.0,
+    0.0,
+    -0.10000000149011612
+   ],
+   "max": [
+    1.0,
+    2.4000000953674316,
+    0.10000000149011612
+   ]
+  },
+  {
+   "bufferView": 15,
+   "componentType": 5123,
+   "count": 108,
+   "type": "SCALAR"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 96,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 96,
+   "byteLength": 72,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 168,
+   "byteLength": 96,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 264,
+   "byteLength": 72,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 336,
+   "byteLength": 96,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 432,
+   "byteLength": 72,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 504,
+   "byteLength": 384,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 888,
+   "byteLength": 288,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1176,
+   "byteLength": 72,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1248,
+   "byteLength": 48,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1296,
+   "byteLength": 96,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1392,
+   "byteLength": 72,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 1464,
+   "byteLength": 2880,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 4344,
+   "byteLength": 2160,
+   "target": 34963
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 6504,
+   "byteLength": 288,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 6792,
+   "byteLength": 216,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "env_fixture.bin",
+   "byteLength": 7008
+  }
+ ]
+}

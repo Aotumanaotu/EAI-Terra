@@ -626,6 +626,12 @@ constexpr Entry kEntries[] = {
     {TextId::LibraryTagFixed, "固定", "fixed"},
     {TextId::LibraryTagDynamic, "可推动", "dynamic"},
     {TextId::ElementPreviewFailed, "无法预览元素：", "Cannot preview element: "},
+    {TextId::MenuFileImportEnvironment, "导入环境（glTF）…", "Import Environment (glTF)…"},
+    {TextId::EnvironmentBrowserTitle, "导入环境：选择 glTF 文件", "Import environment: choose a glTF file"},
+    {TextId::LogEnvironmentImported, "环境已导入：", "Environment imported: "},
+    {TextId::LogEnvironmentImportFailed, "环境导入失败：", "Environment import failed: "},
+    {TextId::SensorsPointHideRadius, "雷达周围不显示的半径", "Hide points within"},
+    {TextId::SensorsPointSize, "点的大小", "Point size"},
 };
 
 constexpr bool entriesInOrder() {

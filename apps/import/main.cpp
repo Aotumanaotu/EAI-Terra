@@ -9,6 +9,9 @@
 //   --library  （M4-08c）导入成功后把导入目录登记到该资源库（不给时不写库；查看器启动时会扫描默认资源库目录下的 assets/）
 //   --export-pack <导入目录> <文件.terra-pack>  （M4-08c）把导入目录打包为资产包
 //   --import-pack <文件.terra-pack>  （M4-08c）解包到 --output（默认同上），可加 --overwrite、--library
+//   --environment <glb / gltf>  （M5-02b）环境导入：按顶层节点拆成场景元素，写到 <--output>/<名字>/（默认为资源库目录下的
+//       environments/）；--manifest <清单>（默认在 glTF 所在目录及上一级找 manifest.json）、--collision boxes|hulls、
+//       --max-boxes N（每个节点最多几个盒体，默认 24）、--overwrite、--library；导入后加载并推进 0.2 s 检查
 // 标准错误：每个问题一行（级别、代码、说明、处理办法）；标准输出：最后一行 {"type":"import",...}
 // 退出码：0 成功；2 参数错误；4 有错误（分析或检查）
 
@@ -17,6 +20,7 @@
 #include <filesystem>
 #include <string>
 
+#include "terra/import/environment.hpp"
 #include "terra/import/importer.hpp"
 #include "terra/library/library.hpp"
 #include "terra/library/pack.hpp"
@@ -34,6 +38,8 @@ int usage() {
                  "       terra_import --recipe <导入配方.terra-import.json> [--output 目录] [--overwrite] [--dry-run]\n"
                  "       terra_import --export-pack <导入目录> <文件.terra-pack> [--overwrite]\n"
                  "       terra_import --import-pack <文件.terra-pack> [--output 目录] [--overwrite]\n"
+                 "       terra_import --environment <glb / gltf> [--name 名字] [--output 目录] [--manifest 清单] [--collision boxes|hulls]\n"
+                 "                    [--max-boxes N] [--overwrite]\n"
                  "       （导入与解包可加 --library <库文件>：成功后登记到资源库）\n");
     return 2;
 }
@@ -74,6 +80,8 @@ int main(int argc, char** argv) {
     im::ImportOptions options = im::defaultOptions();
     bool dryRun = false, noActuators = false, noSensors = false;
     std::string recipePath, libraryPath, exportDir, exportFile, importFile;
+    std::string environment, manifest, collision = "boxes";  // M5-02b
+    int maxBoxes = 24;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const bool has = i + 1 < argc;
@@ -101,6 +109,15 @@ int main(int argc, char** argv) {
             exportDir = argv[++i];
             exportFile = argv[++i];
         } else if (a == "--import-pack" && has) importFile = argv[++i];
+        else if (a == "--environment" && has) environment = argv[++i];
+        else if (a == "--manifest" && has) manifest = argv[++i];
+        else if (a == "--collision" && has) {
+            collision = argv[++i];
+            if (collision != "boxes" && collision != "hulls") return usage();
+        } else if (a == "--max-boxes" && has) {
+            maxBoxes = std::atoi(argv[++i]);
+            if (maxBoxes < 1) return usage();
+        }
         else if (a.find(":=") != std::string::npos) options.xacroArgs.push_back(a);
         else if (!a.empty() && a[0] != '-' && options.input.empty()) options.input = a;
         else return usage();
@@ -112,6 +129,46 @@ int main(int argc, char** argv) {
         std::printf("{\"type\":\"export_pack\",\"ok\":%s,\"name\":\"%s\",\"pack\":\"%s\",\"files\":%zu,\"bytes\":%llu}\n", r.ok ? "true" : "false",
                     escape(r.name).c_str(), escape(exportFile).c_str(), r.files, static_cast<unsigned long long>(r.bytes));
         return r.ok ? 0 : 4;
+    }
+    if (!environment.empty()) {  // M5-02b：环境导入
+        if (!options.input.empty() || !recipePath.empty() || !importFile.empty()) return usage();
+        namespace fs = std::filesystem;
+        im::EnvironmentImportOptions env;
+        env.input = environment;
+        env.manifest = manifest;
+        env.hulls = collision == "hulls";
+        env.maxBoxesPerNode = maxBoxes;
+        env.force = options.overwrite;
+        const std::string name = options.name.empty() ? fs::path{environment}.stem().string() : options.name;
+        env.name = name;
+        const fs::path root = options.outputRoot.empty() ? fs::path{terra::library::defaultLibraryPath()}.parent_path() / "environments" : fs::path{options.outputRoot};
+        env.output = (root / name).string();
+        const auto r = im::importEnvironment(env);
+        for (const auto& w : r.warnings) std::fprintf(stderr, "terra_import: [warning] environment：%s\n", w.c_str());
+        for (const auto& e : r.errors) std::fprintf(stderr, "terra_import: [error] environment：%s\n", e.c_str());
+        bool loaded = false;
+        std::size_t instances = 0, geoms = 0;
+        if (r.ok) {  // 加载检查：组合进物理世界，推进 0.2 s
+            auto scene = terra::scene::loadScene(r.scene, terra::physics::mujoco::composeWorld);
+            for (const auto& i : scene.issues) {
+                std::fprintf(stderr, "terra_import: [%s] scene：%s %s\n", i.severity == terra::scene::SceneIssue::Severity::Error ? "error" : "warning",
+                             i.where.c_str(), i.message.c_str());
+            }
+            if (scene.scene) {
+                for (int k = 0; k < 100; ++k) {
+                    if (scene.scene->world->step()) break;
+                }
+                instances = scene.scene->world->description().modelInstances.size();
+                geoms = scene.scene->world->description().geoms.size();
+                loaded = scene.scene->world->stepIndex() == 100;
+            }
+            if (loaded) registerDirectory(libraryPath, env.output);
+        }
+        std::printf("{\"type\":\"environment\",\"ok\":%s,\"scene\":\"%s\",\"manifest\":\"%s\",\"elements\":%zu,\"boxes\":%zu,\"meshes\":%zu,"
+                    "\"parts\":%zu,\"inspection\":%zu,\"instances\":%zu,\"geoms\":%zu,\"warnings\":%zu}\n",
+                    r.ok && loaded ? "true" : "false", escape(r.scene).c_str(), escape(r.manifest).c_str(), r.elements, r.boxes, r.meshes, r.parts,
+                    r.inspection, instances, geoms, r.warnings.size());
+        return r.ok && loaded ? 0 : 4;
     }
     if (options.input.empty() && recipePath.empty() && importFile.empty()) return usage();
     if (options.outputRoot.empty()) {

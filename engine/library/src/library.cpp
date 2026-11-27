@@ -679,12 +679,14 @@ const char* assetSourceName(AssetSource source) {
 
 std::vector<ScanRoot> defaultScanRoots(const std::string& assetsDir, const std::string& libraryFile) {
     std::vector<ScanRoot> roots;
-    for (const char* sub : {"scenes", "robots", "motions", "hdri", "elements"}) roots.push_back({assetsDir + "/" + sub, AssetSource::Builtin});
+    // M5-02a：elements/；M5-02b：environments/（scripts/assets/import_environments.sh 导入的用户场景，不提交）
+    for (const char* sub : {"scenes", "robots", "motions", "hdri", "elements", "environments"}) roots.push_back({assetsDir + "/" + sub, AssetSource::Builtin});
     if (!libraryFile.empty() && libraryFile != kMemory) {
         roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "assets").string(), AssetSource::Imported});
         roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "displays").string(), AssetSource::User});
         roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "policies").string(), AssetSource::Imported});  // M4-10b
         roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "elements").string(), AssetSource::Imported});  // M5-02a
+        roots.push_back({(fs::path{absolute(libraryFile)}.parent_path() / "environments").string(), AssetSource::Imported});  // M5-02b
     }
     return roots;
 }
@@ -748,6 +750,8 @@ ScanResult Library::scanAssets(const std::vector<ScanRoot>& roots) {
             if (!it->is_regular_file(fileEc)) continue;
             const auto kind = kindOfFile(name);
             if (!kind) continue;
+            // M5-02b：导入的环境（environments/ 下）有成百个元素文件，只由各自的场景引用；资源库只登记其中的场景
+            if (*kind == AssetKind::Element && fs::path{rootDir}.filename() == "environments") continue;
             AssetEntry e;
             e.kind = *kind;
             e.source = root.source;

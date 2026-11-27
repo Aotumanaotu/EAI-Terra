@@ -21,8 +21,13 @@ public:
     // armOcclusion 为假时，不使用按 ARM 约定推断出的遮蔽贴图（显式声明的遮蔽贴图不受影响）。
     std::vector<terra::render::RenderItem> items(const terra::render::Matrix4& placement, bool armOcclusion = true) const;
     // 节点子树（M2-07）：root 为 -1 时取整个文件。模型矩阵 = placement × bindingBase(root, frame) × 实例的 glTF 世界矩阵。
+    // exclude（M5-02b）：不画这些节点的子树（节点下标）
     std::vector<terra::render::RenderItem> subtreeItems(const terra::render::Matrix4& placement, int root, NodeFrame frame,
-                                                        bool armOcclusion = true) const;
+                                                        bool armOcclusion = true, const std::vector<int>& exclude = {}) const;
+    // 性能（2026-11-26）：先算一次子树中的图元下标（subtreeParts），每帧只按下标生成渲染项（partItems）；结果与 subtreeItems 相同
+    std::vector<int> subtreeParts(int root, const std::vector<int>& exclude = {}) const;
+    std::vector<terra::render::RenderItem> partItems(const terra::render::Matrix4& placement, int root, NodeFrame frame, bool armOcclusion,
+                                                     const std::vector<int>& parts) const;
 
     int textureCount() const noexcept { return static_cast<int>(textures_.size()); }
     int meshCount() const noexcept { return static_cast<int>(meshes_.size()); }

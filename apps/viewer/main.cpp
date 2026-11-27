@@ -92,6 +92,7 @@
 #include "terra/view/camera_controller.hpp"
 #include "camera_sensor.hpp"
 #include "import_wizard.hpp"
+#include "terra/import/environment.hpp"
 #include "library_panel.hpp"
 #include "terra/library/pack.hpp"
 #include "terra/viz/exporter.hpp"
@@ -148,6 +149,7 @@ struct Options {
     bool lidar3dSelfTest = false;         // M5-11：3D 雷达自检
     bool thermalSelfTest = false;         // M5-06：热像仪自检
     bool elementsSelfTest = false;        // M5-02a：场景元素与元素卡片的预览
+    std::string environmentSelfTest;      // M5-02b：自检环境导入（给出 glTF）：启动后导入并打开
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -201,6 +203,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.thermalSelfTest = true;
         } else if (a == "--elements-self-test") {
             o.elementsSelfTest = true;
+        } else if (a == "--environment-self-test" && hasValue) {
+            o.environmentSelfTest = argv[++i];
         } else if (a == "--import-policy" && hasValue) {
             o.importPolicy = argv[++i];
         } else if (a == "--policy-import-self-test" && hasValue) {
@@ -405,6 +409,7 @@ struct AppState {
     std::string activeLibraryFile;  // 当前使用的库文件（位置改变时重新打开）
     std::vector<terra::library::ScanRoot> extraScanRoots;  // 自检：另扫描测试夹具
     ui::FileBrowser packBrowser;
+    ui::FileBrowser environmentBrowser;  // M5-02b：导入环境（glTF）
     // M4-08d：显示配置（ROS2 面板、消息、曲线、图像、TF 树窗口）
     vw::VizPanelState viz;
     vw::PolicyPanelState policy;  // M4-10a：运行策略、组件、速度指令面板
@@ -413,7 +418,9 @@ struct AppState {
         std::uint64_t inferences = 0;
         double forward = 0.0;
     } policyTest;
-    bool pointCloudOverlay = true;      // M5-11：在视口中叠加 3D 雷达的点云
+    bool pointCloudOverlay = true;      // M5-11：在视口中显示 3D 雷达的点云（可以关闭）
+    float pointHideRadius = 0.3f;       // 2026-11-26：离雷达不到这个距离（米）的点不显示（机身上的点）
+    float pointSizePx = 2.5f;           // 点的大小（像素）
     std::size_t overlayPointsDrawn = 0;  // 自检：本帧在视口中画出的点数
     std::uint64_t thermalFramesShown = 0;  // M5-06 自检：创建过的热像预览次数
     std::optional<std::string> pendingPolicy;  // M4-10b：打开场景后运行的策略（资源库中的策略卡片、导入并运行）
@@ -672,6 +679,7 @@ struct SimulatedScene {
         return std::min(older.stepIndex + passed, next->stepIndex);
     }
     std::unique_ptr<vw::SceneView> view;
+    std::vector<terra::render::GpuMesh> pointMeshes;  // M5-11：视口中点云的方片（每帧按当前相机重建）
     bool demoDrive = false;
     std::string path;               // 场景文件（绝对路径）
     double realtimeFactor = 0.0;    // 仿真时间 / 墙钟时间（平滑）
@@ -1056,6 +1064,39 @@ void importPackFile(Frame& f, const std::string& pack) {
     writableLibrary(f);
     f.state.assetsStale = true;
     if (const std::string scene = firstSceneIn(r.directory); !scene.empty()) f.state.openRequest = scene;
+}
+
+// M5-02b：导入 glTF 环境：按顶层节点拆成场景元素，写到资源库目录下的 environments/<名字>/（重复导入时覆盖），然后打开
+// 内存中的库（自检）放在系统临时目录
+std::string environmentsDirectory(const Frame& f) {
+    std::error_code ec;
+    if (f.state.libraryMemoryOnly) return (std::filesystem::temp_directory_path(ec) / "terra_environments").string();
+    return (std::filesystem::path{libraryFilePath(f)}.parent_path() / "environments").string();
+}
+
+void importEnvironmentFile(Frame& f, const std::string& file) {
+    terra::importer::EnvironmentImportOptions options;
+    options.input = file;
+    options.name = std::filesystem::path{file}.stem().string();
+    options.output = (std::filesystem::path{environmentsDirectory(f)} / options.name).string();
+    options.force = true;
+    const auto r = terra::importer::importEnvironment(options);
+    for (const auto& w : r.warnings) f.state.log.push_back("环境导入：" + w);
+    if (!r.ok) {
+        const std::string error = r.errors.empty() ? file : r.errors.front();
+        f.state.log.push_back(std::string{tr(TextId::LogEnvironmentImportFailed)} + error);
+        f.state.sceneErrors = r.errors;
+        f.state.errorTitle = "environment";
+        f.state.showSceneErrors = true;
+        std::printf("INFO 环境导入失败：%s\n", error.c_str());
+        return;
+    }
+    f.state.log.push_back(std::string{tr(TextId::LogEnvironmentImported)} + r.scene);
+    std::printf("INFO 环境已导入：%s（%zu 个元素、%zu 个盒体、%zu 个部件、%zu 个检查点；清单 %s）\n", r.scene.c_str(), r.elements, r.boxes, r.parts, r.inspection,
+                r.manifest.empty() ? "无" : r.manifest.c_str());
+    writableLibrary(f);
+    f.state.assetsStale = true;
+    f.state.openRequest = r.scene;
 }
 
 // ---- 显示配置（M4-08d）----
@@ -2051,6 +2092,7 @@ void menuBar(Frame& f) {
         }
         // M4-08c：资产包、快速打开、资源库中的场景（按来源分组，点一下打开）
         if (ImGui::MenuItem(tr(TextId::MenuFileImportPack))) f.state.packBrowser.open(importDirectory(f), terra::library::kPackSuffix, "");
+        if (ImGui::MenuItem(tr(TextId::MenuFileImportEnvironment))) f.state.environmentBrowser.open({}, ".glb|.gltf", "");  // M5-02b
         if (ImGui::MenuItem(tr(TextId::MenuFileQuickOpen), "Ctrl+P")) openQuickOpen(f);
         if (ImGui::BeginMenu(tr(TextId::MenuFileLibraryScenes))) {
             using Group = std::pair<terra::library::AssetSource, TextId>;
@@ -2351,6 +2393,9 @@ void appendMessages(AppState& state, const std::vector<vw::SceneMessage>& messag
     }
 }
 
+// M5-11：视口中 3D 雷达的点云（定义在后面，与传感器面板放在一起）
+std::vector<r::RenderItem> pointCloudItems(Frame& f, int heightPx);
+
 void viewportPanel(Frame& f) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     const bool open = ImGui::Begin(label(TextId::PanelViewport, "Viewport").c_str(), nullptr,
@@ -2369,9 +2414,10 @@ void viewportPanel(Frame& f) {
             std::vector<vw::SceneMessage> messages;
             const vw::FrameLighting lit = vw::frameLighting(rs, f.environments, f.ctx, messages);
             appendMessages(f.state, messages);
-            f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)),
-                              f.simulated ? f.simulated->items(rs, f.state.selectedEntity) : f.scene.items(rs.assetArmOcclusion), lit.sun,
-                              lit.hemisphere,
+            auto items = f.simulated ? f.simulated->items(rs, f.state.selectedEntity) : f.scene.items(rs.assetArmOcclusion);
+            const auto cloud = pointCloudItems(f, h);  // M5-11：3D 雷达的点云（与场景共用深度）
+            items.insert(items.end(), cloud.begin(), cloud.end());
+            f.renderer.render(w, h, viewParams(f.camera, static_cast<double>(w) / static_cast<double>(h)), items, lit.sun, lit.hemisphere,
                               lit.settings, lit.image);
             if (f.renderer.lastFrame().imageLighting && f.renderer.lastFrame().backgroundDrawn) f.state.imageLightingSeen = true;
             ImGui::Image(static_cast<ImTextureID>(f.renderer.outputTexture()), avail, ImVec2(0, 1), ImVec2(1, 0));
@@ -3540,52 +3586,95 @@ void pointCloudView(const terra::simulation::Lidar3dScan& scan, float size, bool
     else dl->AddTriangleFilled(ImVec2(c.x, c.y - 7.0f), ImVec2(c.x - 5.0f, c.y + 5.0f), ImVec2(c.x + 5.0f, c.y + 5.0f), head);
 }
 
-// M5-11：把 3D 雷达的点按查看器相机投影到视口图像上（叠加显示，不做遮挡；类似 RViz 的点云显示）
-void pointCloudOverlay(Frame& f) {
+// M5-11（2026-11-26 修正：原来画在界面层上，没有深度，隔着墙也能看到点）：视口中的 3D 雷达点云画在 3D 场景里，
+// 与场景共用深度，被挡住的点不显示。每个点一个正对相机的小方片，大小按到相机的距离换算为固定的像素数（pointSizePx）；
+// 按高度分 16 档颜色（自发光，不受光照影响）；离雷达不到 pointHideRadius 的点不显示（用户：雷达周围多大范围不显示可以调）。
+// 方片的网格放在 SimulatedScene::pointMeshes 中，每帧按当前相机重建（渲染项只引用到下一帧）
+std::vector<r::RenderItem> pointCloudItems(Frame& f, int heightPx) {
+    std::vector<r::RenderItem> items;
     f.state.overlayPointsDrawn = 0;
-    if (!f.state.pointCloudOverlay || !f.simulated) return;
-    ImGuiWindow* viewport = ImGui::FindWindowByName("###Viewport");
-    const ImVec2 a = f.state.viewportImageMin, b = f.state.viewportImageMax;
-    if (viewport == nullptr || viewport->DrawList == nullptr || b.x <= a.x || b.y <= a.y) return;
-    const double aspect = static_cast<double>(b.x - a.x) / static_cast<double>(b.y - a.y);
-    const auto view = f.camera.viewMatrix();
-    const auto proj = f.camera.projectionMatrix(aspect);
-    const auto mul = [](const std::array<float, 16>& m, const std::array<float, 4>& v) {
-        std::array<float, 4> o{};
-        for (int r = 0; r < 4; ++r) {
-            o[static_cast<std::size_t>(r)] = m[static_cast<std::size_t>(r)] * v[0] + m[static_cast<std::size_t>(4 + r)] * v[1] +
-                                             m[static_cast<std::size_t>(8 + r)] * v[2] + m[static_cast<std::size_t>(12 + r)] * v[3];
-        }
-        return o;
-    };
-    ImDrawList* dl = viewport->DrawList;
-    dl->PushClipRect(a, b, true);
-    for (const auto& scan : f.simulated->lidar3dScans) {
+    if (!f.simulated) return items;
+    SimulatedScene& sim = *f.simulated;
+    sim.pointMeshes.clear();
+    if (!f.state.pointCloudOverlay) return items;
+    constexpr std::size_t kBins = 16;
+    const double hide2 = static_cast<double>(f.state.pointHideRadius) * static_cast<double>(f.state.pointHideRadius);
+    std::vector<terra::data::Vec3> world;
+    float zMin = 0.0f, zMax = 0.0f;
+    for (const auto& scan : sim.lidar3dScans) {
         if (!scan) continue;
-        float zMin = 0.0f, zMax = 0.0f;
-        std::vector<terra::data::Vec3> world;
-        world.reserve(scan->points.size());
-        for (std::size_t i = 0; i < scan->points.size(); ++i) {
-            const auto& p = scan->points[i];
-            const terra::data::Vec3 local{p.x, p.y, p.z};
-            const terra::data::Vec3 r = terra::scene::rotate(scan->pose.orientation, local);
+        for (const auto& p : scan->points) {
+            const double d2 = static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y + static_cast<double>(p.z) * p.z;
+            if (d2 < hide2) continue;
+            const terra::data::Vec3 r = terra::scene::rotate(scan->pose.orientation, terra::data::Vec3{p.x, p.y, p.z});
             const terra::data::Vec3 w{scan->pose.position.x + r.x, scan->pose.position.y + r.y, scan->pose.position.z + r.z};
-            world.push_back(w);
             const auto z = static_cast<float>(w.z);
-            zMin = i == 0 ? z : std::min(zMin, z);
-            zMax = i == 0 ? z : std::max(zMax, z);
-        }
-        for (const auto& w : world) {
-            const auto clip = mul(proj, mul(view, {static_cast<float>(w.x), static_cast<float>(w.y), static_cast<float>(w.z), 1.0f}));
-            if (clip[3] <= 1e-4f) continue;
-            const float nx = clip[0] / clip[3], ny = clip[1] / clip[3];
-            if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f) continue;
-            const ImVec2 q(a.x + (nx * 0.5f + 0.5f) * (b.x - a.x), a.y + (0.5f - ny * 0.5f) * (b.y - a.y));
-            dl->AddRectFilled(ImVec2(q.x - 1.0f, q.y - 1.0f), ImVec2(q.x + 1.0f, q.y + 1.0f), heightColor(static_cast<float>(w.z), zMin, zMax));
-            ++f.state.overlayPointsDrawn;
+            zMin = world.empty() ? z : std::min(zMin, z);
+            zMax = world.empty() ? z : std::max(zMax, z);
+            world.push_back(w);
         }
     }
-    dl->PopClipRect();
+    if (world.empty()) return items;
+    const terra::data::Vec3 cam = f.camera.position, right = f.camera.right(), up = f.camera.up(), forward = f.camera.forward();
+    // 距离 1 m 处一个像素的世界尺寸
+    const double perMetre = 2.0 * std::tan(f.camera.verticalFov * 0.5) / static_cast<double>(std::max(1, heightPx));
+    const double halfPerMetre = 0.5 * static_cast<double>(f.state.pointSizePx) * perMetre;
+    std::array<r::MeshData, kBins> bins;
+    const auto vertex = [&](r::MeshData& m, const terra::data::Vec3& q) {
+        r::MeshVertex v{};
+        v.position[0] = static_cast<float>(q.x);
+        v.position[1] = static_cast<float>(q.y);
+        v.position[2] = static_cast<float>(q.z);
+        v.normal[0] = static_cast<float>(-forward.x);
+        v.normal[1] = static_cast<float>(-forward.y);
+        v.normal[2] = static_cast<float>(-forward.z);
+        v.tangent[0] = 1.0f;
+        v.tangent[3] = 1.0f;
+        m.vertices.push_back(v);
+    };
+    for (const auto& w : world) {
+        const double dx = w.x - cam.x, dy = w.y - cam.y, dz = w.z - cam.z;
+        const double along = dx * forward.x + dy * forward.y + dz * forward.z;
+        if (along <= f.camera.nearPlane) continue;  // 相机后面
+        const float t = zMax > zMin ? (static_cast<float>(w.z) - zMin) / (zMax - zMin) : 0.5f;
+        const std::size_t bin = std::min(kBins - 1, static_cast<std::size_t>(std::max(0.0f, t) * static_cast<float>(kBins)));
+        r::MeshData& m = bins[bin];
+        const double s = halfPerMetre * along;
+        const auto base = static_cast<std::uint32_t>(m.vertices.size());
+        static constexpr std::array<std::array<double, 2>, 4> kCorners{{{-1.0, -1.0}, {1.0, -1.0}, {1.0, 1.0}, {-1.0, 1.0}}};
+        for (const auto& corner : kCorners) {
+            const double a = corner[0], b = corner[1];
+            vertex(m, {w.x + s * (a * right.x + b * up.x), w.y + s * (a * right.y + b * up.y), w.z + s * (a * right.z + b * up.z)});
+        }
+        m.indices.insert(m.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+        ++f.state.overlayPointsDrawn;
+    }
+    sim.pointMeshes.reserve(kBins);  // 渲染项引用其中的网格：先预留，避免重新分配
+    for (std::size_t k = 0; k < kBins; ++k) {
+        if (bins[k].indices.empty()) continue;
+        auto& m = bins[k];
+        m.boundsMin = {m.vertices[0].position[0], m.vertices[0].position[1], m.vertices[0].position[2]};
+        m.boundsMax = m.boundsMin;
+        for (const auto& v : m.vertices) {
+            for (std::size_t a = 0; a < 3; ++a) {
+                m.boundsMin[a] = std::min(m.boundsMin[a], v.position[a]);
+                m.boundsMax[a] = std::max(m.boundsMax[a], v.position[a]);
+            }
+        }
+        sim.pointMeshes.push_back(r::GpuMesh::create(m));
+        const float t = (static_cast<float>(k) + 0.5f) / static_cast<float>(kBins);
+        const ImU32 c = heightColor(zMin + t * (zMax - zMin), zMin, zMax);
+        const auto linear = [](unsigned v) { return std::pow(static_cast<float>(v) / 255.0f, 2.2f) * 1.6f; };
+        r::RenderItem item;
+        item.mesh = &sim.pointMeshes.back();
+        item.material.baseColor = {0.0f, 0.0f, 0.0f};
+        item.material.roughness = 1.0f;
+        item.material.emissive = {linear(c & 0xFFu), linear((c >> 8) & 0xFFu), linear((c >> 16) & 0xFFu)};
+        item.material.doubleSided = true;
+        item.castsShadow = false;
+        items.push_back(item);
+    }
+    return items;
 }
 
 void sensorsPanel(Frame& f) {
@@ -3685,6 +3774,12 @@ void sensorsPanel(Frame& f) {
                 const std::string header = std::string{tr(TextId::SensorsLidar3d)} + "  (" + std::to_string(sim.instance.lidars3d.size()) + ")###lidar3d";
                 if (ImGui::CollapsingHeader(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::Checkbox(tr(TextId::SensorsPointOverlay), &f.state.pointCloudOverlay);
+                    if (f.state.pointCloudOverlay) {  // 2026-11-26：雷达周围不显示的范围、点的大小
+                        ImGui::SetNextItemWidth(font * 10.0f);
+                        ImGui::SliderFloat(tr(TextId::SensorsPointHideRadius), &f.state.pointHideRadius, 0.0f, 10.0f, "%.1f m");
+                        ImGui::SetNextItemWidth(font * 10.0f);
+                        ImGui::SliderFloat(tr(TextId::SensorsPointSize), &f.state.pointSizePx, 1.0f, 8.0f, "%.1f px");
+                    }
                     for (std::size_t k = 0; k < sim.instance.lidars3d.size(); ++k) {
                         ImGui::PushID(static_cast<int>(k));
                         const auto& lidar = sim.instance.lidars3d[k];
@@ -4135,7 +4230,6 @@ void buildUi(Frame& f) {
     detailsPanel(f);
     actuatorPanel(f);
     sensorsPanel(f);  // 在执行器面板之后：首次显示时并入它所在的停靠组
-    pointCloudOverlay(f);  // M5-11：在视口上叠加 3D 雷达的点云
     logPanel(f);
     statsPanel(f);
     timelinePanel(f);  // 在日志之后：首次显示时并入日志所在的停靠组
@@ -4155,6 +4249,9 @@ void buildUi(Frame& f) {
         f.state.assetsStale = true;
     }
     if (auto chosen = f.state.packBrowser.draw(label(TextId::PackBrowserTitle, "PackBrowser").c_str())) importPackFile(f, *chosen);
+    if (auto chosen = f.state.environmentBrowser.draw(label(TextId::EnvironmentBrowserTitle, "EnvironmentBrowser").c_str())) {
+        importEnvironmentFile(f, *chosen);  // M5-02b
+    }
     if (auto action = vw::drawQuickOpen(f.state.libraryPanel, libraryContext(f))) handleLibraryAction(f, *action);
     if (wizard.open && ImGui::FindWindowByName("###ImportWizard") != nullptr) f.state.importWizardSeen = true;
     for (auto& line : wizard.log) f.state.log.push_back(std::move(line));
@@ -4409,9 +4506,11 @@ struct SceneSelfTestRecord {
     bool lidar3dTest = false;     // M5-11：3D 雷达自检（同上）
     bool thermalTest = false;     // M5-06：热像仪自检（同上）
     bool elementsTest = false;    // M5-02a：元素自检（播放；中途单击元素卡片打开预览）
+    bool environmentTest = false;  // M5-02b：环境导入自检（启动时导入并打开，播放后一直运行）
     double crateHeightAtSwitch = -1.0;
     std::string firstScene;
     bool previewRequested = false;
+    std::size_t pointsBeforeHide = 0;  // 2026-11-26：3D 雷达自检——把不显示的半径调大之前画出的点数
     bool vizTest = false;         // M4-08d：显示配置自检（播放后一直运行）
     bool sensorRecordTest = false;  // M4-07：传感器记录自检（第 6 帧开始记录并保存图像，中间停止并回放到一帧有图像的时刻）
     std::uint64_t replayCameraStep = 0;
@@ -4458,6 +4557,10 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
         }
         return;
     }
+    if (sceneRecord.lidar3dTest && frame == total - 6) {  // 2026-11-26：最后几帧把“雷达周围不显示的半径”调到 100 m，应一个点也不画
+        sceneRecord.pointsBeforeHide = f.state.overlayPointsDrawn;
+        f.state.pointHideRadius = 100.0f;
+    }
     if (sceneRecord.elementsTest && frame == total / 2) {  // M5-02a：记下木箱的高度，再像单击卡片一样打开元素的预览
         sceneRecord.firstScene = sim.path;
         if (const auto* e = sim.instance.world->description().findEntity("crate_a/body")) {
@@ -4469,7 +4572,10 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
             sceneRecord.previewRequested = true;
         }
     }
-    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest || sceneRecord.thermalTest || sceneRecord.elementsTest) return;  // M4-04、M4-08d、M5-11、M5-06、M5-02a：第 3 帧按播放后一直运行
+    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest || sceneRecord.thermalTest || sceneRecord.elementsTest ||
+        sceneRecord.environmentTest) {
+        return;
+    }  // M4-04、M4-08d、M5-11、M5-06、M5-02a：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
         // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
         // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
@@ -5015,7 +5121,7 @@ int lidar3dSelfTest(Frame& f) {
     const std::uint64_t steps = sim.instance.world->stepIndex();
     std::uint64_t due = 0;
     for (std::uint64_t s = 0; s <= steps; ++s) due += terra::simulation::sensorSampleDue(s, dt, 10.0) ? 1u : 0u;
-    std::printf("INFO 3D 雷达自检：%llu 步；视口中画出 %zu 个点\n", static_cast<unsigned long long>(steps), f.state.overlayPointsDrawn);
+    std::printf("INFO 3D 雷达自检：%llu 步；视口中画出 %zu 个点\n", static_cast<unsigned long long>(steps), sceneRecord.pointsBeforeHide);
     check(steps > 50, "仿真推进了（" + std::to_string(steps) + " 步）");
     check(!sim.lidar3dSamples.empty(), "场景中有 3D 雷达");
     for (std::size_t k = 0; k < sim.lidar3dSamples.size(); ++k) {
@@ -5023,7 +5129,8 @@ int lidar3dSelfTest(Frame& f) {
     }
     const auto& first = sim.lidar3dScans.empty() ? std::nullopt : sim.lidar3dScans[0];
     check(first && first->points.size() == 540 && terra::simulation::sensorSampleDue(first->step, dt, 10.0), "最新一帧在采样步上，540 个点");
-    check(f.state.overlayPointsDrawn > 0, "视口中叠加了点云");
+    check(sceneRecord.pointsBeforeHide > 0, "视口中画出了点云（" + std::to_string(sceneRecord.pointsBeforeHide) + " 个点，与场景共用深度）");
+    check(f.state.overlayPointsDrawn == 0, "“雷达周围不显示的半径”调到 100 m 后一个点也不画");
     check(ImGui::FindWindowByName("###Sensors") != nullptr, "传感器面板");
     check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
     std::printf(failures == 0 ? "3D 雷达自检通过\n" : "3D 雷达自检失败：%d 项\n", failures);
@@ -5099,7 +5206,31 @@ int elementsSelfTest(Frame& f) {
     return failures == 0 ? 0 : 1;
 }
 
+// M5-02b：环境导入自检：按菜单的同一路径导入夹具并打开；全部 glTF 绑定可用（含排除部件节点的绑定）；部件的刚体与温度；没有 GL 错误
+int environmentSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    SimulatedScene& sim = *f.simulated;
+    std::printf("INFO 环境导入自检：%s；%zu 个绑定、%zu 个可用；%llu 步\n", sim.path.c_str(), sim.instance.bindings.size(), sim.view->liveBindings(),
+                static_cast<unsigned long long>(sim.instance.world->stepIndex()));
+    check(sim.path.find("environments/env_fixture/env_fixture.terra-scene.json") != std::string::npos, "导入到资源库目录的 environments/ 并打开");
+    check(sim.instance.bindings.size() >= 8 && sim.view->liveBindings() == sim.instance.bindings.size(), "全部 glTF 绑定可用（含部件）");
+    bool excludeWarning = false;
+    for (const auto& line : f.state.log) excludeWarning = excludeWarning || line.find("排除的节点") != std::string::npos;
+    check(!excludeWarning, "排除的部件节点都找到了");
+    const auto* hot = sim.instance.world->description().findEntity("Rack/Rack_hot");
+    check(hot != nullptr && sim.instance.thermal.base(hot->id, 0) == 75.0, "部件 Rack/Rack_hot：75 °C");
+    check(sim.instance.world->stepIndex() > 50, "仿真推进了");
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "环境导入自检通过\n" : "环境导入自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.environmentTest) return environmentSelfTest(f);
     if (sceneRecord.elementsTest) return elementsSelfTest(f);
     if (sceneRecord.thermalTest) return thermalSelfTest(f);
     if (sceneRecord.lidar3dTest) return lidar3dSelfTest(f);
@@ -5432,9 +5563,12 @@ int main(int argc, char** argv) {
         sceneRecord.lidar3dTest = options.lidar3dSelfTest;
         sceneRecord.thermalTest = options.thermalSelfTest;
         sceneRecord.elementsTest = options.elementsSelfTest;
+        sceneRecord.environmentTest = !options.environmentSelfTest.empty();
         sceneRecord.sensorRecordTest = options.sensorRecordSelfTest;
         sceneRecord.vizTest = options.vizSelfTest;
     }
+    // M5-02b：环境导入自检——与菜单“导入环境”同一路径（导入后打开）
+    if (options.selfTest && !options.environmentSelfTest.empty()) importEnvironmentFile(frame, options.environmentSelfTest);
     if (!options.motionPath.empty() && !(options.selfTest && simulated)) {
         if (!openMotion(frame, options.motionPath)) {
             for (const auto& line : state.sceneErrors) std::fprintf(stderr, "%s\n", line.c_str());
@@ -5490,6 +5624,7 @@ int main(int argc, char** argv) {
             else if (ends(terra::viz::kVizSuffix)) importDisplay(frame, dropped);    // M4-08d
             else if (ends(terra::policy::kPolicySuffix)) vw::requestPolicy(state.policy, dropped);  // M4-10a
             else if (ends(".onnx") || ends(".pt") || ends(".pth")) vw::requestPolicyImport(state.policy, dropped);  // M4-10b：导入向导
+            else if (ends(".glb") || ends(".gltf")) importEnvironmentFile(frame, dropped);  // M5-02b：环境导入
             else vw::beginImport(state.importWizard, dropped, importDirectory(frame));
         }
         const double now = platform.time();

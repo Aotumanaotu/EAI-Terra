@@ -1,4 +1,5 @@
 # terra_import：模型导入（M4-08a）。URDF / xacro / MJCF → Terra 场景；不含 MuJoCo 与图形头文件（检查时用调用方给的 WorldFactory）。
+# M5-02b：glTF 环境导入（自带只读的 glTF 读取，不用 cgltf，Headless 构建也可用）：按顶层节点拆成场景元素、自动生成碰撞代理。
 # 第三方：tinyxml2（zlib，third_party/tinyxml2）读写 XML；xacro（BSD-3-Clause，third_party/xacro）经 tools/xacro_expand.py 调用。
 
 # tinyxml2：第三方源码，不套用 Terra 的严格警告
@@ -7,6 +8,8 @@ target_include_directories(terra_tinyxml2 SYSTEM PUBLIC "${PROJECT_SOURCE_DIR}/t
 set_target_properties(terra_tinyxml2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(terra_import STATIC
+    src/environment.cpp
+    src/gltf_reader.cpp
     src/importer.cpp
     src/mesh.cpp
     src/process.cpp

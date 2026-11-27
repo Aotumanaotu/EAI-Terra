@@ -41,35 +41,62 @@ std::string elementMjcf(const ElementDocument& e) {
     const std::string common = " friction=\"" + num(e.friction) + " 0.005 0.0001\" rgba=\"0.62 0.64 0.68 0.55\"";
     std::string assets;
     std::string geoms;
+    // 盒体的总体积（含部件）：dynamic 的质量按体积分到各盒体
+    const auto volumeOf = [](const ElementBox& b) { return 8.0 * b.halfSize.x * b.halfSize.y * b.halfSize.z; };
+    double volume = 0.0;
     if (e.collision == ElementCollision::Boxes) {
-        double volume = 0.0;
-        for (const ElementBox& b : e.boxes) volume += 8.0 * b.halfSize.x * b.halfSize.y * b.halfSize.z;
-        for (std::size_t i = 0; i < e.boxes.size(); ++i) {
-            const ElementBox& b = e.boxes[i];
-            geoms += "      <geom name=\"c" + std::to_string(i) + "\" type=\"box\" pos=\"" + vec(b.pose.position) + "\" quat=\"" + quat(b.pose.orientation) +
-                     "\" size=\"" + vec(b.halfSize) + "\"" + common;
-            // dynamic：质量按体积分到各盒体（总质量与元素文件相同）
-            if (dynamic && volume > 0) geoms += " mass=\"" + num(e.mass * 8.0 * b.halfSize.x * b.halfSize.y * b.halfSize.z / volume) + "\"";
-            geoms += "/>\n";
+        for (const ElementBox& b : e.boxes) volume += volumeOf(b);
+        for (const ElementPart& part : e.parts) {
+            for (const ElementBox& b : part.boxes) volume += volumeOf(b);
         }
-    } else if (e.collision == ElementCollision::Mesh) {
-        for (std::size_t i = 0; i < e.meshes.size(); ++i) {
-            const ElementMesh& m = e.meshes[i];
-            assets += "    <mesh name=\"m" + std::to_string(i) + "\" file=\"" + escaped(m.file) + "\" scale=\"" + num(m.scale) + " " + num(m.scale) + " " +
-                      num(m.scale) + "\"/>\n";
-            geoms += "      <geom name=\"c" + std::to_string(i) + "\" type=\"mesh\" mesh=\"m" + std::to_string(i) + "\" pos=\"" + vec(m.pose.position) +
-                     "\" quat=\"" + quat(m.pose.orientation) + "\"" + common;
-            // dynamic：网格的体积由 MuJoCo 算，这里按个数平分质量
-            if (dynamic) geoms += " mass=\"" + num(e.mass / static_cast<double>(e.meshes.size())) + "\"";
-            geoms += "/>\n";
+    }
+    const auto boxGeoms = [&](const std::vector<ElementBox>& boxes, const std::string& prefix, const std::string& indent) {
+        std::string out;
+        for (std::size_t i = 0; i < boxes.size(); ++i) {
+            const ElementBox& b = boxes[i];
+            out += indent + "<geom name=\"" + prefix + std::to_string(i) + "\" type=\"box\" pos=\"" + vec(b.pose.position) + "\" quat=\"" +
+                   quat(b.pose.orientation) + "\" size=\"" + vec(b.halfSize) + "\"" + common;
+            if (dynamic && volume > 0) out += " mass=\"" + num(e.mass * volumeOf(b) / volume) + "\"";
+            out += "/>\n";
         }
+        return out;
+    };
+    if (e.collision == ElementCollision::Boxes) {
+        geoms += boxGeoms(e.boxes, "c", "      ");
+    }
+    // 网格（凸包）：dynamic 的质量按个数平分（网格的体积由 MuJoCo 算）
+    std::size_t meshCount = e.meshes.size();
+    for (const ElementPart& part : e.parts) meshCount += part.meshes.size();
+    std::size_t meshIndex = 0;
+    const auto meshGeoms = [&](const std::vector<ElementMesh>& meshes, const std::string& indent) {
+        std::string out;
+        for (const ElementMesh& m : meshes) {
+            const std::string id = std::to_string(meshIndex++);
+            assets += "    <mesh name=\"m" + id + "\" file=\"" + escaped(m.file) + "\" scale=\"" + num(m.scale) + " " + num(m.scale) + " " + num(m.scale) + "\"/>\n";
+            out += indent + "<geom name=\"m" + id + "\" type=\"mesh\" mesh=\"m" + id + "\" pos=\"" + vec(m.pose.position) + "\" quat=\"" +
+                   quat(m.pose.orientation) + "\"" + common;
+            if (dynamic && meshCount > 0) out += " mass=\"" + num(e.mass / static_cast<double>(meshCount)) + "\"";
+            out += "/>\n";
+        }
+        return out;
+    };
+    if (e.collision == ElementCollision::Mesh) geoms += meshGeoms(e.meshes, "      ");
+    // 部件（M5-02b）是焊在元素刚体上的子刚体（没有关节）；先生成刚体的内容，网格资源收集齐后再写 asset
+    std::string body;
+    if (dynamic) body += "      <freejoint name=\"free\"/>\n";
+    // dynamic 而元素本身没有碰撞体（都在部件上）时，给根刚体一个很小的惯量（MuJoCo 要求运动的刚体质量大于 0）
+    if (dynamic && geoms.empty()) body += "      <inertial pos=\"0 0 0\" mass=\"0.001\" diaginertia=\"1e-06 1e-06 1e-06\"/>\n";
+    body += geoms;
+    for (std::size_t k = 0; k < e.parts.size(); ++k) {
+        const ElementPart& part = e.parts[k];
+        body += "      <body name=\"" + escaped(part.name) + "\" pos=\"" + vec(part.pose.position) + "\" quat=\"" + quat(part.pose.orientation) + "\">\n";
+        if (e.collision == ElementCollision::Boxes) body += boxGeoms(part.boxes, "p" + std::to_string(k) + "_", "        ");
+        if (e.collision == ElementCollision::Mesh) body += meshGeoms(part.meshes, "        ");
+        body += "      </body>\n";
     }
     std::string xml = "<mujoco model=\"element\">\n";
     if (!assets.empty()) xml += "  <asset>\n" + assets + "  </asset>\n";
-    xml += "  <worldbody>\n    <body name=\"" + std::string{kElementBody} + "\">\n";
-    if (dynamic) xml += "      <freejoint name=\"free\"/>\n";
-    xml += geoms;
-    xml += "    </body>\n  </worldbody>\n</mujoco>\n";
+    xml += "  <worldbody>\n    <body name=\"" + std::string{kElementBody} + "\">\n" + body + "    </body>\n  </worldbody>\n</mujoco>\n";
     return xml;
 }
 

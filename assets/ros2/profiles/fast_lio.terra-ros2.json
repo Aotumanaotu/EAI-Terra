@@ -1,0 +1,27 @@
+{
+  "format": "terra.ros2",
+  "version": 1,
+  "name": "FAST-LIO：仿真时间（/clock）；点云按 Velodyne 布局发到 /velodyne_points（FAST-LIO 的 lidar_type 2、scan_line 4、timestamp_unit 0：time 为相对帧起点的秒），IMU 发到 /imu/data；速度指令 /cmd_vel",
+  "kind": "generic",
+  "time": "sim",
+  "clock": true,
+  "jointStatesHz": 50,
+  "tfHz": 50,
+  "sensors": true,
+  "commands": false,
+  "services": true,
+  "frames": {"stripPrefix": "*/"},
+  "topics": {
+    "/*/mid360/points": "/velodyne_points",
+    "/*/mid360_imu/imu": "/imu/data"
+  },
+  "topicSettings": {
+    "/velodyne_points": {"pointLayout": "velodyne"}
+  },
+  "tf": {"robot": "tree", "sensorMounts": true, "odom": true},
+  "cmdVel": [
+    {"topic": "/cmd_vel", "type": "Twist", "priority": 0, "timeout": 0.5}
+  ],
+  "planarBase": "auto",
+  "groundTruth": {"entity": "auto", "topic": "/terra/ground_truth/odom", "frame": "world", "rateHz": 50}
+}

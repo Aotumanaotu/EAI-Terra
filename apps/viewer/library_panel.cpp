@@ -39,6 +39,7 @@ ImU32 kindColor(lib::AssetKind kind) {
         case lib::AssetKind::Environment: return rgba(220, 110, 170);
         case lib::AssetKind::Display: return rgba(60, 150, 200);
         case lib::AssetKind::Policy: return rgba(226, 132, 52);  // M4-10b
+        case lib::AssetKind::Element: return rgba(176, 138, 82);  // M5-02a
     }
     return rgba(130, 130, 140);
 }
@@ -48,6 +49,7 @@ bool hasTag(const lib::AssetEntry& a, const char* tag) { return std::find(a.tags
 bool unusable(const lib::AssetEntry& a) {
     return hasTag(a, "models-missing") || hasTag(a, "invalid") || hasTag(a, "scene-missing") || hasTag(a, "model-missing");
 }
+// M5-02a：元素没有 glTF 外观文件时仍可用（显示碰撞体），只提示
 
 // 按宽度截断（UTF-8 按字符），超出时加省略号
 std::string ellipsize(const std::string& text, float size, float width) {
@@ -118,6 +120,12 @@ void drawAssetIcon(ImDrawList* dl, ImVec2 a, float s, lib::AssetKind kind, bool 
             for (const auto& a0 : in) dl->AddCircleFilled(a0, 1.4f * u, w);
             for (const auto& m : mid) dl->AddCircleFilled(m, 1.4f * u, w);
             dl->AddCircleFilled(out, 1.6f * u, w);
+            break;
+        }
+        case lib::AssetKind::Element: {  // M5-02a：一张桌子（桌面与两条腿）
+            dl->AddRectFilled(at(2.5f, 5.0f), at(13.5f, 7.0f), w, 0.6f * u);
+            dl->AddRectFilled(at(3.5f, 7.0f), at(5.0f, 13.0f), rgba(255, 255, 255, 200));
+            dl->AddRectFilled(at(11.0f, 7.0f), at(12.5f, 13.0f), rgba(255, 255, 255, 200));
             break;
         }
     }
@@ -205,6 +213,10 @@ CardInfo describe(const lib::AssetEntry& a, const std::map<std::string, int>& mo
         else if (t == "lidar3d") info.chips.emplace_back(tr(TextId::SensorsLidar3d), rgba(52, 110, 150));  // M5-11
         else if (t == "pd") info.chips.emplace_back("PD", rgba(96, 96, 140));
         else if (t == "fixed-base") info.chips.emplace_back(tr(TextId::LibraryTagFixedBase), rgba(96, 96, 140));
+        else if (a.kind == lib::AssetKind::Element && (t == "dynamic" || t == "layout" || t == "fixed")) {  // M5-02a：可否移动
+            info.chips.emplace_back(tr(t == "dynamic" ? TextId::LibraryTagDynamic : t == "fixed" ? TextId::LibraryTagFixed : TextId::LibraryTagLayout),
+                                    rgba(140, 108, 60));
+        }
     }
     if (a.kind == lib::AssetKind::Scene) {
         if (const auto it = motionCounts.find(a.path); it != motionCounts.end()) {
@@ -222,9 +234,11 @@ CardInfo describe(const lib::AssetEntry& a, const std::map<std::string, int>& mo
     else if (hasTag(a, "invalid")) info.hint = std::string{tr(TextId::LibraryInvalid)} + a.description;
     else if (hasTag(a, "scene-missing")) info.hint = tr(TextId::LibrarySceneMissing);
     else if (hasTag(a, "model-missing")) info.hint = tr(TextId::LibraryModelMissing);
-    else info.hint = tr(a.kind == lib::AssetKind::Motion   ? TextId::LibraryClickToPlay
-                        : a.kind == lib::AssetKind::Policy ? TextId::LibraryClickToRunPolicy
-                                                           : TextId::LibraryClickToOpen);
+    else if (hasTag(a, "gltf-missing")) info.hint = tr(TextId::LibraryGltfMissing);  // M5-02a
+    else info.hint = tr(a.kind == lib::AssetKind::Motion    ? TextId::LibraryClickToPlay
+                        : a.kind == lib::AssetKind::Policy  ? TextId::LibraryClickToRunPolicy
+                        : a.kind == lib::AssetKind::Element ? TextId::LibraryClickToPreviewElement
+                                                            : TextId::LibraryClickToOpen);
     return info;
 }
 
@@ -414,6 +428,7 @@ lib::AssetKind kindOfTab(LibraryTab tab) {
         case LibraryTab::Motions: return lib::AssetKind::Motion;
         case LibraryTab::Robots: return lib::AssetKind::Robot;
         case LibraryTab::Policies: return lib::AssetKind::Policy;
+        case LibraryTab::Elements: return lib::AssetKind::Element;
     }
     return lib::AssetKind::Scene;
 }
@@ -461,7 +476,8 @@ std::optional<LibraryAction> drawLibraryPanel(LibraryPanelState& st, const Libra
     if (ImGui::BeginTabBar("##libraryTabs")) {
         using Tab = std::pair<LibraryTab, TextId>;
         for (const auto& [tab, text] : {Tab{LibraryTab::Scenes, TextId::LibraryTabScenes}, Tab{LibraryTab::Motions, TextId::LibraryTabMotions},
-                                        Tab{LibraryTab::Robots, TextId::LibraryTabRobots}, Tab{LibraryTab::Policies, TextId::LibraryTabPolicies}}) {
+                                        Tab{LibraryTab::Robots, TextId::LibraryTabRobots}, Tab{LibraryTab::Policies, TextId::LibraryTabPolicies},
+                                        Tab{LibraryTab::Elements, TextId::LibraryTabElements}}) {
             const std::size_t n = visibleAssets(ctx, kindOfTab(tab), LibraryFilter::All, {}, false).size();
             const std::string name = std::string{tr(text)} + " " + std::to_string(n) + "###tab" + std::to_string(static_cast<int>(tab));
             const bool select = st.selectTab && *st.selectTab == tab;

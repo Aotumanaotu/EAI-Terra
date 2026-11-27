@@ -25,7 +25,7 @@ constexpr int kSchemaVersion = 2;
 
 // ---- 资产（M4-08c）----
 
-enum class AssetKind { Scene, Motion, Robot, Environment, Display, Policy };  // Display：显示配置 .terviz（M4-08d）；Policy：策略说明文件（M4-10b）
+enum class AssetKind { Scene, Motion, Robot, Environment, Display, Policy, Element };  // Display：显示配置 .terviz（M4-08d）；Policy：策略说明文件（M4-10b）；Element：场景元素 .terra-element.json（M5-02a）
 enum class AssetSource { Builtin, Imported, User };
 
 const char* assetKindName(AssetKind kind);  // "scene"、"motion"、"robot"、"environment"、"display"、"policy"

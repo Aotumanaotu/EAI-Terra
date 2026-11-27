@@ -1,0 +1,13 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "测试配电柜（两个盒体，带热点）",
+  "category": "substation/cabinet",
+  "collision": {"mode": "boxes", "generatedBy": "manual",
+                "boxes": [{"position": [0, 0, 0.4], "halfSize": [0.3, 0.2, 0.4]},
+                          {"position": [0, 0, 0.85], "rotation": {"rpyDeg": [0, 0, 45]}, "halfSize": [0.1, 0.1, 0.05]}]},
+  "physics": {"movable": "layout"},
+  "thermal": {"default": 45.0, "hotspots": [{"position": [0.3, 0, 0.6], "radius": 0.1, "temperature": 90.0}]},
+  "inspection": [{"name": "仪表", "position": [0.3, 0, 0.6], "distance": 1.5, "heightDeg": 5}],
+  "license": {"source": "EAI Terra 测试夹具", "license": "CC0-1.0", "author": "EAI Terra"}
+}

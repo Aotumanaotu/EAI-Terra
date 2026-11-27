@@ -638,6 +638,255 @@ void readThermalScene(Reader& r, const Json& j, ThermalSceneSpec& out) {
     }
 }
 
+// ---- 场景元素（M5-02a）----
+
+void readElementBody(Reader& r, const Json& root, ElementDocument& e) {
+    if (!r.object(root, "", {"format", "version", "name", "category", "visual", "collision", "physics", "thermal", "inspection", "license"})) return;
+    if (!root.contains("format")) {
+        r.error("", "缺少 format（应为 “terra.element”）");
+    } else if (const auto f = r.string(root["format"], "/format"); f && *f != "terra.element") {
+        r.error("/format", "不是 Terra 元素文件（format 为 “" + *f + "”，应为 “terra.element”）");
+    }
+    if (!root.contains("version")) {
+        r.error("", "缺少 version");
+    } else if (const auto n = r.integer(root["version"], "/version"); n && *n != 1) {
+        r.error("/version", "元素文件版本 " + std::to_string(*n) + " 不受支持（应为 1）");
+    }
+    if (root.contains("name")) {
+        if (const auto v = r.string(root["name"], "/name")) e.name = *v;
+    }
+    if (root.contains("category")) {
+        if (const auto v = r.string(root["category"], "/category")) e.category = *v;
+    }
+    if (root.contains("visual")) {
+        const Json& v = root["visual"];
+        if (r.object(v, "/visual", {"gltf", "node", "scale", "position", "rotation"})) {
+            if (v.contains("gltf")) {
+                if (const auto f = r.string(v["gltf"], "/visual/gltf"); f && !f->empty()) e.gltf = r.path(*f);
+            }
+            if (v.contains("node")) {
+                if (const auto n = r.string(v["node"], "/visual/node")) e.node = *n;
+            }
+            if (v.contains("scale")) {
+                if (const auto d = r.number(v["scale"], "/visual/scale")) {
+                    if (*d > 0) e.visualScale = *d;
+                    else r.error("/visual/scale", "缩放必须大于 0");
+                }
+            }
+            r.pose(v, "/visual", e.visualPose);
+        }
+    }
+    if (!root.contains("collision")) {
+        r.error("", "缺少 collision（boxes、mesh 或 none；见 M5-01 设计稿 2.1 节）");
+    } else {
+        const Json& c = root["collision"];
+        if (r.object(c, "/collision", {"mode", "boxes", "meshes", "generatedBy"})) {
+            std::string mode;
+            if (!c.contains("mode")) r.error("/collision", "缺少 mode（boxes、mesh 或 none）");
+            else if (const auto m = r.string(c["mode"], "/collision/mode")) mode = *m;
+            if (c.contains("generatedBy")) {
+                if (const auto g = r.string(c["generatedBy"], "/collision/generatedBy")) e.generatedBy = *g;
+            }
+            if (mode == "boxes") {
+                e.collision = ElementCollision::Boxes;
+                if (!c.contains("boxes") || !c["boxes"].is_array() || c["boxes"].empty()) {
+                    r.error("/collision", "mode 为 boxes 时需要 boxes（至少一个盒体：position、rotation、halfSize）");
+                } else {
+                    for (std::size_t i = 0; i < c["boxes"].size(); ++i) {
+                        const std::string w = "/collision/boxes/" + std::to_string(i);
+                        const Json& b = c["boxes"][i];
+                        if (!r.object(b, w, {"position", "rotation", "halfSize", "node"})) continue;
+                        ElementBox box;
+                        r.pose(b, w, box.pose);
+                        if (!b.contains("halfSize")) {
+                            r.error(w, "缺少 halfSize（半边长，米）");
+                        } else if (const auto h = r.vec3(b["halfSize"], w + "/halfSize")) {
+                            if (h->x > 0 && h->y > 0 && h->z > 0) box.halfSize = *h;
+                            else r.error(w + "/halfSize", "半边长必须都大于 0");
+                        }
+                        e.boxes.push_back(box);
+                    }
+                }
+            } else if (mode == "mesh") {
+                e.collision = ElementCollision::Mesh;
+                if (!c.contains("meshes") || !c["meshes"].is_array() || c["meshes"].empty()) {
+                    r.error("/collision", "mode 为 mesh 时需要 meshes（至少一个：file、position、rotation、scale）");
+                } else {
+                    for (std::size_t i = 0; i < c["meshes"].size(); ++i) {
+                        const std::string w = "/collision/meshes/" + std::to_string(i);
+                        const Json& m = c["meshes"][i];
+                        if (!r.object(m, w, {"file", "position", "rotation", "scale"})) continue;
+                        ElementMesh mesh;
+                        if (!m.contains("file")) {
+                            r.error(w, "缺少 file（OBJ 或 STL，相对元素文件）");
+                            continue;
+                        }
+                        if (const auto f = r.string(m["file"], w + "/file")) mesh.file = r.path(*f);
+                        std::error_code ec;
+                        const std::string ext = fs::path{mesh.file}.extension().string();
+                        if (ext != ".obj" && ext != ".stl" && ext != ".OBJ" && ext != ".STL") {
+                            r.error(w + "/file", "碰撞网格应为 .obj 或 .stl：" + mesh.file);
+                        } else if (!fs::is_regular_file(mesh.file, ec)) {
+                            r.error(w + "/file", "碰撞网格不存在：" + mesh.file);
+                        }
+                        r.pose(m, w, mesh.pose);
+                        if (m.contains("scale")) {
+                            if (const auto d = r.number(m["scale"], w + "/scale")) {
+                                if (*d > 0) mesh.scale = *d;
+                                else r.error(w + "/scale", "缩放必须大于 0");
+                            }
+                        }
+                        e.meshes.push_back(mesh);
+                    }
+                }
+            } else if (mode == "none") {
+                e.collision = ElementCollision::None;
+            } else if (!mode.empty()) {
+                r.error("/collision/mode", "mode 应为 boxes、mesh 或 none（auto-boxes、auto-hulls 由导入生成，见 M5-02b）");
+            }
+        }
+    }
+    if (root.contains("physics")) {
+        const Json& p = root["physics"];
+        if (r.object(p, "/physics", {"movable", "mass", "friction"})) {
+            if (p.contains("movable")) {
+                if (const auto m = r.string(p["movable"], "/physics/movable")) {
+                    if (*m == "layout") e.movable = ElementMovable::Layout;
+                    else if (*m == "fixed") e.movable = ElementMovable::Fixed;
+                    else if (*m == "dynamic") e.movable = ElementMovable::Dynamic;
+                    else r.error("/physics/movable", "movable 应为 layout（只在布局编辑中移动）、fixed 或 dynamic（自由刚体）");
+                }
+            }
+            if (p.contains("mass")) {
+                if (const auto d = r.number(p["mass"], "/physics/mass")) {
+                    if (*d >= 0) e.mass = *d;
+                    else r.error("/physics/mass", "质量不能为负");
+                }
+            }
+            if (p.contains("friction")) {
+                if (const auto d = r.number(p["friction"], "/physics/friction")) {
+                    if (*d >= 0) e.friction = *d;
+                    else r.error("/physics/friction", "摩擦系数不能为负");
+                }
+            }
+        }
+    }
+    if (e.movable == ElementMovable::Dynamic && !(e.mass > 0)) r.error("/physics/mass", "dynamic 元素需要大于 0 的 mass（千克）");
+    if (e.movable == ElementMovable::Dynamic && e.collision == ElementCollision::None) r.error("/collision/mode", "dynamic 元素必须有碰撞体");
+    if (root.contains("thermal")) {
+        const Json& t = root["thermal"];
+        if (r.object(t, "/thermal", {"default", "hotspots"})) {
+            if (t.contains("default")) e.thermalDefault = readTemperature(r, t["default"], "/thermal/default");
+            if (t.contains("hotspots")) {
+                if (!t["hotspots"].is_array()) {
+                    r.error("/thermal/hotspots", "应为数组");
+                } else {
+                    for (std::size_t i = 0; i < t["hotspots"].size(); ++i) {
+                        const std::string w = "/thermal/hotspots/" + std::to_string(i);
+                        const Json& h = t["hotspots"][i];
+                        if (!r.object(h, w, {"position", "radius", "temperature"})) continue;
+                        HotspotSpec spot;
+                        spot.where = w;
+                        if (h.contains("position")) {
+                            if (const auto v = r.vec3(h["position"], w + "/position")) spot.position = *v;
+                        }
+                        if (h.contains("radius")) {
+                            if (const auto d = r.number(h["radius"], w + "/radius")) {
+                                if (*d > 0) spot.radius = *d;
+                                else r.error(w + "/radius", "半径必须大于 0");
+                            }
+                        }
+                        if (!h.contains("temperature")) {
+                            r.error(w, "热点需要 temperature");
+                            continue;
+                        }
+                        if (auto c = readTemperature(r, h["temperature"], w + "/temperature")) {
+                            spot.temperature = std::move(*c);
+                            e.hotspots.push_back(std::move(spot));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (root.contains("inspection")) {
+        const Json& list = root["inspection"];
+        if (!list.is_array()) {
+            r.error("/inspection", "应为数组");
+        } else {
+            for (std::size_t i = 0; i < list.size(); ++i) {
+                const std::string w = "/inspection/" + std::to_string(i);
+                if (!r.object(list[i], w, {"name", "position", "distance", "heightDeg", "node"})) continue;
+                ElementInspection point;
+                if (list[i].contains("name")) {
+                    if (const auto n = r.string(list[i]["name"], w + "/name")) point.name = *n;
+                }
+                if (point.name.empty()) r.error(w, "检查点需要 name");
+                if (list[i].contains("position")) {
+                    if (const auto v = r.vec3(list[i]["position"], w + "/position")) point.position = *v;
+                }
+                if (list[i].contains("distance")) {
+                    if (const auto d = r.number(list[i]["distance"], w + "/distance")) point.distance = *d;
+                }
+                if (list[i].contains("heightDeg")) {
+                    if (const auto d = r.number(list[i]["heightDeg"], w + "/heightDeg")) point.heightDeg = *d;
+                }
+                e.inspection.push_back(point);
+            }
+        }
+    }
+    if (root.contains("license")) {
+        const Json& l = root["license"];
+        if (r.object(l, "/license", {"source", "license", "author"})) {
+            for (const auto& [key, target] : {std::pair<const char*, std::string*>{"source", &e.licenseSource},
+                                              std::pair<const char*, std::string*>{"license", &e.licenseName},
+                                              std::pair<const char*, std::string*>{"author", &e.licenseAuthor}}) {
+                if (!l.contains(key)) continue;
+                if (const auto v = r.string(l[key], std::string{"/license/"} + key)) *target = *v;
+            }
+        }
+    }
+}
+
+// 场景文件的 elements：读入每个元素文件；元素文件中的问题归到 “/elements/<i>” 下
+void readElements(Reader& r, const Json& v, std::vector<SceneElementSpec>& out) {
+    if (!v.is_array()) {
+        r.error("/elements", "elements 应为数组");
+        return;
+    }
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        const std::string where = "/elements/" + std::to_string(i);
+        const Json& item = v[i];
+        if (!r.object(item, where, {"id", "element", "position", "rotation", "thermal"})) continue;
+        SceneElementSpec e;
+        e.where = where;
+        if (!item.contains("id")) r.error(where, "缺少 id（元素实例名，如 “T1”）");
+        else if (const auto s = r.string(item["id"], where + "/id")) e.id = *s;
+        if (!e.id.empty() && !isValidInstanceName(e.id)) r.error(where + "/id", "id“" + e.id + "”不合法：只能用字母、数字、下划线与连字符，且以字母或下划线开头");
+        if (!item.contains("element")) {
+            r.error(where, "缺少 element（元素文件 *.terra-element.json）");
+            continue;
+        }
+        const auto file = r.string(item["element"], where + "/element");
+        if (!file) continue;
+        e.file = r.path(*file);
+        r.pose(item, where, e.placement);
+        if (item.contains("thermal")) {
+            if (r.object(item["thermal"], where + "/thermal", {"default"}) && item["thermal"].contains("default")) {
+                e.thermal = readTemperature(r, item["thermal"]["default"], where + "/thermal/default");
+            }
+        }
+        ElementParseResult parsed = readElementFile(e.file);
+        for (auto& problem : parsed.issues) {
+            problem.where = where + "（" + fs::path{e.file}.filename().string() + "）" + problem.where;
+            r.issues.push_back(problem);
+        }
+        if (!parsed.document) continue;
+        e.element = std::move(*parsed.document);
+        out.push_back(std::move(e));
+    }
+}
+
 // 相机的 thermal 块：预设给出分辨率、视场角、帧率与噪声（相机显式写的字段优先）
 void readThermalCamera(Reader& r, const Json& item, const std::string& where, SensorSpec& s) {
     const Json& j = item["thermal"];
@@ -1035,7 +1284,7 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
     doc.path = path.string();
     doc.directory = path.parent_path().string();
     if (r.object(root, "", {"format", "version", "name", "title", "physics", "models", "visuals", "view", "initialKeyframe",
-                            "controllers", "sensors", "noise", "labels", "thermal"})) {
+                            "controllers", "sensors", "noise", "labels", "thermal", "elements"})) {
         if (!root.contains("format")) {
             r.error("", "缺少 format（应为 “terra.scene”）");
         } else if (const auto s = r.string(root["format"], "/format"); s && *s != "terra.scene") {
@@ -1064,6 +1313,20 @@ ParseResult parseScene(const std::string& text, const std::string& scenePath) {
         if (root.contains("view")) readView(r, root["view"], doc.view);
         if (root.contains("controllers")) readControllers(r, root["controllers"], doc.controllers);
         if (root.contains("sensors")) readSensors(r, root["sensors"], doc.sensors);
+        if (root.contains("elements")) readElements(r, root["elements"], doc.elements);  // M5-02a
+        // M5-02a：元素的外观作为 glTF 绑定（实体 “<id>/body”）；没有外观时显示碰撞体
+        for (const SceneElementSpec& e : doc.elements) {
+            if (e.element.gltf.empty()) continue;
+            VisualBindingSpec b;
+            b.entity = e.id + "/" + kElementBody;
+            b.gltf = e.element.gltf;
+            b.node = e.element.node;
+            b.local = e.element.visualPose;
+            b.scale = e.element.visualScale;
+            b.frame = VisualFrame::Node;
+            b.where = e.where + "/element";
+            doc.visuals.push_back(std::move(b));
+        }
         // M5-11：传感器的外观模型作为 glTF 绑定加到 visuals 末尾（跟随安装的实体）
         for (const SensorSpec& s : doc.sensors) {
             if (s.modelFile.empty()) continue;
@@ -1115,6 +1378,12 @@ std::string sceneLabel(const SceneDocument& document, const std::string& entityN
             bestLength = length;
         }
     }
+    // M5-02a：没有写 labels 的元素取元素的类别
+    if (best.empty()) {
+        for (const SceneElementSpec& e : document.elements) {
+            if (e.id == instanceName) return e.element.category;
+        }
+    }
     return best;
 }
 
@@ -1132,6 +1401,42 @@ std::string segmentationLabelsJson(const SceneInstance& scene) {
     }
     j["labels"] = std::move(labels);
     return j.dump() + "\n";
+}
+
+ElementParseResult parseElement(const std::string& text, const std::string& path) {
+    std::error_code ec;
+    fs::path file = fs::absolute(path, ec);
+    if (ec) file = path;
+    file = file.lexically_normal();
+    Reader r{file.parent_path().string()};
+    ElementParseResult result;
+    Json root;
+    try {
+        root = Json::parse(text.begin(), text.end());
+    } catch (const Json::exception& e) {
+        r.error("", std::string{"JSON 语法错误："} + e.what());
+        result.issues = std::move(r.issues);
+        return result;
+    }
+    ElementDocument doc;
+    doc.path = file.string();
+    doc.directory = file.parent_path().string();
+    readElementBody(r, root, doc);
+    if (doc.name.empty()) doc.name = file.filename().string();
+    if (!r.hasErrors()) result.document = std::move(doc);
+    result.issues = std::move(r.issues);
+    return result;
+}
+
+ElementParseResult readElementFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ElementParseResult result;
+        result.issues.push_back({Severity::Error, {}, {}, fs::exists(path) ? "无法读取元素文件：" + path : "元素文件不存在：" + path});
+        return result;
+    }
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    return parseElement(text, path);
 }
 
 ParseResult readSceneFile(const std::string& path) {

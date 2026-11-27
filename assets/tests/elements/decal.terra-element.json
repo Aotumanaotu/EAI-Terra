@@ -1,0 +1,8 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "测试贴花（只显示）",
+  "category": "test/decal",
+  "collision": {"mode": "none"},
+  "physics": {"movable": "layout"}
+}

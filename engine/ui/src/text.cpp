@@ -619,6 +619,13 @@ constexpr Entry kEntries[] = {
     {TextId::SensorsThermal, "热像", "Thermal"},
     {TextId::SensorsTemperatureAt, "温度", "temperature"},
     {TextId::SensorsThermalSummary, "最低 / 中心 / 最高", "min / center / max"},
+    {TextId::LibraryTabElements, "元素", "Elements"},
+    {TextId::LibraryClickToPreviewElement, "单击在空场景中预览这个元素", "Click to preview the element in an empty scene"},
+    {TextId::LibraryGltfMissing, "外观文件不存在：只显示碰撞体（仍可使用）", "Visual file missing: only collision shapes are shown (still usable)"},
+    {TextId::LibraryTagLayout, "布局可移动", "layout"},
+    {TextId::LibraryTagFixed, "固定", "fixed"},
+    {TextId::LibraryTagDynamic, "可推动", "dynamic"},
+    {TextId::ElementPreviewFailed, "无法预览元素：", "Cannot preview element: "},
 };
 
 constexpr bool entriesInOrder() {

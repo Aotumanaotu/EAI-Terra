@@ -2,11 +2,13 @@
 # M2-04：模型实例组合——校验实例名、分配前缀、决定全局物理配置、调用注入的世界工厂、把问题归属到实例。
 # M2-05：场景文件（JSON，nlohmann/json 只在实现中 PRIVATE 使用）、场景实例与视觉部件映射、视觉部件世界位姿。
 # M4-02 / M4-03：场景文件的传感器（IMU、相机）与相机模型（内参、位姿、投影）。
+# M5-02a：场景元素（元素文件 *.terra-element.json，生成元素的 MJCF 文本；运行时不解析 glTF）。
 # M5-06：场景的温度表（thermal 段）与热像仪预设（assets/sensors/thermal_presets.json，与雷达预设同目录）。
 # 约束：不链接 MuJoCo、GL、界面与渲染模块；只通过 terra_physics 的接口与注入的世界工厂创建世界（NFR-01）。
 add_library(terra_scene STATIC
     src/camera_model.cpp
     src/composition.cpp
+    src/element.cpp
     src/lidar_pattern.cpp
     src/scene_file.cpp
     src/scene_instance.cpp

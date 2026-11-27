@@ -87,7 +87,19 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
     }
     if (sensorFailed) return out;
 
-    ComposedWorld composed = composeWorld(document.models, document.physics, factory, document.path, imus);
+    // M5-02a：场景元素排在模型实例之后，各成为一个实例（MJCF 由元素文件生成；全局物理设置随模型实例）
+    std::vector<SceneModel> instances = document.models;
+    for (const SceneElementSpec& e : document.elements) {
+        SceneModel m;
+        m.name = e.id;
+        m.mjcf = e.file;
+        m.placement = e.placement;
+        m.where = e.where;
+        m.mjcfText = elementMjcf(e.element);
+        m.element = true;
+        instances.push_back(std::move(m));
+    }
+    ComposedWorld composed = composeWorld(instances, document.physics, factory, document.path, imus);
     out.issues = std::move(composed.issues);
     if (!composed.ok()) return out;
 
@@ -414,6 +426,7 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
         t.ambient = document.thermal.ambient;
         t.sky = document.thermal.sky;
         t.entities.assign(d.entities.size(), std::nullopt);
+        std::vector<int> matched(d.entities.size(), 0);  // 场景 temperatures 匹配到的等级（0 为没有）
         for (std::size_t i = 0; i < d.entities.size(); ++i) {
             const td::EntityDescription& e = d.entities[i];
             std::string instance;
@@ -429,6 +442,24 @@ SceneLoadResult instantiate(SceneDocument document, const WorldFactory& factory)
                     bestRank = rank;
                     bestLength = length;
                 }
+            }
+            matched[i] = bestRank;
+        }
+        // M5-02a：元素的温度——实例写的 thermal.default 最优先；其次场景 temperatures 匹配到的；其次元素文件的默认温度。
+        // 元素文件的热点在元素坐标系中，即刚体 “<id>/body” 的坐标系
+        for (const SceneElementSpec& e : document.elements) {
+            const td::EntityDescription* body = d.findEntity(e.id + "/" + kElementBody);
+            if (body == nullptr) continue;
+            const std::size_t i = body->id.value - 1;
+            if (e.thermal) t.entities[i] = *e.thermal;
+            else if (matched[i] == 0 && e.element.thermalDefault) t.entities[i] = *e.element.thermalDefault;
+            for (const HotspotSpec& h : e.element.hotspots) {
+                ThermalModel::Hotspot spot;
+                spot.entity = body->id;
+                spot.position = h.position;
+                spot.radius = h.radius;
+                spot.temperature = h.temperature;
+                t.hotspots.push_back(std::move(spot));
             }
         }
         for (const auto& [pattern, curve] : document.thermal.temperatures) {

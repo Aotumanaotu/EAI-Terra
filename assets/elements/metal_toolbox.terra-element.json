@@ -1,0 +1,12 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "金属工具箱",
+  "category": "tool/toolbox",
+  "visual": {"gltf": "../models/metal_toolbox/metal_toolbox_2k.gltf"},
+  "collision": {"mode": "boxes", "generatedBy": "manual（按 glTF 的包围盒）",
+                "boxes": [{"position": [0, 0.03235, 0.17355], "halfSize": [0.2, 0.14615, 0.17355]}]},
+  "physics": {"movable": "dynamic", "mass": 4.0, "friction": 0.7},
+  "thermal": {"default": 24.0},
+  "license": {"source": "https://polyhaven.com/a/metal_toolbox", "license": "CC0-1.0", "author": "Mateusz Sadek"}
+}

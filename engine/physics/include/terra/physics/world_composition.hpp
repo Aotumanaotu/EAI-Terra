@@ -54,6 +54,10 @@ struct ModelPlacement {
     // M4-06b：把该实例的位置执行器（<position>）改为力矩执行器：增益 1、无偏置，控制范围取原来的力限（没有力限时不限）。
     // 宇树低层控制（LowCmd）按 τ = tau + kp (q − q̂) + kd (dq − dq̂) 给力矩，需要力矩执行器（M4-05 设计稿问题 1）
     bool torqueActuators = false;
+    // M5-05 / M5-02：场景元素由场景模块生成 MJCF 文本（mjcfPath 此时只用于诊断）。inheritGlobals 为 true 时，
+    // 该实例的全局设置不参与比较（不产生“与第一个实例不同”的警告），组合后随第一个实例
+    std::string mjcfText{};
+    bool inheritGlobals = false;
 };
 
 struct WorldComposition {

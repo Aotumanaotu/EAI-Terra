@@ -1342,6 +1342,15 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
         if (ec) path = models[i].mjcfPath;
         path = path.lexically_normal();
         paths[i] = path.string();
+        std::array<char, 1024> message{};
+        if (!models[i].mjcfText.empty()) {  // M5-02：场景元素生成的 MJCF 文本
+            children[i].reset(mj_parseXMLString(models[i].mjcfText.c_str(), nullptr, message.data(), static_cast<int>(message.size())));
+            if (!children[i]) {
+                error(index, LoadErrorKind::InvalidModel,
+                      "元素的 MJCF 解析失败（" + models[i].mjcfPath + "）：" + trimmed(message[0] != '\0' ? message.data() : "未知错误"));
+            }
+            continue;
+        }
         if (models[i].mjcfPath.empty()) {
             error(index, LoadErrorKind::FileUnavailable, "模型路径为空");
             continue;
@@ -1350,7 +1359,6 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
             error(index, LoadErrorKind::FileUnavailable, std::move(problem));
             continue;
         }
-        std::array<char, 1024> message{};
         children[i].reset(mj_parseXML(paths[i].c_str(), nullptr, message.data(), static_cast<int>(message.size())));
         if (!children[i]) {
             error(index, LoadErrorKind::InvalidModel,
@@ -1391,7 +1399,7 @@ ComposeResult MujocoWorld::compose(const WorldComposition& composition) {
     parent->authored = children.front()->authored;
     applyOptions(parent->option, chosen, *integrator, *solver);
     for (std::size_t i = 0; i < children.size(); ++i) {
-        if (i > 0) {
+        if (i > 0 && !models[i].inheritGlobals) {
             const std::vector<std::string> fields = otherOptionDifferences(*children[i], *children.front());
             if (!fields.empty()) {
                 std::string list;

@@ -1,0 +1,10 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "测试木箱（可推动）",
+  "category": "test/crate",
+  "collision": {"mode": "boxes", "boxes": [{"position": [0, 0, 0.1], "halfSize": [0.1, 0.1, 0.1]}]},
+  "physics": {"movable": "dynamic", "mass": 2.0, "friction": 0.8},
+  "thermal": {"default": 25.0},
+  "license": {"source": "EAI Terra 测试夹具", "license": "CC0-1.0", "author": "EAI Terra"}
+}

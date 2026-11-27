@@ -1,0 +1,13 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "简易配电柜（示意，没有外观模型）",
+  "category": "substation/cabinet",
+  "collision": {"mode": "boxes", "generatedBy": "manual",
+                "boxes": [{"position": [0, 0, 0.9], "halfSize": [0.4, 0.3, 0.9]},
+                          {"position": [0, 0, 1.83], "halfSize": [0.42, 0.32, 0.03]}]},
+  "physics": {"movable": "layout"},
+  "thermal": {"default": 32.0, "hotspots": [{"position": [-0.4, 0.0, 1.2], "radius": 0.12, "temperature": 78.0}]},
+  "inspection": [{"name": "柜门的接线端子", "position": [-0.4, 0.0, 1.2], "distance": 1.5, "heightDeg": 10}],
+  "license": {"source": "EAI Terra", "license": "CC0-1.0", "author": "EAI Terra"}
+}

@@ -261,8 +261,9 @@ ParseResult parseArguments(int argc, const char* const* argv) {
                 result.error = "重复的参数 --kind";
                 return result;
             }
-            if (*value != "scene" && *value != "motion" && *value != "robot" && *value != "environment" && *value != "display" && *value != "policy") {
-                result.error = "--kind 应为 scene、motion、robot、environment、display 或 policy，实际为 " + quoted(*value);
+            if (*value != "scene" && *value != "motion" && *value != "robot" && *value != "environment" && *value != "display" && *value != "policy" &&
+                *value != "element") {
+                result.error = "--kind 应为 scene、motion、robot、environment、display、policy 或 element，实际为 " + quoted(*value);
                 return result;
             }
             options.assetKind = std::string{*value};

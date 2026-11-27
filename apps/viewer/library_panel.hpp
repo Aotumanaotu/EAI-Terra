@@ -20,7 +20,7 @@
 
 namespace terra::viewer {
 
-enum class LibraryTab { Scenes, Motions, Robots, Policies };  // Policies：M4-10b
+enum class LibraryTab { Scenes, Motions, Robots, Policies, Elements };  // Policies：M4-10b；Elements：M5-02a
 enum class LibraryFilter { All, Favorites, Recent, Builtin, Imported };
 
 struct LibraryAction {

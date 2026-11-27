@@ -1,0 +1,18 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "场景元素夹具（M5-02a）：地面上一个配电柜（两个盒体、带热点）、一个碰撞网格做的基座、一个只显示的贴花；两个木箱从 0.5 m 高处落下，一个落在地面、一个落在基座上",
+  "title": "元素夹具",
+  "models": [
+    {"name": "ground", "mjcf": "../scene/ground.xml"}
+  ],
+  "elements": [
+    {"id": "cabinet", "element": "cabinet.terra-element.json", "position": [0, 1.5, 0], "rotation": {"rpyDeg": [0, 0, 90]}},
+    {"id": "plinth", "element": "plinth.terra-element.json", "position": [2, 0, 0]},
+    {"id": "decal", "element": "decal.terra-element.json", "position": [0, -1, 0]},
+    {"id": "crate_a", "element": "crate.terra-element.json", "position": [0, 0, 0.5]},
+    {"id": "crate_b", "element": "crate.terra-element.json", "position": [2, 0, 1.0], "thermal": {"default": 60.0}}
+  ],
+  "thermal": {"ambient": 20, "temperatures": {"plinth": 33}},
+  "labels": {"crate_b": "crate-special"}
+}

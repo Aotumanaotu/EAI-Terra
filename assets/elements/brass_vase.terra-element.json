@@ -1,0 +1,11 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "黄铜花瓶",
+  "category": "decor/vase",
+  "visual": {"gltf": "../models/brass_vase_01/brass_vase_01_2k.gltf"},
+  "collision": {"mode": "boxes", "generatedBy": "manual（按 glTF 的包围盒）",
+                "boxes": [{"position": [0, 0, 0.3477], "halfSize": [0.1137, 0.1137, 0.3462]}]},
+  "physics": {"movable": "layout"},
+  "license": {"source": "https://polyhaven.com/a/brass_vase_01", "license": "CC0-1.0", "author": "Rico Cilliers"}
+}

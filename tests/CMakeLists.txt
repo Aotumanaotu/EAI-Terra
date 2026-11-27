@@ -152,6 +152,10 @@ terra_add_cli_test(run_cube EXPECT 0
 terra_add_cli_test(run_scene EXPECT 0
     STDOUT "[{].type.:.config.[^\n]*.scene.:[^\n]*\n[{].type.:.model.[^\n]*cart_a/chassis[^\n]*cart_b/chassis.*[{].type.:.summary.,.run_epoch.:0,.steps.:200,"
     ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/two_carts.terra-scene.json --steps 200 --sample-every 100)
+# M5-02a：有元素的场景在 Headless 中只跑物理（元素的实体名在模型描述中）
+terra_add_cli_test(run_elements EXPECT 0
+    STDOUT "[{].type.:.model.[^\n]*crate_a/body[^\n]*crate_b/body.*[{].type.:.summary.,.run_epoch.:0,.steps.:500,"
+    ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/elements/elements_bench.terra-scene.json --steps 500 --sample-every 250)
 terra_add_cli_test(scene_invalid EXPECT 4 STDERR "场景错误 /models/0/positon"
     ARGS --scene ${PROJECT_SOURCE_DIR}/assets/tests/scene/invalid.terra-scene.json --steps 10)
 terra_add_cli_test(scene_and_model EXPECT 2 STDERR "只能二选一"
@@ -322,6 +326,13 @@ target_link_libraries(test_scene_instance PRIVATE terra::scene terra::physics_mu
 target_compile_definitions(test_scene_instance PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
 terra_configure_target(test_scene_instance)
 add_test(NAME scene.instance COMMAND test_scene_instance)
+
+# M5-02a：场景元素（元素文件、组合、碰撞与掉落、温度与类别、错误）；夹具 assets/tests/elements/
+add_executable(test_scene_elements scene/test_scene_elements.cpp)
+target_link_libraries(test_scene_elements PRIVATE terra::scene terra::physics_mujoco)
+target_compile_definitions(test_scene_elements PRIVATE TERRA_TEST_ASSETS_DIR="${PROJECT_SOURCE_DIR}/assets/tests")
+terra_configure_target(test_scene_elements)
+add_test(NAME scene.elements COMMAND test_scene_elements)
 
 # 参考机器人导入核查（M3-01）：三台 Menagerie 机器人经场景文件加载；未准备素材时跳过（返回码 77）。
 add_executable(test_robot_import robots/test_robot_import.cpp)
@@ -808,6 +819,11 @@ if(TERRA_BUILD_RENDER)
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 120 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/thermal_bench.terra-scene.json" --thermal-self-test)
     set_tests_properties(graphics.viewer_thermal_selftest PROPERTIES LABELS graphics)
+    # M5-02a：场景元素（夹具 elements_bench：木箱下落）；中途单击内置的“简易配电柜”卡片，打开只有地面与该元素的预览场景
+    add_test(NAME graphics.viewer_elements_selftest
+        COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 120 --self-test --expect-renderer llvmpipe
+                --scene "${PROJECT_SOURCE_DIR}/assets/tests/elements/elements_bench.terra-scene.json" --elements-self-test)
+    set_tests_properties(graphics.viewer_elements_selftest PROPERTIES LABELS graphics)
     add_test(NAME graphics.viewer_sensor_selftest
         COMMAND ${TERRA_GRAPHICS_TEST_ENV} $<TARGET_FILE:terra_viewer> --frames 80 --self-test --expect-renderer llvmpipe
                 --scene "${PROJECT_SOURCE_DIR}/assets/tests/sensors/sensor_suite.terra-scene.json" --sensor-self-test)

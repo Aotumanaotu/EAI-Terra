@@ -1,0 +1,116 @@
+{
+  "format": "terra.scene",
+  "version": 1,
+  "name": "宇树 Go2 与场景元素（M5-02a）：地上有工具箱、电钻（可推动）、黄铜花瓶与简易配电柜（布局可移动）；Go2 前方装 FLIR Lepton 3.5 热像仪，配电柜朝向 Go2 的柜门上有 78 °C 的热点。Go2 走过去可以推动工具箱与电钻",
+  "title": "Go2 与场景元素",
+  "models": [
+    {
+      "name": "go2",
+      "mjcf": "../../robots/unitree_go2/scene.xml"
+    }
+  ],
+  "initialKeyframe": "go2/home",
+  "noise": {
+    "seed": 1
+  },
+  "sensors": [
+    {
+      "type": "imu",
+      "site": "go2/imu",
+      "rateHz": 500,
+      "noise": {
+        "gyro": {
+          "noiseDensity": 0.00516
+        }
+      }
+    },
+    {
+      "type": "camera",
+      "name": "go2/thermal",
+      "entity": "go2/base",
+      "position": [
+        0.3,
+        0,
+        0.08
+      ],
+      "rotation": {
+        "rpyDeg": [
+          90,
+          0,
+          -90
+        ]
+      },
+      "segmentation": true,
+      "thermal": {
+        "preset": "flir_lepton_3_5"
+      }
+    }
+  ],
+  "view": {
+    "camera": {
+      "position": [
+        -1.2,
+        -2.4,
+        1.6
+      ],
+      "target": [
+        1.4,
+        0,
+        0.4
+      ]
+    }
+  },
+  "elements": [
+    {
+      "id": "toolbox",
+      "element": "../../elements/metal_toolbox.terra-element.json",
+      "position": [
+        1.2,
+        0.15,
+        0
+      ]
+    },
+    {
+      "id": "drill",
+      "element": "../../elements/drill.terra-element.json",
+      "position": [
+        1.0,
+        -0.45,
+        0.005
+      ],
+      "rotation": {
+        "rpyDeg": [
+          0,
+          0,
+          30
+        ]
+      }
+    },
+    {
+      "id": "vase",
+      "element": "../../elements/brass_vase.terra-element.json",
+      "position": [
+        2.0,
+        0.9,
+        0
+      ]
+    },
+    {
+      "id": "cabinet",
+      "element": "../../elements/simple_cabinet.terra-element.json",
+      "position": [
+        3.2,
+        0,
+        0
+      ]
+    }
+  ],
+  "thermal": {
+    "ambient": 22,
+    "sky": -15,
+    "temperatures": {
+      "go2/*": 36,
+      "world": 20
+    }
+  }
+}

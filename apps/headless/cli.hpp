@@ -40,7 +40,7 @@ struct RunOptions {
     bool listRecords = false;               // M3-07b：列出库中的实验记录（可用 --scene 筛选）后退出
     bool noNoise = false;                   // M4-09：不加传感器噪声（输出真值）
     bool listAssets = false;                // M4-08c：扫描并列出资源库中的资产（可用 --kind 筛选）后退出
-    std::string assetKind;                  // M4-08c：--kind scene|motion|robot|environment；空表示全部
+    std::string assetKind;                  // M4-08c：--kind scene|motion|robot|environment（M5-02a 加 element）；空表示全部
     double positionTolerance = 1e-6;        // M3-07：--tolerance 位置,姿态（m,rad），只用于 --rerun
     double rotationTolerance = 1e-6;
     std::optional<std::uint64_t> steps;     // 与 duration 二选一

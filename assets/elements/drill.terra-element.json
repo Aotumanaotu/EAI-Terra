@@ -1,0 +1,12 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "电钻",
+  "category": "tool/drill",
+  "visual": {"gltf": "../models/Drill_01/Drill_01_2k.gltf"},
+  "collision": {"mode": "boxes", "generatedBy": "manual（按 glTF 的包围盒）",
+                "boxes": [{"position": [-0.0366, 0.0026, 0.08975], "halfSize": [0.0914, 0.0262, 0.09255]}]},
+  "physics": {"movable": "dynamic", "mass": 1.6, "friction": 0.8},
+  "thermal": {"default": 32.0, "hotspots": [{"position": [0.02, 0.0, 0.14], "radius": 0.04, "temperature": 55.0}]},
+  "license": {"source": "https://polyhaven.com/a/Drill_01", "license": "CC0-1.0", "author": "Fernando Quinn"}
+}

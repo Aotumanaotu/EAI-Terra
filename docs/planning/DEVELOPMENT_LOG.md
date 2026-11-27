@@ -1,6 +1,6 @@
 # EAI Terra 开发记录
 
-> 本文件是**实际开发进度与验证证据的主记录**。开发计划描述未来任务，本文件只记录确实发生的工作。**M0 已完成**（2026-11-19）。**M1 已完成**（2026-11-23）。**M2 已完成**（2026-11-23）。**M3 已完成**（2026-11-24，LOG-132）。**M4 已完成**（2026-11-25，LOG-186）。M4 过程：M4-01 传感器设计评审通过；M4-02 IMU 已通过（LOG-136）；M4-03a 离屏渲染与相机已通过（LOG-138）；M4-03b 2D 激光雷达已通过（LOG-141）；M4-04 已通过（LOG-145）；M4-05 ROS2 接入设计评审通过（LOG-147）；Go2W、AS2 导入已通过（LOG-149）；M4-06a 通用配置的 ROS2 桥已通过（LOG-152）；M4-06b 宇树配置已通过（LOG-156）：M4-06 ROS2 桥接完成；M4-07 传感器记录已通过（LOG-158）；M4-08a 模型导入已通过；M4-08b TurtleBot 4 已通过（随 M4-08c 复跑）；M4-08c 资源库与场景卡片已验收（LOG-169、LOG-170）；M4-08d ROS2 面板与显示配置已通过（LOG-172）：M4-08 全部完成；M4-09 噪声与分割图已通过（LOG-175）；M4-10 设计稿按用户意见修订并分为 M4-10a / M4-10b（LOG-177）；M4-10a 推理组件与策略运行已通过（LOG-180）；M4-10b 策略导入向导已通过（LOG-183）：M4-10 完成；M4-11 阶段验收完成（LOG-185、LOG-186）：**M4 已完成**（2026-11-25）。M5-01 设计稿评审通过（LOG-189）；M5-11 MID-360 第一次运行有 4 项失败，已修正（LOG-191）；第二次运行仅 `ros2.lidar3d` 失败（测试的距离上限算错），已修正（LOG-192）；第三次运行全部通过，**M5-11 已通过**（LOG-193）。M5-06 热成像实现完成，待基线运行（LOG-194）。
+> 本文件是**实际开发进度与验证证据的主记录**。开发计划描述未来任务，本文件只记录确实发生的工作。**M0 已完成**（2026-11-19）。**M1 已完成**（2026-11-23）。**M2 已完成**（2026-11-23）。**M3 已完成**（2026-11-24，LOG-132）。**M4 已完成**（2026-11-25，LOG-186）。M4 过程：M4-01 传感器设计评审通过；M4-02 IMU 已通过（LOG-136）；M4-03a 离屏渲染与相机已通过（LOG-138）；M4-03b 2D 激光雷达已通过（LOG-141）；M4-04 已通过（LOG-145）；M4-05 ROS2 接入设计评审通过（LOG-147）；Go2W、AS2 导入已通过（LOG-149）；M4-06a 通用配置的 ROS2 桥已通过（LOG-152）；M4-06b 宇树配置已通过（LOG-156）：M4-06 ROS2 桥接完成；M4-07 传感器记录已通过（LOG-158）；M4-08a 模型导入已通过；M4-08b TurtleBot 4 已通过（随 M4-08c 复跑）；M4-08c 资源库与场景卡片已验收（LOG-169、LOG-170）；M4-08d ROS2 面板与显示配置已通过（LOG-172）：M4-08 全部完成；M4-09 噪声与分割图已通过（LOG-175）；M4-10 设计稿按用户意见修订并分为 M4-10a / M4-10b（LOG-177）；M4-10a 推理组件与策略运行已通过（LOG-180）；M4-10b 策略导入向导已通过（LOG-183）：M4-10 完成；M4-11 阶段验收完成（LOG-185、LOG-186）：**M4 已完成**（2026-11-25）。M5-01 设计稿评审通过（LOG-189）；M5-11 MID-360 第一次运行有 4 项失败，已修正（LOG-191）；第二次运行仅 `ros2.lidar3d` 失败（测试的距离上限算错），已修正（LOG-192）；第三次运行全部通过，**M5-11 已通过**（LOG-193）。M5-06 热成像已通过（LOG-194、LOG-195）。M5-02 分为 a / b，M5-02a 场景元素的运行时已通过（LOG-197）。
 
 ## 1. 当前进度快照
 
@@ -2607,6 +2607,68 @@
   - 脚本：`scripts/verify/m5_06.sh`（新）；
   - 文档：`docs/planning/DEVELOPMENT_PLAN.md`。
   - 未提交。
+
+### LOG-195：M5-06 通过；M5-02 分为 a / b，M5-02a 场景元素的运行时实现完成
+
+- **日期：**2026-11-26。
+- **类型 / 当前状态：**验证 + 功能。**M5-06 已通过**（用户：测试全部通过）。M5-02a **待基线运行**（`bash scripts/verify/m5_02a.sh`）。
+- **分步：**
+  - M5-02a：元素的运行时。碰撞体写在元素文件中，Headless 不需要 glTF 解析；
+  - M5-02b：glTF 环境按节点拆成元素、自动生成碰撞代理、导入向导。
+  - 原因见 [M5-02a 报告](../validation/M5-02a-elements.md)第 0 节。
+- **实现：**
+  - 元素文件 `*.terra-element.json`：盒体 / 网格（凸包）/ 只显示；layout / fixed / dynamic；温度与热点；检查点；许可；
+  - 场景的 `elements`：元素生成 MJCF 文本，后端用 `mj_parseXMLString` 读入，全局设置随模型实例；
+  - 外观绑定；温度的优先级；分割类别取元素的 category；
+  - 资源库的“元素”分页：单击在空场景中预览；
+  - Headless `--kind element`；
+  - 内置 4 个元素，演示场景“Go2 与场景元素”（含热像仪）。
+- **测试：**
+  - 新增 `scene.elements`、`headless.run_elements`、`graphics.viewer_elements_selftest`；
+  - 资源库的默认扫描范围加上 `elements/`（测试相应修改）；
+  - 变异 6 个，锚点 335/335 唯一。
+- **文件：**
+  - 引擎：
+    - `engine/scene`：`element.hpp`（新）、`thermal_spec.hpp`（新）、`element.cpp`（新）、`scene.hpp`、`composition.hpp`、`scene_file.cpp`、`scene_instance.cpp`、`composition.cpp`、`CMakeLists.txt`；
+    - `engine/physics`：`world_composition.hpp`、`mujoco_world.cpp`；
+    - `engine/library`：`library.hpp`、`library.cpp`；
+    - `engine/ui`：`text.hpp/.cpp`；
+  - 程序：`apps/viewer`（`main.cpp`、`library_panel.hpp/.cpp`）；`apps/headless`（`cli.hpp/.cpp`）；
+  - 素材：`assets/elements/*`（新）、`assets/tests/elements/*`（新）、`assets/scenes/robots/go2_elements.terra-scene.json`（新）；
+  - 测试：`tests/scene/test_scene_elements.cpp`（新）、`tests/physics/test_robot_description.cpp`、`tests/library/test_library_assets.cpp`、`tests/CMakeLists.txt`；
+  - 脚本：`scripts/verify/m5_02a.sh`（新）。
+  - 未提交。
+
+### LOG-196：M5-02a 第一次基线运行：编译警告与一项自检；进度条改为两行彩色
+
+- **日期：**2026-11-26。
+- **类型 / 当前状态：**验证 + 修复。**待第二次运行**。
+- **结果：**
+  - 渲染关闭 114/114；
+  - 渲染 Debug 157/158，失败项 `graphics.viewer_elements_selftest`；
+  - Release 与 ASan 构建失败；变异 6/6。
+- **原因与修正：**
+  - `SceneModel::mjcfText` 没有默认初始化，旧测试中省略它的聚合初始化触发 `-Wmissing-field-initializers`（`-Werror` 下为错误）。之前省略的 `torqueActuators` 有默认值，不报。改为 `std::string mjcfText{}`，`ModelPlacement` 同改；
+  - 元素自检“木箱落下”要求高度 ≥ 0，落地静止时接触有零点几毫米的穿透（推断），改为 −0.01～0.45 m，并打印实际值；
+  - TurtleBot 4 重新导入退出码 2：Release 构建失败、没有 `terra_import`，随之解决。
+- **用户：**进度条看不全，长名字更明显，希望是彩色的。
+- **进度条修改**（`scripts/verify/lib/progress.sh`）：
+  - 改为两行：第 1 行为部分与进度条（绿色已完成、灰色未完成、百分比、数量）；第 2 行为步骤名与正在运行的测试，以及用时与剩余时间；
+  - 每行按终端的真实宽度截断（`stty size`）：时间总是完整显示，名字放不下时以 … 截断；
+  - 在模拟终端中按 100 列与 50 列试过。
+- **文件：**`engine/scene/include/terra/scene/composition.hpp`、`engine/physics/include/terra/physics/world_composition.hpp`、`apps/viewer/main.cpp`、`scripts/verify/lib/progress.sh`。未提交。
+
+### LOG-197：M5-02a 基线验证通过
+
+- **日期：**2026-11-26。
+- **类型 / 当前状态：**验证。**M5-02a 已通过**。
+- **结果：**
+  - 114 / 158 / 158 / 175，ASan 123 + 35 + 17，全部通过；
+  - 变异 6/6；
+  - 木箱落到地面 z = −0.0001 m、落到基座 0.4999 m；查看器切换时木箱高 −0.0008 m（证实第一次失败是接触穿透）；
+  - 展示：Go2 与场景元素、两个元素预览，退出码 0；总耗时 25:07。
+- **证据：**[M5-02a 报告](../validation/M5-02a-elements.md)第 4.2 节。
+- **下一步：**M5-02b（glTF 环境导入：按节点拆成元素、自动生成碰撞代理、导入向导）。
 
 ## 4. 后续记录规则
 

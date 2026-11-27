@@ -27,6 +27,9 @@ struct SceneModel {
     std::string where;  // 诊断中的位置（M2-05 起为场景文件中的 JSON 指针，如 "/models/1"）
     bool fixedBase = false;  // M3-04：悬挂模式，组合时删掉该实例根部的自由关节，基座固定在放置位姿上
     bool torqueActuators = false;  // M4-06b：位置执行器改为力矩执行器（宇树低层控制）
+    // M5-02：场景元素——MJCF 由场景模块生成（mjcf 为元素文件路径，只用于诊断）；全局物理设置随其他实例，不参与比较
+    std::string mjcfText{};  // 带默认初始化：旧的聚合初始化可以省略本字段（不触发 -Wmissing-field-initializers）
+    bool element = false;
 };
 
 // 场景文件中写了的全局物理配置；没写的项取第一个实例的值（M2-01 设计 3.4 节）。

@@ -596,6 +596,14 @@ enum class TextId : int {
     SensorsThermal,
     SensorsTemperatureAt,
     SensorsThermalSummary,
+    // M5-02a：场景元素
+    LibraryTabElements,
+    LibraryClickToPreviewElement,
+    LibraryGltfMissing,
+    LibraryTagLayout,
+    LibraryTagFixed,
+    LibraryTagDynamic,
+    ElementPreviewFailed,
     Count,
 };
 

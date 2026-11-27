@@ -1,0 +1,8 @@
+{
+  "format": "terra.element",
+  "version": 1,
+  "name": "测试基座（碰撞网格）",
+  "category": "test/plinth",
+  "collision": {"mode": "mesh", "meshes": [{"file": "block.obj"}]},
+  "physics": {"movable": "fixed"}
+}

@@ -49,7 +49,11 @@ std::string instancePrefix(const std::string& name) { return name + "/"; }
 
 tp::PhysicsOptions resolvePhysicsOptions(const PhysicsOverrides& overrides, const std::vector<tp::PhysicsOptions>& models,
                                          const std::vector<SceneModel>& instances, std::vector<SceneIssue>& warnings) {
-    tp::PhysicsOptions chosen = models.empty() ? tp::PhysicsOptions{} : models.front();
+    // M5-02：场景元素的全局设置不参与（随第一个不是元素的实例；全是元素时取第一个）
+    std::size_t base = 0;
+    while (base < models.size() && base < instances.size() && instances[base].element) ++base;
+    if (base >= models.size()) base = 0;
+    tp::PhysicsOptions chosen = models.empty() ? tp::PhysicsOptions{} : models[base];
     if (overrides.timestep) chosen.timestep = *overrides.timestep;
     if (overrides.gravity) chosen.gravity = *overrides.gravity;
     if (overrides.integrator) chosen.integrator = *overrides.integrator;
@@ -57,8 +61,9 @@ tp::PhysicsOptions resolvePhysicsOptions(const PhysicsOverrides& overrides, cons
     if (overrides.iterations) chosen.iterations = *overrides.iterations;
     if (overrides.tolerance) chosen.tolerance = *overrides.tolerance;
 
-    const std::string first = instances.empty() ? std::string{} : instances.front().name;
-    for (std::size_t i = 1; i < models.size(); ++i) {
+    const std::string first = base < instances.size() ? instances[base].name : std::string{};
+    for (std::size_t i = 0; i < models.size(); ++i) {
+        if (i == base || (i < instances.size() && instances[i].element)) continue;
         const tp::PhysicsOptions& m = models[i];
         const SceneModel* inst = i < instances.size() ? &instances[i] : nullptr;
         const auto differ = [&](const char* field, const std::string& value, const std::string& used) {
@@ -112,7 +117,7 @@ ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const Physi
         } else {
             seen.emplace(m.name, &m);
         }
-        if (m.mjcf.empty()) out.issues.push_back(issue(Severity::Error, &m, "没有指定 MJCF 文件"));
+        if (m.mjcf.empty() && m.mjcfText.empty()) out.issues.push_back(issue(Severity::Error, &m, "没有指定 MJCF 文件"));
     }
     if (!factory) out.issues.push_back(issue(Severity::Error, nullptr, "没有提供物理世界工厂"));
     if (!out.issues.empty()) return out;
@@ -123,7 +128,7 @@ ComposedWorld composeWorld(const std::vector<SceneModel>& instances, const Physi
     for (std::size_t i = 0; i < instances.size(); ++i) {
         const SceneModel& m = instances[i];
         request.models.push_back({m.name, instancePrefix(m.name), m.mjcf, m.placement, m.fixedBase,
-                                  i < imus.size() ? imus[i] : std::vector<tp::ImuMount>{}, m.torqueActuators});
+                                  i < imus.size() ? imus[i] : std::vector<tp::ImuMount>{}, m.torqueActuators, m.mjcfText, m.element});
     }
     request.resolveOptions = [&](const std::vector<tp::PhysicsOptions>& models) {
         return resolvePhysicsOptions(overrides, models, instances, optionWarnings);

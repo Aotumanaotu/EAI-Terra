@@ -147,6 +147,7 @@ struct Options {
     std::string importPolicy;             // M4-10b：启动后打开导入向导并选好这个文件
     bool lidar3dSelfTest = false;         // M5-11：3D 雷达自检
     bool thermalSelfTest = false;         // M5-06：热像仪自检
+    bool elementsSelfTest = false;        // M5-02a：场景元素与元素卡片的预览
 };
 
 bool parseOptions(int argc, char** argv, Options& o) {
@@ -198,6 +199,8 @@ bool parseOptions(int argc, char** argv, Options& o) {
             o.lidar3dSelfTest = true;
         } else if (a == "--thermal-self-test") {
             o.thermalSelfTest = true;
+        } else if (a == "--elements-self-test") {
+            o.elementsSelfTest = true;
         } else if (a == "--import-policy" && hasValue) {
             o.importPolicy = argv[++i];
         } else if (a == "--policy-import-self-test" && hasValue) {
@@ -1269,6 +1272,57 @@ void toggleRos2Panel(Frame& f, bool open) {
     }
 }
 
+// M5-02a：元素卡片的预览——生成一个只有地面与这个元素的场景（放在资源库目录的 previews/ 下；内存中的库放在系统临时目录），
+// 相机按碰撞体的大小取景。返回场景文件路径；失败时为空，error 为原因
+std::string elementPreviewScene(const Frame& f, const std::string& elementPath, std::string& error) {
+    namespace fs = std::filesystem;
+    const auto parsed = terra::scene::readElementFile(elementPath);
+    if (!parsed.document) {
+        error = parsed.issues.empty() ? elementPath : parsed.issues.front().where + " " + parsed.issues.front().message;
+        return {};
+    }
+    const auto& e = *parsed.document;
+    double radius = 0.5, top = 0.5;
+    for (const auto& b : e.boxes) {
+        const double r = std::sqrt(b.pose.position.x * b.pose.position.x + b.pose.position.y * b.pose.position.y) +
+                         std::max({b.halfSize.x, b.halfSize.y, b.halfSize.z});
+        radius = std::max(radius, r);
+        top = std::max(top, b.pose.position.z + b.halfSize.z);
+    }
+    std::error_code ec;
+    const fs::path dir = f.state.libraryMemoryOnly ? fs::temp_directory_path(ec) / "terra_element_previews" : fs::path{libraryFilePath(f)}.parent_path() / "previews";
+    fs::create_directories(dir, ec);
+    std::string stem = fs::path{elementPath}.filename().string();
+    if (const auto at = stem.find(".terra-element.json"); at != std::string::npos) stem = stem.substr(0, at);
+    const fs::path scene = dir / (stem + ".preview.terra-scene.json");
+    const auto quote = [](const std::string& text) {
+        std::string q = "\"";
+        for (const char c : text) {
+            if (c == '"' || c == '\\') q += '\\';
+            q += c;
+        }
+        return q + "\"";
+    };
+    const auto number = [](double v) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "%.4f", v);
+        return std::string{buf};
+    };
+    const double d = 2.2 * radius + 0.8;
+    const std::string json = "{\n  \"format\": \"terra.scene\",\n  \"version\": 1,\n  \"name\": " + quote("元素预览：" + e.name) + ",\n  \"title\": " +
+                             quote(e.name) + ",\n  \"models\": [{\"name\": \"floor\", \"mjcf\": " +
+                             quote((fs::path{TERRA_ASSETS_DIR} / "scenes/common/floor.xml").string()) + "}],\n  \"elements\": [{\"id\": \"preview\", \"element\": " +
+                             quote(fs::absolute(elementPath, ec).lexically_normal().string()) + "}],\n  \"view\": {\"camera\": {\"position\": [" + number(d) +
+                             ", " + number(-d) + ", " + number(top + 0.6 * d) + "], \"target\": [0, 0, " + number(0.5 * top) + "]}}\n}\n";
+    std::ofstream out(scene, std::ios::binary);
+    out << json;
+    if (!out) {
+        error = "无法写入 " + scene.string();
+        return {};
+    }
+    return scene.string();
+}
+
 void handleLibraryAction(Frame& f, const vw::LibraryAction& a) {
     using T = vw::LibraryAction::Type;
     namespace lib = terra::library;
@@ -1282,6 +1336,11 @@ void handleLibraryAction(Frame& f, const vw::LibraryAction& a) {
                     if (asset.kind == lib::AssetKind::Policy && asset.path == a.path && !asset.related.empty()) scene = asset.related[0];
                 }
                 runPolicyFile(f, a.path, scene);
+            } else if (a.kind == lib::AssetKind::Element) {  // M5-02a：在空场景中预览
+                std::string error;
+                const std::string scene = elementPreviewScene(f, a.path, error);
+                if (scene.empty()) f.state.log.push_back(std::string{tr(TextId::ElementPreviewFailed)} + error);
+                else f.state.openRequest = scene;
             } else {
                 f.state.openRequest = a.path;
             }
@@ -4349,6 +4408,10 @@ struct SceneSelfTestRecord {
     bool sensorTest = false;      // M4-04：传感器自检（播放后不暂停、不单步）
     bool lidar3dTest = false;     // M5-11：3D 雷达自检（同上）
     bool thermalTest = false;     // M5-06：热像仪自检（同上）
+    bool elementsTest = false;    // M5-02a：元素自检（播放；中途单击元素卡片打开预览）
+    double crateHeightAtSwitch = -1.0;
+    std::string firstScene;
+    bool previewRequested = false;
     bool vizTest = false;         // M4-08d：显示配置自检（播放后一直运行）
     bool sensorRecordTest = false;  // M4-07：传感器记录自检（第 6 帧开始记录并保存图像，中间停止并回放到一帧有图像的时刻）
     std::uint64_t replayCameraStep = 0;
@@ -4395,7 +4458,18 @@ void sceneSelfTestScript(Frame& f, int frame, int total) {
         }
         return;
     }
-    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest || sceneRecord.thermalTest) return;  // M4-04、M4-08d、M5-11、M5-06：第 3 帧按播放后一直运行
+    if (sceneRecord.elementsTest && frame == total / 2) {  // M5-02a：记下木箱的高度，再像单击卡片一样打开元素的预览
+        sceneRecord.firstScene = sim.path;
+        if (const auto* e = sim.instance.world->description().findEntity("crate_a/body")) {
+            sceneRecord.crateHeightAtSwitch = sim.instance.world->snapshot()->entities[e->id.value - 1].pose.position.z;
+        }
+        for (const auto& a : f.state.assetList) {
+            if (a.kind != terra::library::AssetKind::Element || a.path.find("simple_cabinet.terra-element.json") == std::string::npos) continue;
+            handleLibraryAction(f, vw::LibraryAction{vw::LibraryAction::Type::Open, terra::library::AssetKind::Element, a.path, {}, false});
+            sceneRecord.previewRequested = true;
+        }
+    }
+    if (sceneRecord.sensorTest || sceneRecord.vizTest || sceneRecord.lidar3dTest || sceneRecord.thermalTest || sceneRecord.elementsTest) return;  // M4-04、M4-08d、M5-11、M5-06、M5-02a：第 3 帧按播放后一直运行
     if (sceneRecord.recordTest) {
         // 第 6 帧开始记录（动作从头播放），中间停止并回放，再跳到记录中间的一份状态；
         // 开始与停止都按工具栏上的录制按钮（M3-07d：与点击走同一条路径，包括按下后同一帧内的绘制）
@@ -4996,7 +5070,37 @@ int thermalSelfTest(Frame& f) {
     return failures == 0 ? 0 : 1;
 }
 
+// M5-02a：元素自检（夹具 elements_bench）：木箱在下落；资源库有内置的元素卡片；单击卡片打开的预览场景只有地面与这个元素
+int elementsSelfTest(Frame& f) {
+    int failures = 0;
+    const auto check = [&](bool ok, const std::string& what) {
+        std::printf("%s %s\n", ok ? "PASS" : "FAILED:", what.c_str());
+        if (!ok) ++failures;
+    };
+    std::size_t cards = 0;
+    for (const auto& a : f.state.assetList) cards += a.kind == terra::library::AssetKind::Element && !a.hidden ? 1u : 0u;
+    std::printf("INFO 元素自检：切换时木箱高 %.3f m；资源库中 %zu 张元素卡片；当前场景 %s\n", sceneRecord.crateHeightAtSwitch, cards,
+                f.simulated ? f.simulated->path.c_str() : "（无）");
+    check(sceneRecord.firstScene.find("elements_bench.terra-scene.json") != std::string::npos, "先打开元素夹具");
+    // 落地后静止时接触有零点几毫米的穿透，高度可以略低于 0
+    check(sceneRecord.crateHeightAtSwitch > -0.01 && sceneRecord.crateHeightAtSwitch < 0.45,
+          "播放后木箱从 0.5 m 落下（切换时 " + std::to_string(sceneRecord.crateHeightAtSwitch) + " m）");
+    check(cards >= 4, "资源库中有内置的元素卡片（至少 4 张）");
+    check(sceneRecord.previewRequested, "单击“简易配电柜”的卡片");
+    const bool preview = f.simulated && f.simulated->path.find("simple_cabinet.preview.terra-scene.json") != std::string::npos;
+    check(preview, "打开了预览场景");
+    if (preview) {
+        const auto& d = f.simulated->instance.world->description();
+        check(d.findEntity("preview/body") != nullptr && d.modelInstances.size() == 2, "预览场景只有地面与这个元素（preview/body）");
+        check(f.simulated->instance.thermal.hotspots.size() == 1, "元素的热点随元素进入场景");
+    }
+    check(f.ctx.errorMessageCount() == 0, "整个运行期间没有 GL 错误");
+    std::printf(failures == 0 ? "元素自检通过\n" : "元素自检失败：%d 项\n", failures);
+    return failures == 0 ? 0 : 1;
+}
+
 int sceneSelfTest(Frame& f, const Options& options) {
+    if (sceneRecord.elementsTest) return elementsSelfTest(f);
     if (sceneRecord.thermalTest) return thermalSelfTest(f);
     if (sceneRecord.lidar3dTest) return lidar3dSelfTest(f);
     if (sceneRecord.sensorRecordTest) return sensorRecordSelfTest(f);
@@ -5327,6 +5431,7 @@ int main(int argc, char** argv) {
         sceneRecord.sensorTest = options.sensorSelfTest;
         sceneRecord.lidar3dTest = options.lidar3dSelfTest;
         sceneRecord.thermalTest = options.thermalSelfTest;
+        sceneRecord.elementsTest = options.elementsSelfTest;
         sceneRecord.sensorRecordTest = options.sensorRecordSelfTest;
         sceneRecord.vizTest = options.vizSelfTest;
     }
